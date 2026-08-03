@@ -1,0 +1,246 @@
+---
+name: mac-dev-cleanup
+description: Scan, analyze, configure, and safely clean macOS developer caches with a local web control panel, JSON policy, recoverable Trash-first cleanup, operation logs, exclusions, test artifacts, build outputs, node_modules, virtualenvs, Playwright traces, Rust/Flutter caches, app caches/logs, screenshots, and large-file review. Use whenever the user asks to clean or inspect Mac storage, caches, developer artifacts, temp files, logs, stale projects, or manage cleanup settings and reports.
+---
+
+# mac-dev-cleanup
+
+Use this skill for macOS developer storage cleanup. Prefer the bundled script over ad hoc deletion.
+
+## Core rules
+
+- Always run a scan or dry run before cleanup.
+- The Skill is the product; `config.json` is its single configuration source and the web dashboard is only a local control plane.
+- Never delete personal media/documents, app support data, source files, `.git`, package lockfiles, or user-created assets.
+- Treat `node_modules`, `.venv`, `venv`, Rust `target`, `.next`, `build`, `out`, `dist`, `.dart_tool`, `.gradle` as aggressive project-generated cleanup targets.
+- Treat caches, test reports, traces, coverage, logs, temp files, and package-manager caches as safe cleanup targets when generated and rebuildable.
+- Skip system directories and app data unless the user explicitly asks for those.
+- The `manual` risk level is **reported but never auto-deleted** by any mode. It covers screenshots, large project dirs, archives, dumps, and large files in personal roots — these require explicit human review.
+- If required tools are not installed, continue with built-in Python scanning and report missing tools in the HTML log.
+- Real cleanup is Trash-first: eligible items move to `~/.Trash/mac-dev-cleanup/<operation-id>/` and an operation manifest is written for recovery. Never bypass this with ad hoc `rm` or `shutil.rmtree`.
+- The local HTTP API may read state/config, atomically save validated config, and trigger scan only. Destructive HTTP endpoints are intentionally forbidden; cleanup stays in the CLI confirmation flow.
+
+## Important: APFS snapshots & disk space release
+
+Deleted files may not immediately show as freed space on macOS APFS. The container holds deleted-file space while snapshots exist:
+
+- `com.apple.os.update-*` snapshots — created during macOS update preparation (e.g. `MSUPrepareUpdate`). These can hold many GB until the update is installed or the snapshot is cleared.
+- Time Machine local snapshots (`com.apple.TimeMachine.*`) — `tmutil listlocalsnapshots /`.
+
+After any real deletion (`--apply`), **a reboot is the most reliable way to release snapshot-held space**. Do not assume cleanup failed just because `df` does not change immediately — verify after reboot.
+
+Verify disk space correctly (note: `df /` returns the read-only system volume on modern macOS and is misleading):
+
+```bash
+df -h ~                      # data volume, real available space
+diskutil info / | grep -i "container free"
+tmutil listlocalsnapshots /  # snapshot list
+```
+
+Field-tested 2026-07-31: two cleanup rounds deleted 14.6G but `df` before/after stayed at 100% full (~590M free); after reboot, used dropped 185Gi→160Gi and available jumped 590Mi→44Gi with all `com.apple.os.update-*` snapshots gone.
+
+## Risk levels
+
+| risk | behavior | examples |
+|---|---|---|
+| `safe` | deleted by `clean-safe` and `clean-aggressive` (with `--apply`) | `__pycache__`, pip/npm/uv cache, playwright temp, project logs, coverage |
+| `aggressive` | deleted only by `clean-aggressive` (with `--apply`) | `node_modules`, `.venv`, `build`, `dist`, Codex/Trae caches, large app caches/logs, `stale-deps` |
+| `manual` | never auto-deleted; shown in report as "needs review" | screenshots, large dirs, archives, dumps, large personal files, `stale-model` |
+
+## Categories recognized
+
+`global-cache`, `app-cache`, `app-log`, `project-generated`, `log-file`, `temp-browser`, `temp-file`, `test-artifact`, `screenshot`, `large-dir`, `large-file`, `stale-deps`, `stale-model`
+
+## Stale project detection
+
+A project is **stale** when its newest real development activity is older than `--stale-days` (default 90). Activity is measured as the max of:
+
+- newest mtime of **source files only** (`.ts/.js/.py/.rs/.go/.dart/.md/.toml/...`, see `CODE_EXTENSIONS` in the script) — `.DS_Store`, lockfiles, build info, and tool metadata dirs (`.workbuddy`, `.planning`, `.wrangler`, ...) are explicitly excluded so they don't masquerade as activity.
+- last git commit timestamp parsed from `.git/logs/HEAD` (no subprocess).
+
+For stale projects:
+- dependency/build dirs (`node_modules`, `.venv`, `build`, `dist`, `target`, ...) become `stale-deps` (aggressive) — safe to remove since the project is idle.
+- model/weight files (`.pth`, `.safetensors`, `.onnx`, `.bin`, `.pt`, ...) become `stale-model` (manual) — large and need re-download, so review before deleting.
+
+The stale pass runs last in `collect` so `stale-deps`/`stale-model` labels win over generic `project-generated`/`large-file` for the same paths. Tune the threshold with `--stale-days`; use `30` for a stricter "long idle" view, `90` (default) for conservative.
+
+## Script
+
+Run:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan
+```
+
+Safe dry run:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe
+```
+
+Safe cleanup (moves eligible items to the Skill quarantine inside Trash):
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe --apply
+```
+
+The command prints an `operation_id` and an exact restore command. List and restore operations:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --list-operations
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --restore <operation-id>
+```
+
+Aggressive dry run:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-aggressive
+```
+
+Aggressive cleanup:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-aggressive --apply
+```
+
+Prefer a precise plan when the user names specific targets. Candidate IDs are included in `state.json` and may be repeated; category filters are also repeatable:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe --candidate-id <id> --apply
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-aggressive --category global-cache --apply
+```
+
+Stale-aware scan with a custom idle threshold (e.g. 30 days for a stricter "long idle" view):
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan --stale-days 30
+```
+
+## Configuration (config.json)
+
+User-tunable settings live in `~/.codex/skills/mac-dev-cleanup/config.json`. The script reads it on every run; if missing, defaults are written. The web dashboard edits this file via the Settings panel.
+
+```json
+{
+  "stale_days": 90,
+  "thresholds": {
+    "app_cache_min_mb": 50,
+    "app_log_min_mb": 10,
+    "large_dir_mb": 100,
+    "large_file_mb": 50
+  },
+  "scan_roots": ["~/工作/开发", "~/Desktop/OH-WorkSpace", "~/Documents", "~/Developer", "~/dev", "~/workspace"],
+  "personal_roots": ["~/Desktop", "~/Pictures", "~/Downloads"],
+  "exclude_paths": [],
+  "exclude_globs": [],
+  "protected_projects": [],
+  "protected_categories": [],
+  "trash_retention_days": 30
+}
+```
+
+Read current config:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --show-config
+```
+
+Write config (validated, normalized, and atomically replaced; unknown keys are rejected):
+
+```bash
+echo '{"stale_days":30}' | python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --set-config
+```
+
+System-level safety sets (`GLOBAL_SAFE_PATHS`, `PRUNE_PATHS`, `SAFE_DIR_NAMES`, `MODEL_SUFFIXES`, `CODE_EXTENSIONS`, etc.) are hardcoded and not exposed via config because they are immutable safety boundaries. User exclusions only add protection; they cannot weaken those boundaries.
+
+## Local web control panel
+
+Start the Skill's loopback-only control server:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/web_server.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765/dashboard.html
+```
+
+When served this way, the dashboard can:
+
+- read the latest state and current `config.json`;
+- edit thresholds, scan roots, exclusions, protected projects/categories, and retention preference;
+- validate and atomically write `config.json`;
+- trigger a new read-only scan and refresh the page state.
+
+Opening `dashboard.html` directly with `file://` remains supported as a read-only fallback. In that mode, config editing generates a CLI command instead of silently pretending the file was saved.
+
+## Modes
+
+- `scan`: no cleanup. Reports safe, aggressive, and manual candidates plus tool self-check. `potentially_cleanable` reflects safe + aggressive capacity even in scan mode; `selected_in_mode` remains zero.
+- `clean-safe`: deletes only safe generated artifacts when `--apply` is present.
+- `clean-aggressive`: includes safe targets plus project dependency/build directories when `--apply` is present. `manual` items are never deleted.
+
+## Scan roots
+
+- Project roots (walked recursively): `~/工作/开发`, `~/Desktop/OH-WorkSpace`, `~/Documents`, `~/Developer`, `~/dev`, `~/workspace`
+- Personal roots (top level only, for screenshots / large files): `~/Desktop`, `~/Pictures`, `~/Downloads`
+- App roots (top level only): `~/Library/Caches` (entries ≥50M), `~/Library/Logs` (entries ≥10M)
+- Temp roots: `/tmp`, `/var/folders` (Playwright/puppeteer/chrome profiles)
+
+## Pruned (never walked)
+
+`~/Library/Application Support`, `~/Library/Containers`, `~/Library/Group Containers`, `~/Library/Mobile Documents`, `~/Music`, `~/Movies`, `~/.Trash`. `.git`/`.svn`/`.hg` are skipped inside project walks.
+
+## Dashboard and state
+
+The dashboard is generated from a design template on every scan:
+
+```text
+~/.codex/skills/mac-dev-cleanup/dashboard_template.html   # design + tokens (committed)
+~/.codex/skills/mac-dev-cleanup/dashboard.html            # generated, self-contained (do not edit by hand)
+```
+
+Each run overwrites the latest state file instead of creating a new HTML file:
+
+```text
+~/.codex/logs/mac-dev-cleanup/state.json
+```
+
+A compact append-only history is kept at:
+
+```text
+~/.codex/logs/mac-dev-cleanup/history.jsonl
+```
+
+State includes `deletable_bytes` (potential safe + aggressive capacity), separate `safe_bytes` / `aggressive_bytes` / `selected_bytes`, `manual_bytes`, category totals, stable candidate IDs, and per-candidate `category`/`risk`/`action`. Open the dashboard if the user asks for the visual status page.
+
+Cleanup operations are stored under:
+
+```text
+~/.codex/logs/mac-dev-cleanup/operations/<operation-id>.json
+```
+
+Each manifest records original path, quarantine path, reason, risk, size, identity fingerprint, and restore status.
+
+The dashboard is a **single self-contained file** with zero runtime dependencies: no CDN, no `vendor/` libraries, no Alpine/Tailwind, no separate `dashboard_data.js` / `config_data.js` `<script src>` loads. `write_state()` reads `dashboard_template.html`, inlines the current scan state and config into the `/*__DATA__*/` / `/*__CONFIG__*/` tokens, and writes the final `dashboard.html`. This is mandatory: the WorkBuddy preview webview (and `file://`) fail to boot pages that depend on sibling script files or inlined frameworks, which previously caused the "仪表盘脚本加载失败" error.
+
+Constraints when editing the dashboard UI:
+- Keep it dependency-free vanilla HTML/CSS/JS. Do NOT reintroduce Alpine, Tailwind, CDN links, or external `vendor/` scripts.
+- Keep the two injection tokens `/*__DATA__*/null` and `/*__CONFIG__*/null` in the template (the build replaces them with JSON).
+- In offline (`file://`) mode the scan button and settings-save fall back to generating a CLI command / downloading `config.json`; the live POST API only activates when served by `web_server.py`.
+- Validate after UI changes with a headless render (jsdom) to confirm zero runtime errors and that all sections render.
+
+If the runtime fails to boot, the page must show a visible diagnostic instead of silently removing `x-cloak` and leaving inert `<template>` blocks.
+
+## Useful follow-up checks
+
+If the script reports large skipped targets, inspect manually before deleting:
+
+```bash
+ncdu ~
+ncdu ~/Library/Caches
+ncdu ~/Library/Logs
+ncdu ~/.cache
+```

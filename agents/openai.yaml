@@ -1,0 +1,7 @@
+interface:
+  display_name: "Mac Dev Cleanup"
+  short_description: "Scan and clean macOS developer caches"
+  default_prompt: "Use $mac-dev-cleanup to scan my Mac developer caches and generate an HTML cleanup report."
+policy:
+  allow_implicit_invocation: true
+

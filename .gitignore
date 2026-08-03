@@ -1,0 +1,17 @@
+# 运行时生成 / 本地状态（由 scan 自动生成，源码在 dashboard_template.html）
+state.json
+config.json
+config_data.js
+dashboard_data.js
+dashboard.html
+
+# 备份
+*.bak.*
+scripts/*.bak*
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 已弃用的 vendor（dashboard 已改为零依赖内联 vanilla，不再引用）
+vendor/
