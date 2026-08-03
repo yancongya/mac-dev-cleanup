@@ -5,248 +5,390 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="description" content="mac-dev-cleanup —— 一个由 AI 代理驱动的 macOS 开发者缓存清理 Skill：自然语言触发，自动扫描、分级并安全清理缓存、依赖与构建产物，带本地 Web 控制台、JSON 策略与可恢复的「先进废纸篓」清理。">
-<title>mac-dev-cleanup · macOS 开发者清理</title>
+<title>mac-dev-cleanup · AI Skill — 对 AI 说一句话，清出 Mac 里沉睡的空间</title>
 <style>
   :root{
-    --bg:#f7f8fa; --panel:#ffffff; --panel-2:#fbfbfd;
-    --text:#1c2230; --muted:#5b6472; --subtle:#8b94a3;
-    --border:#e6e8ee; --row-hover:#f4f6f9;
-    --accent:#4f46e5; --accent-2:#6366f1; --accent-inv:#ffffff;
-    --code-bg:#0f172a; --code-text:#e2e8f0; --code-sub:#94a3b8;
-    --green:#059669; --amber:#d97706; --rose:#e11d48;
-    --shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px rgba(16,24,40,.06);
+    --bg:#f4f2ec; --panel:#ffffff; --panel-2:#faf9f4;
+    --ink:#161b16; --muted:#4c574c; --subtle:#76816f;
+    --border:#e3e1d6; --border-strong:#cfccbf;
+    --accent:#15803d; --accent-ink:#ffffff; --accent-soft:rgba(21,128,61,.09);
+    --code-bg:#0d130e; --code-ink:#d9f2e2; --code-dim:#7fa68d; --code-line:rgba(255,255,255,.07);
+    --green:#15803d; --amber:#b45309; --rose:#be123c;
+    --mono:ui-monospace,SFMono-Regular,Menlo,"JetBrains Mono",Consolas,monospace;
+    --shadow:0 1px 2px rgba(22,27,22,.05),0 10px 30px rgba(22,27,22,.07);
+    --shadow-lg:0 2px 6px rgba(22,27,22,.06),0 24px 60px rgba(22,27,22,.12);
   }
   @media (prefers-color-scheme: dark){
     :root{
-      --bg:#0d1117; --panel:#161b22; --panel-2:#11161d;
-      --text:#e6edf3; --muted:#9aa6b2; --subtle:#6e7781;
-      --border:#242c38; --row-hover:#1b222c;
-      --accent:#6366f1; --accent-2:#818cf8; --accent-inv:#ffffff;
-      --code-bg:#010409; --code-text:#c9d1d9; --code-sub:#768390;
-      --green:#34d399; --amber:#fbbf24; --rose:#fb7185;
-      --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
+      --bg:#0a0d0a; --panel:#10140f; --panel-2:#0d110c;
+      --ink:#e7efe8; --muted:#9fb0a2; --subtle:#687a6e;
+      --border:#1e261f; --border-strong:#2c372e;
+      --accent:#34d399; --accent-ink:#052e1b; --accent-soft:rgba(52,211,153,.1);
+      --code-bg:#040704; --code-ink:#c9e9d5; --code-dim:#5f7a6a; --code-line:rgba(255,255,255,.06);
+      --green:#4ade80; --amber:#fbbf24; --rose:#fb7185;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+      --shadow-lg:0 2px 6px rgba(0,0,0,.45),0 24px 60px rgba(0,0,0,.5);
     }
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
   body{
-    margin:0; background:var(--bg); color:var(--text);
+    margin:0; background:var(--bg); color:var(--ink);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
-    font-size:15px; line-height:1.65; -webkit-text-size-adjust:100%;
+    font-size:16px; line-height:1.65; -webkit-text-size-adjust:100%;
   }
+  ::selection{background:var(--accent); color:var(--accent-ink)}
   a{color:var(--accent); text-decoration:none}
   a:hover{text-decoration:underline}
-  .wrap{max-width:980px; margin:0 auto; padding:0 20px}
-  header.nav{
-    position:sticky; top:0; z-index:50; backdrop-filter:saturate(180%) blur(10px);
-    background:color-mix(in srgb, var(--bg) 82%, transparent);
-    border-bottom:1px solid var(--border);
-  }
-  .nav-in{max-width:980px; margin:0 auto; padding:12px 20px; display:flex; align-items:center; gap:14px}
-  .brand{font-weight:700; letter-spacing:-.01em; display:flex; align-items:center; gap:8px}
-  .brand .dot{width:9px; height:9px; border-radius:50%; background:var(--accent)}
-  .skill-tag{font-size:11px; font-weight:700; color:var(--accent-inv); background:var(--accent); padding:1px 8px; border-radius:6px; margin-left:4px; letter-spacing:.02em; vertical-align:middle}
-  .badges{display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:20px}
-  .nav-links{margin-left:auto; display:flex; gap:18px; font-size:13.5px; color:var(--muted)}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+  code{font-family:var(--mono); font-size:.88em; background:var(--accent-soft); color:var(--accent); padding:.1em .35em; border-radius:5px}
+  .wrap{max-width:1080px; margin:0 auto; padding:0 22px}
+  .skip{position:absolute; left:-9999px; top:0; background:var(--accent); color:var(--accent-ink); padding:10px 16px; z-index:100; border-radius:0 0 8px 0}
+  .skip:focus{left:0; text-decoration:none}
+
+  /* ===== nav ===== */
+  .nav{position:sticky; top:0; z-index:50; border-bottom:1px solid var(--border);
+    background:color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter:saturate(160%) blur(12px); -webkit-backdrop-filter:saturate(160%) blur(12px)}
+  .nav-in{max-width:1080px; margin:0 auto; padding:0 22px; height:60px; display:flex; align-items:center; gap:12px}
+  .brand{display:flex; align-items:center; gap:9px; font-weight:800; letter-spacing:-.01em; font-size:15.5px; color:var(--ink)}
+  .brand:hover{text-decoration:none}
+  .brand .dot{width:9px; height:9px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .skill-tag{font-family:var(--mono); font-size:10.5px; font-weight:700; letter-spacing:.08em; color:var(--accent);
+    border:1px solid var(--accent); border-radius:5px; padding:2px 7px; text-transform:uppercase}
+  .nav-links{margin-left:auto; display:flex; align-items:center; gap:20px; font-size:13.5px}
   .nav-links a{color:var(--muted)}
-  @media (max-width:640px){ .nav-links{display:none} }
+  .nav-links a:hover{color:var(--ink); text-decoration:none}
+  .nav-gh{display:inline-flex; align-items:center; gap:7px; height:34px; padding:0 13px; border-radius:8px;
+    border:1px solid var(--border-strong); color:var(--ink) !important; font-weight:600; font-size:13px; background:var(--panel)}
+  .nav-gh:hover{border-color:var(--accent)}
+  @media (max-width:820px){ .nav-links a:not(.nav-gh){display:none} }
 
-  .hero{padding:64px 0 40px; text-align:center}
-  .eyebrow{font-size:12.5px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--accent)}
-  .hero h1{font-size:46px; line-height:1.05; margin:14px 0 10px; letter-spacing:-.02em; font-weight:800}
-  @media (max-width:640px){ .hero h1{font-size:34px} .hero{padding:44px 0 28px} }
-  .hero p.lead{max-width:640px; margin:0 auto; color:var(--muted); font-size:17px}
-  .cta{display:flex; gap:12px; justify-content:center; margin-top:26px; flex-wrap:wrap}
-  .btn{display:inline-flex; align-items:center; gap:8px; height:42px; padding:0 20px; border-radius:10px; font-weight:600; font-size:14.5px; border:1px solid var(--border); transition:all .15s}
+  /* ===== hero ===== */
+  .hero{padding:76px 0 56px}
+  .hero-grid{display:grid; grid-template-columns:1.04fr .96fr; gap:52px; align-items:center}
+  .eyebrow{display:inline-flex; align-items:center; gap:8px; font-family:var(--mono); font-size:12px; font-weight:600;
+    letter-spacing:.12em; text-transform:uppercase; color:var(--accent);
+    border:1px solid var(--border-strong); background:var(--panel); border-radius:999px; padding:6px 14px}
+  .eyebrow::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--accent)}
+  .hero h1{font-size:clamp(34px,5.6vw,58px); line-height:1.08; margin:22px 0 16px; letter-spacing:-.025em; font-weight:800}
+  .hero h1 em{font-style:normal; color:var(--accent)}
+  .lead{color:var(--muted); font-size:16.5px; max-width:52ch; margin:0}
+  .cta{display:flex; gap:12px; margin-top:28px; flex-wrap:wrap}
+  .btn{display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; padding:0 20px;
+    border-radius:10px; font-weight:700; font-size:14.5px; border:1px solid var(--border-strong);
+    cursor:pointer; font-family:inherit; transition:transform .15s,border-color .15s,background .15s}
   .btn:hover{text-decoration:none; transform:translateY(-1px)}
-  .btn-primary{background:var(--accent); color:var(--accent-inv); border-color:var(--accent)}
-  .btn-ghost{background:var(--panel); color:var(--text)}
+  .btn:active{transform:translateY(0)}
+  .btn-primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+  .btn-ghost{background:var(--panel); color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--accent)}
+  .stats{display:flex; gap:34px; margin-top:36px; flex-wrap:wrap}
+  .stat b{display:block; font-size:23px; font-weight:800; letter-spacing:-.02em}
+  .stat span{font-family:var(--mono); font-size:11.5px; color:var(--subtle); letter-spacing:.04em}
 
-  .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:40px 0 8px}
-  @media (max-width:640px){ .stats{grid-template-columns:repeat(2,1fr)} }
-  .stat{background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; text-align:center; box-shadow:var(--shadow)}
-  .stat b{display:block; font-size:24px; font-weight:800; letter-spacing:-.02em}
-  .stat span{font-size:12.5px; color:var(--subtle)}
+  /* terminal */
+  .term{background:var(--code-bg); border:1px solid rgba(255,255,255,.09); border-radius:16px; overflow:hidden;
+    box-shadow:var(--shadow-lg); font-family:var(--mono)}
+  .term-bar{display:flex; align-items:center; gap:7px; padding:12px 15px; border-bottom:1px solid var(--code-line)}
+  .term-bar i{width:11px; height:11px; border-radius:50%}
+  .term-bar i:nth-child(1){background:#ff5f57}.term-bar i:nth-child(2){background:#febc2e}.term-bar i:nth-child(3){background:#28c840}
+  .term-title{margin-left:auto; font-size:11px; color:var(--code-dim); letter-spacing:.06em}
+  .term-body{padding:18px 18px 20px; font-size:12.8px; line-height:1.95; color:var(--code-ink); overflow-x:auto}
+  .tl{opacity:0; animation:tlin .45s ease forwards; animation-delay:var(--d,0s); white-space:pre-wrap; word-break:break-all}
+  .tl.you{color:#8fd3ff}
+  @media (prefers-color-scheme: light){ .tl.you{color:#7cc4f5} }
+  .tl.dim{color:var(--code-dim)}
+  .tl.ok{color:#4ade80}
+  .tl .hl{color:#f0fdf4; font-weight:700}
+  @media (prefers-color-scheme: light){ .tl .hl{color:#ecfdf5} }
+  .cursor{display:inline-block; width:8px; height:15px; background:var(--accent); vertical-align:-2px; animation:blink 1.05s steps(1) infinite}
+  @keyframes tlin{from{opacity:0; transform:translateY(5px)} to{opacity:1; transform:none}}
+  @keyframes blink{50%{opacity:0}}
 
-  section{padding:46px 0; border-top:1px solid var(--border)}
-  section h2{font-size:26px; letter-spacing:-.01em; margin:0 0 6px; font-weight:800}
-  section .sub{color:var(--muted); margin:0 0 22px}
+  /* marquee */
+  .marquee{border-top:1px solid var(--border); border-bottom:1px solid var(--border); background:var(--panel-2);
+    overflow:hidden; padding:13px 0}
+  .m-track{display:flex; gap:10px; width:max-content; animation:mscroll 34s linear infinite}
+  .marquee:hover .m-track{animation-play-state:paused}
+  .chip{font-family:var(--mono); font-size:12px; color:var(--muted); border:1px solid var(--border-strong);
+    background:var(--panel); border-radius:999px; padding:4px 13px; white-space:nowrap}
+  @keyframes mscroll{to{transform:translateX(-50%)}}
 
-  .cards{display:grid; grid-template-columns:repeat(2,1fr); gap:14px}
-  @media (max-width:640px){ .cards{grid-template-columns:1fr} }
-  .card{background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 18px; box-shadow:var(--shadow)}
-  .card h3{margin:0 0 6px; font-size:15.5px; display:flex; align-items:center; gap:8px}
-  .card .ico{width:22px; height:22px; flex:0 0 auto; color:var(--accent)}
-  .card p{margin:0; color:var(--muted); font-size:13.8px}
+  /* sections */
+  section{padding:64px 0}
+  .sec-label{font-family:var(--mono); font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 10px}
+  section h2{font-size:clamp(24px,3.4vw,32px); letter-spacing:-.02em; margin:0 0 8px; font-weight:800}
+  .sub{color:var(--muted); margin:0 0 28px; max-width:64ch}
 
-  table{width:100%; border-collapse:collapse; font-size:13.8px; margin-top:4px}
-  thead th{text-align:left; font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--subtle); border-bottom:1px solid var(--border); padding:10px 12px}
-  tbody td{padding:11px 12px; border-bottom:1px solid var(--border); vertical-align:top}
-  tbody tr:hover{background:var(--row-hover)}
-  .tag{display:inline-flex; align-items:center; padding:1px 9px; border-radius:6px; font-size:11.5px; font-weight:700; white-space:nowrap}
-  .tag-safe{background:rgba(5,150,105,.14); color:var(--green)}
-  .tag-aggr{background:rgba(217,119,6,.15); color:var(--amber)}
-  .tag-man{background:rgba(225,29,72,.13); color:var(--rose)}
+  /* flow */
+  .flow{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+  .step{background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:22px; box-shadow:var(--shadow)}
+  .step .num{font-family:var(--mono); font-size:13px; font-weight:700; color:var(--accent); letter-spacing:.1em}
+  .step h3{margin:10px 0 6px; font-size:16.5px; font-weight:800}
+  .step p{margin:0; color:var(--muted); font-size:14px}
 
-  .code{position:relative; background:var(--code-bg); color:var(--code-text); border-radius:12px; padding:16px 18px; overflow:auto; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:13px; line-height:1.7; margin:12px 0}
-  .code .cm{color:var(--code-sub)}
-  .copy{position:absolute; top:10px; right:10px; height:28px; padding:0 10px; font-size:12px; border-radius:7px; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.06); color:#e2e8f0; cursor:pointer}
-  .copy:hover{background:rgba(255,255,255,.12)}
+  /* bento */
+  .bento{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+  .cell{background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:22px; box-shadow:var(--shadow);
+    transition:border-color .15s, transform .15s}
+  .cell:hover{border-color:var(--border-strong); transform:translateY(-2px)}
+  .cell.span2{grid-column:span 2}
+  .cell h3{margin:0 0 7px; font-size:15.5px; font-weight:800; display:flex; align-items:center; gap:9px}
+  .cell h3 .ico{width:20px; height:20px; flex:0 0 auto; color:var(--accent)}
+  .cell p{margin:0; color:var(--muted); font-size:13.8px}
+  .pipe{display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-top:14px; font-family:var(--mono); font-size:11.5px}
+  .pipe b{font-weight:600; color:var(--ink); background:var(--panel-2); border:1px solid var(--border-strong); border-radius:6px; padding:3px 9px}
+  .pipe span{color:var(--subtle)}
 
-  .note{background:var(--panel-2); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:10px; padding:14px 16px; color:var(--muted); font-size:13.8px}
-  .note b{color:var(--text)}
+  /* risk table */
+  .rtable{background:var(--panel); border:1px solid var(--border); border-radius:16px; overflow:hidden; box-shadow:var(--shadow)}
+  table{width:100%; border-collapse:collapse; font-size:14px}
+  thead th{text-align:left; font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--subtle); border-bottom:1px solid var(--border); padding:13px 16px; background:var(--panel-2)}
+  tbody td{padding:14px 16px; border-bottom:1px solid var(--border); vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--panel-2)}
+  .tag{display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; white-space:nowrap}
+  .tag::before{content:""; width:8px; height:8px; border-radius:50%}
+  .tag-safe{color:var(--green)} .tag-safe::before{background:var(--green)}
+  .tag-aggr{color:var(--amber)} .tag-aggr::before{background:var(--amber)}
+  .tag-man{color:var(--rose)} .tag-man::before{background:var(--rose)}
 
-  footer{padding:34px 0 50px; color:var(--subtle); font-size:13px; text-align:center; border-top:1px solid var(--border)}
-  footer a{color:var(--muted)}
-  .pill{display:inline-block; padding:2px 10px; border:1px solid var(--border); border-radius:999px; font-size:12px; color:var(--muted); margin:2px 4px 2px 0}
+  /* quick start */
+  .qs{display:grid; gap:14px}
+  .qs-step{background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:20px 22px; box-shadow:var(--shadow)}
+  .qs-step.hot{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft), var(--shadow)}
+  .qs-head{display:flex; align-items:baseline; gap:12px; margin-bottom:10px; flex-wrap:wrap}
+  .qs-head .num{font-family:var(--mono); font-size:12px; font-weight:700; color:var(--accent); letter-spacing:.1em}
+  .qs-head h3{margin:0; font-size:16px; font-weight:800}
+  .qs-head .hint{margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--subtle)}
+  .qs-note{margin:0 0 12px; color:var(--muted); font-size:13.8px}
+  .code{position:relative; background:var(--code-bg); color:var(--code-ink); border-radius:12px; padding:15px 17px;
+    overflow-x:auto; font-family:var(--mono); font-size:13px; line-height:1.8; border:1px solid rgba(255,255,255,.08)}
+  .code .cm{color:var(--code-dim)}
+  .copy{position:absolute; top:10px; right:10px; min-height:30px; padding:0 11px; font-size:12px; font-weight:600;
+    font-family:inherit; border-radius:7px; border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.07);
+    color:#e2e8f0; cursor:pointer; transition:background .15s}
+  .copy:hover{background:rgba(255,255,255,.14)}
+  .copy.done{border-color:#4ade80; color:#4ade80}
+
+  /* safety */
+  .note{background:var(--panel-2); border:1px solid var(--border); border-left:3px solid var(--accent);
+    border-radius:12px; padding:16px 18px; color:var(--muted); font-size:14px}
+  .note b{color:var(--ink)}
+  .pills{display:flex; flex-wrap:wrap; gap:8px; margin-top:16px}
+  .pill{font-family:var(--mono); font-size:11.5px; color:var(--muted); border:1px solid var(--border-strong);
+    background:var(--panel); border-radius:999px; padding:4px 12px}
+
+  footer{border-top:1px solid var(--border); padding:34px 0 46px; color:var(--subtle); font-size:13px}
+  .foot-in{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+  .foot-links{margin-left:auto; display:flex; gap:18px}
+  .foot-links a{color:var(--muted)}
+
+  /* responsive */
+  @media (max-width:960px){
+    .hero-grid{grid-template-columns:1fr; gap:36px}
+    .flow{grid-template-columns:1fr}
+    .bento{grid-template-columns:repeat(2,1fr)}
+    .cell.span2{grid-column:span 2}
+  }
+  @media (max-width:640px){
+    .hero{padding:52px 0 42px}
+    section{padding:46px 0}
+    .bento{grid-template-columns:1fr}
+    .cell.span2{grid-column:span 1}
+    .stats{gap:22px}
+    .qs-head .hint{margin-left:0; width:100%}
+  }
+  @media (prefers-reduced-motion: reduce){
+    html{scroll-behavior:auto}
+    .m-track{animation:none}
+    .marquee{overflow-x:auto}
+    .tl{opacity:1; animation:none}
+    .cursor{animation:none}
+    .btn,.cell{transition:none}
+  }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">跳到主要内容</a>
 
 <header class="nav">
   <div class="nav-in">
-    <span class="brand"><span class="dot"></span>mac-dev-cleanup<span class="skill-tag">Skill</span></span>
-    <nav class="nav-links">
+    <a class="brand" href="#top"><span class="dot"></span>mac-dev-cleanup<span class="skill-tag">AI Skill</span></a>
+    <nav class="nav-links" aria-label="页面导航">
       <a href="#features">特性</a>
+      <a href="#flow">工作方式</a>
       <a href="#risk">风险级别</a>
-      <a href="#usage">使用</a>
+      <a href="#quickstart">快速开始</a>
       <a href="#config">配置</a>
-      <a href="#safety">安全</a>
-      <a href="https://github.com/yancongya/mac-dev-cleanup">GitHub</a>
+      <a class="nav-gh" href="https://github.com/yancongya/mac-dev-cleanup">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
     </nav>
   </div>
 </header>
 
+<main id="main">
 <div class="wrap">
-  <section class="hero" style="border-top:none">
-    <div class="eyebrow">AI Skill · macOS Developer Cleanup</div>
-    <h1>mac-dev-cleanup</h1>
-    <p class="lead">一个由 AI 代理驱动的 macOS 开发者缓存清理 Skill。在 Codex / Trae 等代理里用自然语言说一句「清理我的开发缓存」，代理读取内置 <code>SKILL.md</code> 后调用 Python 脚本，自动完成扫描、分级与可恢复的清理——带本地 Web 控制台与 JSON 策略。</p>
-    <div class="badges">
-      <span class="pill">🤖 自然语言调用</span>
-      <span class="pill">Codex / Trae 兼容</span>
-      <span class="pill">SKILL.md 驱动</span>
-      <span class="pill">可恢复清理</span>
-    </div>
-    <div class="cta">
-      <a class="btn btn-primary" href="https://github.com/yancongya/mac-dev-cleanup">在 GitHub 查看</a>
-      <a class="btn btn-ghost" href="#usage">快速开始 ↓</a>
-    </div>
 
-    <div class="stats">
-      <div class="stat"><b>13</b><span>识别类别</span></div>
-      <div class="stat"><b>3</b><span>风险级别</span></div>
-      <div class="stat"><b>100%</b><span>可恢复清理</span></div>
-      <div class="stat"><b>0</b><span>运行时依赖</span></div>
+  <!-- ================= HERO ================= -->
+  <section class="hero" id="top" style="padding-top:0">
+    <div class="hero-grid">
+      <div>
+        <span class="eyebrow">AI Skill · Codex / Trae 兼容</span>
+        <h1>对 AI 说<em>一句话</em>，<br>清出 Mac 里沉睡的空间。</h1>
+        <p class="lead">mac-dev-cleanup 是一个由 AI 代理驱动的 macOS 开发者缓存清理 Skill：代理读取内置 <code>SKILL.md</code> 后调用 Python 脚本，自动扫描、分级并安全清理——真实清理先进废纸篓，随时可还原。</p>
+        <div class="cta">
+          <button class="btn btn-primary copy-cta" data-text="请帮我把这个 skill 快速下载并安装使用：把仓库 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描作为安装验证，告诉我能清理多少空间、有哪些需要我确认的项目。如果缺少 Python 或权限不足，也请说明。">复制安装 Prompt</button>
+          <a class="btn btn-ghost" href="https://github.com/yancongya/mac-dev-cleanup">GitHub 仓库</a>
+        </div>
+        <div class="stats" role="list">
+          <div class="stat" role="listitem"><b>13</b><span>识别类别</span></div>
+          <div class="stat" role="listitem"><b>3</b><span>风险级别</span></div>
+          <div class="stat" role="listitem"><b>100%</b><span>可恢复清理</span></div>
+          <div class="stat" role="listitem"><b>0</b><span>运行时依赖</span></div>
+        </div>
+      </div>
+
+      <div class="term" role="img" aria-label="终端演示：AI 代理克隆 Skill 并运行只读扫描，报告 77 项候选、7.3G 可清理、15.5G 待确认">
+        <div class="term-bar"><i></i><i></i><i></i><span class="term-title">agent — zsh</span></div>
+        <div class="term-body">
+          <div class="tl you" style="--d:.15s">$ 你 ➜ 请帮我把这个 skill 快速下载并安装使用：</div>
+          <div class="tl you" style="--d:.4s">&nbsp;&nbsp;&nbsp;&nbsp;克隆 yancongya/mac-dev-cleanup 到 ~/.codex/skills/</div>
+          <div class="tl dim" style="--d:.85s">→ git clone … ~/.codex/skills/mac-dev-cleanup</div>
+          <div class="tl dim" style="--d:1.15s">→ python3 scripts/mac_dev_cleanup.py scan</div>
+          <div class="tl ok" style="--d:1.6s">✓ 扫描完成（只读，未删除任何文件）</div>
+          <div class="tl" style="--d:1.9s">&nbsp;&nbsp;<span class="hl">77</span> 项候选 · <span class="hl">7.3G</span> 可清理 · <span class="hl">15.5G</span> 待确认</div>
+          <div class="tl dim" style="--d:2.2s">&nbsp;&nbsp;manual 级别永不自动删除，等你逐条确认</div>
+          <div class="tl" style="--d:2.5s">$ <span class="cursor" aria-hidden="true"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ================= MARQUEE ================= -->
+<div class="marquee" aria-label="可识别的 13 类清理目标">
+  <div class="m-track">
+    <span class="chip">global-cache</span><span class="chip">app-cache</span><span class="chip">app-log</span><span class="chip">project-generated</span><span class="chip">log-file</span><span class="chip">temp-browser</span><span class="chip">temp-file</span><span class="chip">test-artifact</span><span class="chip">screenshot</span><span class="chip">large-dir</span><span class="chip">large-file</span><span class="chip">stale-deps</span><span class="chip">stale-model</span>
+    <span class="chip" aria-hidden="true">global-cache</span><span class="chip" aria-hidden="true">app-cache</span><span class="chip" aria-hidden="true">app-log</span><span class="chip" aria-hidden="true">project-generated</span><span class="chip" aria-hidden="true">log-file</span><span class="chip" aria-hidden="true">temp-browser</span><span class="chip" aria-hidden="true">temp-file</span><span class="chip" aria-hidden="true">test-artifact</span><span class="chip" aria-hidden="true">screenshot</span><span class="chip" aria-hidden="true">large-dir</span><span class="chip" aria-hidden="true">large-file</span><span class="chip" aria-hidden="true">stale-deps</span><span class="chip" aria-hidden="true">stale-model</span>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- ================= FLOW ================= -->
+  <section id="flow">
+    <p class="sec-label">// 01 — 工作方式</p>
+    <h2>你说一句话，剩下的交给代理</h2>
+    <p class="sub">不需要记任何命令。Skill 的意义就在于：意图由你表达，执行由代理与脚本完成。</p>
+    <div class="flow">
+      <div class="step">
+        <span class="num">01</span>
+        <h3>自然语言下达指令</h3>
+        <p>在 Codex / Trae 等代理对话里说一句「清理我的开发缓存」，或粘贴快速开始里的安装 Prompt。</p>
+      </div>
+      <div class="step">
+        <span class="num">02</span>
+        <h3>代理读取 SKILL.md</h3>
+        <p>代理据此理解何时调用、如何调用，以及不可逾越的安全边界（个人文件、源码、.git 永不触碰）。</p>
+      </div>
+      <div class="step">
+        <span class="num">03</span>
+        <h3>脚本执行并报告</h3>
+        <p>内置 Python 脚本完成扫描、风险分级与清理；真实清理先进废纸篓，附操作清单可一键还原。</p>
+      </div>
     </div>
   </section>
 
+  <!-- ================= FEATURES ================= -->
   <section id="features">
-    <h2>特性</h2>
-    <p class="sub">由 AI 代理调用，一个脚本搞定从「发现占用」到「安全回收」的完整闭环。</p>
-    <div class="cards">
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 7.5 12 12l9-4.5z"/><path d="M3 12l9 4.5L21 12"/><path d="M3 16.5 12 21l9-4.5"/></svg>AI 代理驱动的 Skill</h3>
-        <p>本仓库就是一个 Skill：内含 <code>SKILL.md</code> 清单。你用自然语言下达指令，代理读取 SKILL.md 后调用内置 Python 脚本，自动扫描、分级并清理——无需记忆任何命令。</p>
+    <p class="sec-label">// 02 — 特性</p>
+    <h2>为「安全地放权给 AI」而设计</h2>
+    <p class="sub">AI 负责省事，工程化负责兜底：每一层都有明确的安全边界。</p>
+    <div class="bento">
+      <div class="cell span2">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 7.5 12 12l9-4.5z"/><path d="M3 12l9 4.5L21 12"/><path d="M3 16.5 12 21l9-4.5"/></svg>AI 代理驱动的 Skill</h3>
+        <p>本仓库就是一个 Skill：内含 <code>SKILL.md</code> 清单。你用自然语言下达指令，代理读取清单后调用内置 Python 脚本，自动扫描、分级并清理——无需记忆任何命令。</p>
+        <div class="pipe" aria-hidden="true"><b>你 · 一句话</b><span>→</span><b>AI 代理</b><span>→</span><b>SKILL.md</b><span>→</span><b>Python 脚本</b><span>→</span><b>报告 / 废纸篓</b></div>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7L9 4H5a2 2 0 0 0-2 2z"/></svg>广覆盖识别</h3>
-        <p>识别 13 类目标：全局缓存、应用缓存/日志、项目生成物、测试产物、截图、大目录/大文件、stale 依赖与模型等。</p>
+      <div class="cell">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M8 21h8"/></svg>本地 Web 控制台</h3>
+        <p>自包含零依赖仪表盘：查看状态、改配置、触发只读扫描；小屏自动切换卡片视图，无横向滚动。</p>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 8 10 8 10s8-5 8-10V6z"/></svg>三级风险模型</h3>
-        <p><code>safe</code> / <code>aggressive</code> / <code>manual</code>。manual 项（截图、大文件、模型等）永不自动删除，仅报告待人工确认。</p>
+      <div class="cell">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7L9 4H5a2 2 0 0 0-2 2z"/></svg>广覆盖识别</h3>
+        <p>识别 13 类目标：全局/应用缓存与日志、项目生成物、测试产物、截图、大目录/大文件、stale 依赖与模型。</p>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Stale 项目识别</h3>
-        <p>以「源码 mtime + 最后 git commit」判定项目闲置（默认 90 天），自动把闲置项目的依赖标为 stale-deps、模型标为 stale-model。</p>
+      <div class="cell">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 4 6v6c0 5 8 10 8 10s8-5 8-10V6z"/></svg>三级风险模型</h3>
+        <p><code>safe</code> / <code>aggressive</code> / <code>manual</code>。manual 项（截图、大文件、模型等）永不自动删除，仅报告待你确认。</p>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>先进入废纸篓</h3>
-        <p>真实清理把候选移入 <code>~/.Trash/mac-dev-cleanup/&lt;op-id&gt;/</code>，写入操作清单，可一键还原。绝不使用裸 <code>rm</code>。</p>
+      <div class="cell">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Stale 项目识别</h3>
+        <p>以「源码 mtime + 最后 git commit」判定项目闲置（默认 90 天），自动标记 stale-deps / stale-model。</p>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M3 20h3M9 20a3 3 0 0 0 6 0M14 8h7M3 8h6"/></svg>配置化</h3>
-        <p>单一 <code>config.json</code> 管理阈值、扫描根、排除项；Web 设置面板可视化编辑并原子写入，未知键会被拒绝。</p>
+      <div class="cell">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>先进入废纸篓</h3>
+        <p>真实清理把候选移入 <code>~/.Trash/mac-dev-cleanup/&lt;op-id&gt;/</code> 并写入操作清单，可一键还原，绝不使用裸 <code>rm</code>。</p>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M8 21h8"/></svg>本地 Web 控制台</h3>
-        <p>自包含零依赖仪表盘：查看状态、改配置、触发只读扫描。小屏自动切换卡片视图，无横向滚动。</p>
+      <div class="cell">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M3 20h3M9 20a3 3 0 0 0 6 0M14 8h7M3 8h6"/></svg>配置化</h3>
+        <p>单一 <code>config.json</code> 管理阈值、扫描根、排除项；Web 设置面板可视化编辑并原子写入。</p>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6m0 0 3-3m-3 3L9 5"/><circle cx="12" cy="14" r="7"/></svg>APFS 感知</h3>
+      <div class="cell">
+        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v6m0 0 3-3m-3 3L9 5"/><circle cx="12" cy="14" r="7"/></svg>APFS 感知</h3>
         <p>清理后空间未必立即释放——APFS 快照会占位。文档说明重启释放机制与正确验证姿势（<code>df -h ~</code>）。</p>
       </div>
-      <div class="card">
-        <h3><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v5c0 5 8 10 8 10s8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>安全边界硬编码</h3>
-        <p>个人媒体/文档/源代码/<code>.git</code>/lockfile 受保护；配置只能「加保护」，无法削弱系统级安全边界。</p>
+    </div>
+  </section>
+
+  <!-- ================= RISK ================= -->
+  <section id="risk">
+    <p class="sec-label">// 03 — 风险级别</p>
+    <h2>先扫描，再按级别分级处理</h2>
+    <p class="sub">清理前务必先跑只读扫描；不同模式对各级别的处理策略不同。</p>
+    <div class="rtable">
+      <table>
+        <thead><tr><th>级别</th><th>行为</th><th>典型示例</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag tag-safe">safe</span></td><td>clean-safe 与 clean-aggressive（加 <code>--apply</code>）均删除</td><td>__pycache__、pip/npm/uv 缓存、playwright 临时文件、项目日志、覆盖率</td></tr>
+          <tr><td><span class="tag tag-aggr">aggressive</span></td><td>仅 clean-aggressive（加 <code>--apply</code>）删除</td><td>node_modules、.venv、build、dist、Codex/Trae 缓存、大应用缓存/日志、stale-deps</td></tr>
+          <tr><td><span class="tag tag-man">manual</span></td><td>任何模式都<b>不自动删除</b>，报告中标为「待确认」</td><td>截图、大目录、归档、dump、个人大文件、stale-model</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= QUICK START ================= -->
+  <section id="quickstart">
+    <p class="sec-label">// 04 — 快速开始</p>
+    <h2>一条 Prompt，跑完完整链路</h2>
+    <p class="sub">复制给 AI 代理，即可自动完成「下载 → 安装 → 只读扫描验证」；也可手动安装。</p>
+    <div class="qs">
+      <div class="qs-step hot">
+        <div class="qs-head"><span class="num">STEP 0 · 推荐</span><h3>快速下载并使用 Skill</h3><span class="hint">复制整段 → 粘贴给 AI 代理</span></div>
+        <p class="qs-note">代理会自动：克隆仓库 → 安装到 skills 目录 → 跑一次只读扫描做安装验证 → 向你汇报结果。</p>
+        <div class="code"><button class="copy" aria-label="复制安装 Prompt" data-text="请帮我把这个 skill 快速下载并安装使用：把仓库 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描作为安装验证，告诉我能清理多少空间、有哪些需要我确认的项目。如果缺少 Python 或权限不足，也请说明。">复制</button>请帮我把这个 skill 快速下载并安装使用：把仓库 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描作为安装验证，告诉我能清理多少空间、有哪些需要我确认的项目。如果缺少 Python 或权限不足，也请说明。</div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-head"><span class="num">STEP 1</span><h3>手动安装</h3><span class="hint">复制到终端执行</span></div>
+        <div class="code"><button class="copy" aria-label="复制安装命令" data-text="git clone https://github.com/yancongya/mac-dev-cleanup.git ~/.codex/skills/mac-dev-cleanup">复制</button>git clone https://github.com/yancongya/mac-dev-cleanup.git ~/.codex/skills/mac-dev-cleanup</div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-head"><span class="num">STEP 2</span><h3>调用 Skill</h3><span class="hint">安装后 · 复制给 AI 代理</span></div>
+        <div class="code"><button class="copy" aria-label="复制调用 Prompt" data-text="用 mac-dev-cleanup 这个 skill 帮我扫描并清理开发缓存：先只做只读扫描，再列出可清理项让我确认后再执行。">复制</button>用 mac-dev-cleanup 这个 skill 帮我扫描并清理开发缓存：先只做只读扫描，再列出可清理项让我确认后再执行。</div>
       </div>
     </div>
   </section>
 
-  <section id="risk">
-    <h2>风险级别</h2>
-    <p class="sub">清理前务必先扫描；不同模式对各级别的处理不同。</p>
-    <table>
-      <thead><tr><th>级别</th><th>行为</th><th>典型示例</th></tr></thead>
-      <tbody>
-        <tr><td><span class="tag tag-safe">safe</span></td><td>clean-safe 与 clean-aggressive（加 <code>--apply</code>）均删除</td><td>__pycache__、pip/npm/uv 缓存、playwright 临时文件、项目日志、覆盖率</td></tr>
-        <tr><td><span class="tag tag-aggr">aggressive</span></td><td>仅 clean-aggressive（加 <code>--apply</code>）删除</td><td>node_modules、.venv、build、dist、Codex/Trae 缓存、大应用缓存/日志、stale-deps</td></tr>
-        <tr><td><span class="tag tag-man">manual</span></td><td>任何模式都<b>不自动删除</b>，报告中标为「待确认」</td><td>截图、大目录、归档、dump、个人大文件、stale-model</td></tr>
-      </tbody>
-    </table>
-  </section>
-
-  <section id="usage">
-    <h2>快速开始 / 使用</h2>
-    <p class="sub">这是一个 AI Skill。把下面任一 Prompt 复制给 AI 代理，即可自动完成「下载 → 安装 → 运行验证」的完整链路。</p>
-
-    <div class="note" style="margin-bottom:16px"><b>推荐 · 步骤 0（复制给 AI，一键完成）</b>：直接用自然语言让代理把 Skill 克隆到本地，并跑一次只读扫描做安装验证——无需手动敲命令。</div>
-
-    <p style="font-weight:600;margin:6px 0 4px">步骤 0 · 快速下载并使用 Skill（复制整段给 AI 代理）</p>
-    <div class="code"><button class="copy" data-copy>复制</button>请帮我把这个 skill 快速下载并安装使用：把仓库 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描作为安装验证，告诉我能清理多少空间、有哪些需要我确认的项目。如果缺少 Python 或权限不足，也请说明。</div>
-
-    <p style="font-weight:600;margin:14px 0 4px">步骤 1 · 手动安装（复制到终端执行）</p>
-    <div class="code"><button class="copy" data-copy>复制</button>git clone https://github.com/yancongya/mac-dev-cleanup.git ~/.codex/skills/mac-dev-cleanup</div>
-
-    <p style="font-weight:600;margin:14px 0 4px">步骤 2 · 调用 Skill（安装后，复制这句给 AI 代理）</p>
-    <div class="code"><button class="copy" data-copy>复制</button>用 mac-dev-cleanup 这个 skill 帮我扫描并清理开发缓存：先只做只读扫描，再列出可清理项让我确认后再执行。</div>
-
-    <h3 style="margin:26px 0 6px;font-size:18px;font-weight:800">完整命令参考</h3>
-    <p class="sub" style="margin-bottom:14px">纯 Python 标准库，无需 pip 安装第三方包。</p>
-
-    <p style="font-weight:600;margin-bottom:4px">1 · 获取</p>
-    <div class="code"><button class="copy" data-copy>复制</button><span class="cm"># 克隆仓库（或把技能目录拷到本地）</span>
-git clone https://github.com/yancongya/mac-dev-cleanup.git
-<span class="cm"># 技能默认位于：</span>
-<span class="cm"># ~/.codex/skills/mac-dev-cleanup/</span></div>
-
-    <p style="font-weight:600;margin-bottom:4px">2 · 扫描（只读，不清理）</p>
-    <div class="code"><button class="copy" data-copy>复制</button>python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan</div>
-
-    <p style="font-weight:600;margin-bottom:4px">3 · 安全清理（先试跑，再真正执行）</p>
-    <div class="code"><button class="copy" data-copy>复制</button><span class="cm"># 干跑：只报告会删什么</span>
-python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe
-<span class="cm"># 真正清理：移入废纸篓（可恢复）</span>
-python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe --apply</div>
-
-    <p style="font-weight:600;margin-bottom:4px">4 · 还原 / 激进清理</p>
-    <div class="code"><button class="copy" data-copy>复制</button><span class="cm"># 列出 / 还原操作</span>
-python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --list-operations
-python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --restore &lt;operation-id&gt;
-<span class="cm"># 激进模式（含项目依赖/构建目录）</span>
-python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-aggressive --apply</div>
-
-    <p style="font-weight:600;margin-bottom:4px">5 · 本地 Web 控制台</p>
-    <div class="code"><button class="copy" data-copy>复制</button>python3 ~/.codex/skills/mac-dev-cleanup/scripts/web_server.py
-<span class="cm"># 浏览器打开：</span>
-<span class="cm"># http://127.0.0.1:8765/dashboard.html</span></div>
-  </section>
-
+  <!-- ================= CONFIG ================= -->
   <section id="config">
-    <h2>配置（config.json）</h2>
-    <p class="sub">用户可调项集中在 <code>config.json</code>；脚本每次运行读取，缺失则写入默认值。</p>
-    <div class="code"><button class="copy" data-copy>复制</button>{
+    <p class="sec-label">// 05 — 配置</p>
+    <h2>单一 config.json，代理与 Web 共用</h2>
+    <p class="sub">用户可调项集中在 <code>config.json</code>；脚本每次运行读取，缺失则写入默认值；安全边界硬编码、不可被配置削弱。</p>
+    <div class="code"><button class="copy" aria-label="复制配置示例">复制</button>{
   "stale_days": 90,
   "thresholds": {
     "app_cache_min_mb": 50,
@@ -257,27 +399,35 @@ python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-aggress
   "scan_roots": ["~/工作/开发", "~/Desktop/OH-WorkSpace", "~/Documents", "~/Developer", "~/dev", "~/workspace"],
   "personal_roots": ["~/Desktop", "~/Pictures", "~/Downloads"],
   "exclude_paths": [],
-  "exclude_globs": [],
   "protected_projects": [],
-  "protected_categories": [],
   "trash_retention_days": 30
 }</div>
-    <div class="code"><button class="copy" data-copy>复制</button><span class="cm"># 查看当前配置</span>
+    <div class="code" style="margin-top:12px"><button class="copy" aria-label="复制常用命令" data-text="python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe --apply
 python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --show-config
-<span class="cm"># 写入配置（校验后原子替换）</span>
-echo '{"stale_days":30}' | python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --set-config</div>
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/web_server.py">复制</button><span class="cm"># 只读扫描</span>
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan
+<span class="cm"># 安全清理：先干跑，再 --apply 真清理（进废纸篓）</span>
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe --apply
+<span class="cm"># 查看配置 / 启动本地 Web 控制台</span>
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py --show-config
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/web_server.py</div>
   </section>
 
+  <!-- ================= SAFETY ================= -->
   <section id="safety">
-    <h2>安全须知</h2>
-    <p class="sub">清理有风险，请先在废纸篓里留存一段时间再清空。</p>
+    <p class="sec-label">// 06 — 安全须知</p>
+    <h2>清理有风险，兜底要到位</h2>
+    <p class="sub">请先在废纸篓里留存一段时间再清空；受保护范围永不被扫描或删除。</p>
     <div class="note">
-      <b>APFS 快照占位：</b>macOS 删除大文件后 <code>df</code> 可能不变——系统更新快照 <code>com.apple.os.update-*</code> 与 Time Machine 本地快照会占用容器空间。<b>重启是最可靠的释放方式</b>，不要因为 <code>df</code> 没变就以为清理失败。验证请用 <code>df -h ~</code>（而非 <code>df /</code>，后者在 modern macOS 上是只读系统卷）。
+      <b>APFS 快照占位：</b>macOS 删除大文件后 <code>df</code> 可能不变——系统更新快照 <code>com.apple.os.update-*</code> 与 Time Machine 本地快照会占用容器空间。<b>重启是最可靠的释放方式</b>，不要因为 <code>df</code> 没变就以为清理失败。验证请用 <code>df -h ~</code>（而非 <code>df /</code>，后者在现代 macOS 上是只读系统卷）。
     </div>
-    <p style="margin-top:16px;color:var(--muted);font-size:13.8px">
+    <p style="margin:16px 0 0;color:var(--muted);font-size:14px">
       受保护、永不被扫描/删除的范围：个人媒体与文档、应用支持数据、源代码、<code>.git</code>、包 lockfile、用户自建资源；项目遍历时跳过 <code>.git/.svn/.hg</code>；系统目录（Application Support、Containers、Mobile Documents、Music、Movies、Trash 等）不进入。
     </p>
-    <div style="margin-top:14px">
+    <div class="pills">
       <span class="pill">扫描根：项目目录递归</span>
       <span class="pill">个人根：仅顶层（截图/大文件）</span>
       <span class="pill">应用根：仅 ≥50M 缓存 / ≥10M 日志</span>
@@ -285,25 +435,44 @@ echo '{"stale_days":30}' | python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_d
     </div>
   </section>
 </div>
+</main>
 
 <footer>
-  <div>mac-dev-cleanup · 一个 macOS 开发者缓存清理 skill</div>
-  <div style="margin-top:6px">
-    <a href="https://github.com/yancongya/mac-dev-cleanup">GitHub 仓库</a> ·
-    <a href="https://github.com/yancongya/mac-dev-cleanup/blob/main/SKILL.md">SKILL.md</a> ·
-    <a href="https://github.com/yancongya/mac-dev-cleanup/blob/main/CHANGELOG.md">更新历史</a>
+  <div class="wrap foot-in">
+    <span>mac-dev-cleanup · 一个由 AI 代理驱动的 macOS 开发者缓存清理 Skill</span>
+    <span class="foot-links">
+      <a href="https://github.com/yancongya/mac-dev-cleanup">GitHub</a>
+      <a href="https://github.com/yancongya/mac-dev-cleanup/blob/main/SKILL.md">SKILL.md</a>
+      <a href="https://github.com/yancongya/mac-dev-cleanup/blob/main/README.md">README</a>
+      <a href="https://github.com/yancongya/mac-dev-cleanup/blob/main/CHANGELOG.md">更新历史</a>
+    </span>
   </div>
-  <div style="margin-top:6px;color:var(--subtle)">零运行时依赖 · 自包含静态页 · 浅/深色自适应</div>
 </footer>
 
 <script>
-  document.querySelectorAll('.copy').forEach(function(btn){
+  document.querySelectorAll('.copy, .copy-cta').forEach(function(btn){
     btn.addEventListener('click', function(){
-      var code = btn.parentElement.innerText.replace(/^复制\s*/, '');
-      navigator.clipboard.writeText(code).then(function(){
-        var t = btn.textContent; btn.textContent = '已复制';
-        setTimeout(function(){ btn.textContent = t; }, 1200);
-      }).catch(function(){});
+      var text = btn.getAttribute('data-text');
+      if(!text){ text = btn.parentElement.innerText.replace(/^复制\s*/, ''); }
+      var done = function(){
+        if(btn.classList.contains('copy-cta')){
+          var t0 = btn.textContent; btn.textContent = '已复制，去粘贴给 AI';
+          setTimeout(function(){ btn.textContent = t0; }, 1600);
+        } else {
+          btn.classList.add('done'); btn.textContent = '已复制';
+          setTimeout(function(){ btn.classList.remove('done'); btn.textContent = '复制'; }, 1400);
+        }
+      };
+      var fallback = function(){
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch(e){}
+        document.body.removeChild(ta);
+      };
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done).catch(fallback);
+      } else { fallback(); }
     });
   });
 </script>
