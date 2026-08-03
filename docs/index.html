@@ -199,18 +199,18 @@
 
   <section id="usage">
     <h2>快速开始 / 使用</h2>
-    <p class="sub">这是一个 AI Skill：装好后用自然语言让代理调用即可。下面三段都可一键复制。</p>
+    <p class="sub">这是一个 AI Skill。把下面任一 Prompt 复制给 AI 代理，即可自动完成「下载 → 安装 → 运行验证」的完整链路。</p>
 
-    <div class="note" style="margin-bottom:16px"><b>三步上手：</b>① 把仓库克隆到 <code>~/.codex/skills/</code> 完成安装 → ② 复制一句 Prompt 粘贴给 AI 代理调用 → ③ 或让代理替你安装并扫描。</div>
+    <div class="note" style="margin-bottom:16px"><b>推荐 · 步骤 0（复制给 AI，一键完成）</b>：直接用自然语言让代理把 Skill 克隆到本地，并跑一次只读扫描做安装验证——无需手动敲命令。</div>
 
-    <p style="font-weight:600;margin:6px 0 4px">① 安装 Skill（复制到终端执行）</p>
+    <p style="font-weight:600;margin:6px 0 4px">步骤 0 · 快速下载并使用 Skill（复制整段给 AI 代理）</p>
+    <div class="code"><button class="copy" data-copy>复制</button>请帮我把这个 skill 快速下载并安装使用：把仓库 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描作为安装验证，告诉我能清理多少空间、有哪些需要我确认的项目。如果缺少 Python 或权限不足，也请说明。</div>
+
+    <p style="font-weight:600;margin:14px 0 4px">步骤 1 · 手动安装（复制到终端执行）</p>
     <div class="code"><button class="copy" data-copy>复制</button>git clone https://github.com/yancongya/mac-dev-cleanup.git ~/.codex/skills/mac-dev-cleanup</div>
 
-    <p style="font-weight:600;margin:14px 0 4px">② 复制一句 Prompt 调用（粘贴给你的 AI 代理）</p>
+    <p style="font-weight:600;margin:14px 0 4px">步骤 2 · 调用 Skill（安装后，复制这句给 AI 代理）</p>
     <div class="code"><button class="copy" data-copy>复制</button>用 mac-dev-cleanup 这个 skill 帮我扫描并清理开发缓存：先只做只读扫描，再列出可清理项让我确认后再执行。</div>
-
-    <p style="font-weight:600;margin:14px 0 4px">③ 或让 AI 帮你安装 + 调用（整段复制给代理）</p>
-    <div class="code"><button class="copy" data-copy>复制</button>请把 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描，并告诉我能清理多少空间、有哪些需要我确认的項目。</div>
 
     <h3 style="margin:26px 0 6px;font-size:18px;font-weight:800">完整命令参考</h3>
     <p class="sub" style="margin-bottom:14px">纯 Python 标准库，无需 pip 安装第三方包。</p>

@@ -18,19 +18,21 @@
 
 ## 快速开始
 
-1. **安装 Skill**（终端执行，把仓库放到代理的 skills 目录）：
+**步骤 0（推荐）· 一键下载并使用**：把下面这句直接复制给 AI 代理，它会自动完成「克隆仓库 → 安装到 skills 目录 → 跑只读扫描做安装验证」的完整链路：
+
+> 请帮我把这个 skill 快速下载并安装使用：把仓库 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描作为安装验证，告诉我能清理多少空间、有哪些需要我确认的项目。如果缺少 Python 或权限不足，也请说明。
+
+如需手动操作：
+
+1. **手动安装 Skill**（终端执行，把仓库放到代理的 skills 目录）：
 
    ```bash
    git clone https://github.com/yancongya/mac-dev-cleanup.git ~/.codex/skills/mac-dev-cleanup
    ```
 
-2. **调用 Skill**：在你的 AI 代理对话里直接说（可整句复制粘贴）：
+2. **调用 Skill**（安装后，在 AI 代理对话里直接说，可整句复制粘贴）：
 
    > 用 mac-dev-cleanup 这个 skill 帮我扫描并清理开发缓存：先只做只读扫描，再列出可清理项让我确认后再执行。
-
-   或者更省事——让代理替你安装并扫描：
-
-   > 请把 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描，告诉我能清理多少空间、有哪些需要我确认的项目。
 
 ## 能力
 
