@@ -14,6 +14,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,10 @@ HISTORY_PATH = LOG_DIR / "history.jsonl"
 OPERATIONS_DIR = LOG_DIR / "operations"
 TRASH_ROOT = HOME / ".Trash" / "mac-dev-cleanup"
 DASHBOARD_PATH = Path(__file__).resolve().parents[1] / "dashboard.html"
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+# MDC_CONFIG lets tests (and alternate setups) point at a different policy file
+# without touching the installed config.json.
+CONFIG_PATH = Path(os.environ["MDC_CONFIG"]).expanduser() if os.environ.get("MDC_CONFIG") \
+    else Path(__file__).resolve().parents[1] / "config.json"
 
 # Default config written to config.json on first run. Web dashboard edits this
 # file; the script reads it on every run. System-level safety sets
@@ -62,11 +66,60 @@ DEFAULT_CONFIG = {
     "protected_projects": [],
     "protected_categories": [],
     "trash_retention_days": 30,
+    "wechat_media_keep_months": 1,
+    # Build by-product rules are user policy, not a hard safety boundary, so
+    # they are configurable. Everything here is ADDITIVE on top of the built-in
+    # SAFE_DIR_NAMES / AGGRESSIVE_DIR_NAMES sets, which can never be shrunk.
+    "build_artifacts": {
+        # Directory names appended to the built-in safe / aggressive sets.
+        "safe_dirs": [".vite-temp"],
+        "aggressive_dirs": ["dist-ssr"],
+        # Filename globs (fnmatch, matched against the basename) for throwaway
+        # files a bundler writes on every run.
+        "safe_file_globs": ["vite.config.*.timestamp-*.mjs", "vite.config.*.timestamp-*.js"],
+        # Tauri workspace shapes: <tauri_parent>/<gen_dir> is safe,
+        # <tauri_parent>/<build_dir> is aggressive. Anchored on the parent so a
+        # generic name like `gen` can never match an unrelated directory.
+        "tauri_parents": ["src-tauri"],
+        "tauri_gen_dirs": ["gen"],
+        "tauri_build_dirs": ["target"],
+        # Packaged installers are deliverables: when one of these appears under
+        # a Tauri build dir, the whole tree is demoted to `manual`. Falling back
+        # to the built-in list when emptied keeps that protection unbreakable.
+        "bundle_markers": [".dmg", ".app", ".msi", ".exe", ".deb", ".rpm", ".AppImage"],
+    },
 }
+
+BUILD_ARTIFACT_KEYS = tuple(DEFAULT_CONFIG["build_artifacts"])
+# Protection that must survive any config edit.
+FALLBACK_BUNDLE_MARKERS = tuple(DEFAULT_CONFIG["build_artifacts"]["bundle_markers"])
 
 
 def _expand(path_str: str) -> Path:
     return Path(path_str).expanduser()
+
+
+def _validate_build_artifacts(value: object) -> dict:
+    """Normalize the `build_artifacts` policy block.
+
+    Every field is additive user policy, so the only hard rule is shape: lists
+    of non-empty strings, unknown keys rejected. Emptying `bundle_markers`
+    falls back to the built-in list — that field is protection, not preference.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("build_artifacts must be an object")
+    unknown = set(value) - set(BUILD_ARTIFACT_KEYS)
+    if unknown:
+        raise ValueError(f"unknown build_artifacts key: {sorted(unknown)[0]}")
+    merged = {k: list(v) for k, v in DEFAULT_CONFIG["build_artifacts"].items()}
+    for key, raw in value.items():
+        if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+            raise ValueError(f"build_artifacts.{key} must be an array of strings")
+        cleaned = list(dict.fromkeys(v.strip() for v in raw if v.strip()))
+        if key == "bundle_markers" and not cleaned:
+            cleaned = list(FALLBACK_BUNDLE_MARKERS)
+        merged[key] = cleaned
+    return merged
 
 
 def load_config() -> dict:
@@ -76,8 +129,10 @@ def load_config() -> dict:
         try:
             loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             for k, v in loaded.items():
-                if k == "thresholds" and isinstance(v, dict):
-                    cfg["thresholds"].update(v)
+                if k in ("thresholds", "build_artifacts") and isinstance(v, dict):
+                    # Nested policy objects merge key-by-key so a partial
+                    # override does not silently drop sibling defaults.
+                    cfg[k].update(v)
                 elif k in cfg and isinstance(cfg[k], list) and isinstance(v, list):
                     cfg[k] = list(v)
                 else:
@@ -102,6 +157,8 @@ def validate_config(cfg: dict) -> dict:
             if unknown:
                 raise ValueError(f"unknown threshold: {sorted(unknown)[0]}")
             merged["thresholds"].update(value)
+        elif key == "build_artifacts":
+            merged[key] = _validate_build_artifacts(value)
         else:
             merged[key] = value
     for key in ("scan_roots", "personal_roots", "exclude_paths", "exclude_globs", "protected_projects", "protected_categories"):
@@ -111,6 +168,8 @@ def validate_config(cfg: dict) -> dict:
     for key in ("stale_days", "trash_retention_days"):
         if not isinstance(merged[key], int) or merged[key] < 0:
             raise ValueError(f"{key} must be a non-negative integer")
+    if not isinstance(merged["wechat_media_keep_months"], int) or merged["wechat_media_keep_months"] < 1:
+        raise ValueError("wechat_media_keep_months must be an integer >= 1")
     for key, value in merged["thresholds"].items():
         if not isinstance(value, (int, float)) or value < 0:
             raise ValueError(f"thresholds.{key} must be a non-negative number")
@@ -174,6 +233,7 @@ GLOBAL_SAFE_PATHS = [
     HOME / "Library" / "Caches" / "ms-playwright-go",
     HOME / "Library" / "Caches" / "node-gyp",
     HOME / "Library" / "Caches" / "electron",
+    HOME / "Library" / "Caches" / "Blender",
 ]
 
 GLOBAL_AGGRESSIVE_PATHS = [
@@ -244,6 +304,36 @@ AGGRESSIVE_DIR_NAMES = {
     ".gradle",
     ".angular",
 }
+
+# --- Tauri / desktop build by-products (config-driven) ---------------------
+# Tauri keeps its Rust workspace in `<project>/src-tauri`. Two directory shapes
+# are matched, always anchored on the `src-tauri` parent so a generic name like
+# `gen` can never hit an unrelated directory elsewhere in a project:
+#
+#   src-tauri/gen     -> tauri-build generated capability schemas (safe:
+#                        regenerated on every `cargo build`, seconds to rebuild)
+#   src-tauri/target  -> Rust/cargo build tree (aggressive: expensive to
+#                        rebuild; only removed in aggressive mode)
+#
+# All names come from `config.json: build_artifacts`. Custom entries are UNIONED
+# onto the built-in sets below; they can never remove a built-in entry.
+BA = CONFIG.get("build_artifacts", {})
+CUSTOM_SAFE_DIRS = set(BA.get("safe_dirs", []))
+CUSTOM_AGGRESSIVE_DIRS = set(BA.get("aggressive_dirs", []))
+CUSTOM_SAFE_FILE_GLOBS = tuple(BA.get("safe_file_globs", []))
+TAURI_PARENT_NAMES = set(BA.get("tauri_parents", []))
+TAURI_GEN_DIR_NAMES = set(BA.get("tauri_gen_dirs", []))
+TAURI_BUILD_DIR_NAMES = set(BA.get("tauri_build_dirs", []))
+
+# Packaged installers are deliverables, not caches. When they exist under a
+# Tauri build dir, the whole tree is demoted to `manual` so an aggressive run
+# cannot silently wipe a built .dmg/.app/.msi.
+TAURI_BUNDLE_MARKERS = tuple(BA.get("bundle_markers", ())) or FALLBACK_BUNDLE_MARKERS
+TAURI_BUNDLE_MAX_DEPTH = 4
+
+# Effective rule sets used by the walkers: built-ins plus user additions.
+EFFECTIVE_SAFE_DIRS = SAFE_DIR_NAMES | CUSTOM_SAFE_DIRS
+EFFECTIVE_AGGRESSIVE_DIRS = AGGRESSIVE_DIR_NAMES | CUSTOM_AGGRESSIVE_DIRS
 
 # Project-side log directories and log file patterns.
 LOG_DIR_NAMES = {
@@ -330,6 +420,75 @@ PRUNE_PATHS = [
     HOME / "go" / "pkg" / "mod",
 ]
 
+# --- WeChat (com.tencent.xinWeChat) whitelist cleanup ----------------------
+# The whole container is pruned by default. These are the ONLY paths ever
+# exempted, and the exemption is shape-checked at runtime: message databases,
+# account config, favorites, and backups can never match.
+WECHAT_CONTAINER = HOME / "Library" / "Containers" / "com.tencent.xinWeChat"
+WECHAT_DATA = WECHAT_CONTAINER / "Data"
+WECHAT_APP_DATA = WECHAT_DATA / "Documents" / "app_data"
+WECHAT_FILES = WECHAT_DATA / "Documents" / "xwechat_files"
+# Pure caches: rebuilt by WeChat, contain no user data.
+WECHAT_CACHE_DIRS = {
+    WECHAT_APP_DATA / "radium": "WeChat applet runtime cache (radium); rebuilt on demand",
+    WECHAT_APP_DATA / "log": "WeChat runtime logs; no user data",
+    WECHAT_APP_DATA / "crashinfo": "WeChat crash reports; no user data",
+    WECHAT_DATA / "Library" / "Caches": "WeChat container Caches; rebuilt on demand",
+}
+# Chat media month dirs (YYYY-MM) eligible for month-window cleanup:
+#   <account>/msg/{video,file}/YYYY-MM
+#   <account>/msg/attach/<32-hex>/YYYY-MM
+#   <account>/cache/YYYY-MM          (thumbnail/media cache, rolling months)
+MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+WECHAT_CATEGORIES = ("wechat-cache", "wechat-media")
+
+
+def wechat_month_key(name: str) -> tuple[int, int] | None:
+    """Parse a strict YYYY-MM directory name; None for anything else."""
+    if not MONTH_RE.match(name):
+        return None
+    return (int(name[:4]), int(name[5:7]))
+
+
+def _wechat_cutoff(keep_months: int) -> tuple[int, int]:
+    """First (year, month) retained. keep_months=1 keeps only the current month."""
+    today = dt.date.today()
+    keep = max(1, int(keep_months))
+    index = today.year * 12 + (today.month - 1) - (keep - 1)
+    return (index // 12, index % 12 + 1)
+
+
+def wechat_media_month(path: Path) -> tuple[int, int] | None:
+    """Return (year, month) iff path is an exact YYYY-MM media/cache dir inside
+    a wxid_* account. Every other shape inside the container returns None."""
+    try:
+        rel = path.resolve().relative_to(WECHAT_FILES.resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if not parts or not parts[0].startswith("wxid_"):
+        return None
+    if len(parts) == 4 and parts[1] == "msg" and parts[2] in ("video", "file"):
+        return wechat_month_key(parts[3])
+    if (len(parts) == 5 and parts[1] == "msg" and parts[2] == "attach"
+            and len(parts[3]) == 32 and all(c in "0123456789abcdef" for c in parts[3].lower())):
+        return wechat_month_key(parts[4])
+    if len(parts) == 3 and parts[1] == "cache":
+        return wechat_month_key(parts[2])
+    return None
+
+
+def wechat_exempt(path: Path) -> bool:
+    """Whether `path` may bypass the Containers prune rule (whitelist only)."""
+    text = path.as_posix()
+    container = WECHAT_CONTAINER.as_posix()
+    if not text.startswith(container + "/"):
+        return False
+    for root in WECHAT_CACHE_DIRS:
+        if is_under(path, root):
+            return True
+    return wechat_media_month(path) is not None
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -399,7 +558,9 @@ def excluded(path: Path, category: str | None = None) -> bool:
 
 
 def pruned(path: Path, category: str | None = None) -> bool:
-    return any(is_under(path, p) for p in PRUNE_PATHS if p.exists()) or excluded(path, category)
+    if not wechat_exempt(path) and any(is_under(path, p) for p in PRUNE_PATHS if p.exists()):
+        return True
+    return excluded(path, category)
 
 
 def add_path(
@@ -461,6 +622,42 @@ def is_log_file(name: str) -> bool:
     return any(lower.endswith(pat) for pat in LOG_FILE_PATTERNS) or lower in {"npm-debug.log", "yarn-error.log"}
 
 
+def is_build_artifact_file(name: str) -> bool:
+    """Match throwaway bundler files, e.g. `vite.config.ts.timestamp-1756-abc123.mjs`.
+
+    Patterns come from `build_artifacts.safe_file_globs` (fnmatch on basename).
+    """
+    return any(fnmatch.fnmatch(name, pattern) for pattern in CUSTOM_SAFE_FILE_GLOBS)
+
+
+def is_tauri_child(path: Path, name: str, allowed: set[str]) -> bool:
+    """True when `path/name` is a Tauri directory shape (`.../src-tauri/<name>`)."""
+    return name in allowed and path.name in TAURI_PARENT_NAMES
+
+
+def tauri_bundle_present(target_dir: Path) -> bool:
+    """True when a Tauri `target/` tree already holds packaged installers.
+
+    Shallow by design: only `release/bundle/**` is inspected, a few levels deep,
+    so a multi-GB target tree is never fully walked just to answer this.
+    """
+    bundle = target_dir / "release" / "bundle"
+    if not bundle.is_dir():
+        return False
+    base_depth = len(bundle.parts)
+    try:
+        for current, dirs, files in os.walk(bundle, topdown=True):
+            if len(Path(current).parts) - base_depth >= TAURI_BUNDLE_MAX_DEPTH:
+                dirs[:] = []
+                continue
+            for name in files + dirs:
+                if name.endswith(TAURI_BUNDLE_MARKERS):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def scan_projects(include_aggressive: bool) -> dict[Path, Candidate]:
     candidates: dict[Path, Candidate] = {}
     roots = [p for p in PROJECT_ROOTS if p.exists()]
@@ -477,16 +674,28 @@ def scan_projects(include_aggressive: bool) -> dict[Path, Candidate]:
                 p = current_path / d
                 if pruned(p):
                     continue
-                if d in SAFE_DIR_NAMES:
+                if d in EFFECTIVE_SAFE_DIRS:
                     add_path(candidates, p, "project-generated", "safe", f"Generated test/cache directory: {d}")
+                    continue
+                if is_tauri_child(current_path, d, TAURI_GEN_DIR_NAMES):
+                    add_path(candidates, p, "project-generated", "safe",
+                             f"Tauri generated tree (regenerated by cargo build): {current_path.name}/{d}")
                     continue
                 if d in LOG_DIR_NAMES:
                     add_path(candidates, p, "log-file", "safe", f"Project log directory: {d}")
                     continue
-                if d in AGGRESSIVE_DIR_NAMES:
+                if d in EFFECTIVE_AGGRESSIVE_DIRS:
                     if include_aggressive:
-                        add_path(candidates, p, "project-generated", "aggressive",
-                                 f"Rebuildable dependency/build directory: {d}")
+                        if is_tauri_child(current_path, d, TAURI_BUILD_DIR_NAMES) and tauri_bundle_present(p):
+                            add_path(candidates, p, "large-dir", "manual",
+                                     f"Tauri build tree holds packaged installers under "
+                                     f"{d}/release/bundle; review before removing")
+                        elif is_tauri_child(current_path, d, TAURI_BUILD_DIR_NAMES):
+                            add_path(candidates, p, "project-generated", "aggressive",
+                                     f"Tauri/Rust build directory: {current_path.name}/{d}")
+                        else:
+                            add_path(candidates, p, "project-generated", "aggressive",
+                                     f"Rebuildable dependency/build directory: {d}")
                     continue
                 keep_dirs.append(d)
             dirs[:] = keep_dirs
@@ -498,6 +707,9 @@ def scan_projects(include_aggressive: bool) -> dict[Path, Candidate]:
                     continue
                 if is_log_file(name):
                     add_path(candidates, p, "log-file", "safe", f"Project log file: {name}")
+                    continue
+                if is_build_artifact_file(name):
+                    add_path(candidates, p, "project-generated", "safe", f"Vite temporary config copy: {name}")
                     continue
                 lower = name.lower()
                 if any(lower.endswith(suffix) for suffix in SAFE_FILE_SUFFIXES):
@@ -531,7 +743,7 @@ def scan_projects(include_aggressive: bool) -> dict[Path, Candidate]:
             if resolved in candidates:
                 continue
             name = d.name
-            if name in SAFE_DIR_NAMES or name in AGGRESSIVE_DIR_NAMES or name in LOG_DIR_NAMES:
+            if name in EFFECTIVE_SAFE_DIRS or name in EFFECTIVE_AGGRESSIVE_DIRS or name in LOG_DIR_NAMES:
                 continue
             sz = size_bytes(resolved)
             if sz >= LARGE_DIR_THRESHOLD:
@@ -571,6 +783,65 @@ def scan_temp() -> dict[Path, Candidate]:
                 if "playwright" in lower or lower.endswith(".trace.zip"):
                     add_path(candidates, current_path / name, "temp-browser", "safe", "Browser automation temporary file")
     return candidates
+
+
+def scan_wechat(keep_months: int) -> dict[Path, Candidate]:
+    """WeChat (com.tencent.xinWeChat) caches and expired chat media.
+
+    Whitelist-only, two scopes:
+    - `wechat-cache` (aggressive): pure caches that WeChat rebuilds — applet
+      runtime (radium), logs, crash reports, container Caches.
+    - `wechat-media` (aggressive): chat media month dirs (YYYY-MM) older than
+      the keep window under msg/attach, msg/video, msg/file, plus account
+      cache months. Only strict YYYY-MM dirs inside wxid_* accounts match;
+      message databases, config, favorites, backups never match.
+
+    Both run under clean-aggressive only; clean-safe never touches WeChat.
+    """
+    candidates: dict[Path, Candidate] = {}
+    for root, reason in WECHAT_CACHE_DIRS.items():
+        if root.is_dir():
+            resolved = root.resolve()
+            candidates[resolved] = Candidate(
+                resolved, size_bytes(resolved), "wechat-cache", "aggressive", reason)
+    if WECHAT_FILES.is_dir():
+        cutoff = _wechat_cutoff(keep_months)
+        for account in WECHAT_FILES.iterdir():
+            if not account.is_dir() or not account.name.startswith("wxid_"):
+                continue
+            month_parents: list[tuple[Path, str]] = [
+                (account / "msg" / "video", "wechat-media"),
+                (account / "msg" / "file", "wechat-media"),
+                (account / "cache", "wechat-cache"),
+            ]
+            for parent, category in month_parents:
+                if not parent.is_dir():
+                    continue
+                for month_dir in parent.iterdir():
+                    key = wechat_media_month(month_dir)
+                    if key is not None and key < cutoff:
+                        resolved = month_dir.resolve()
+                        candidates[resolved] = Candidate(
+                            resolved, size_bytes(resolved), category, "aggressive",
+                            f"WeChat chat media older than {keep_months}-month window: {month_dir.name}")
+            attach_root = account / "msg" / "attach"
+            if attach_root.is_dir():
+                for hash_dir in attach_root.iterdir():
+                    if not hash_dir.is_dir():
+                        continue
+                    for month_dir in hash_dir.iterdir():
+                        key = wechat_media_month(month_dir)
+                        if key is not None and key < cutoff:
+                            resolved = month_dir.resolve()
+                            candidates[resolved] = Candidate(
+                                resolved, size_bytes(resolved), "wechat-media", "aggressive",
+                                f"WeChat chat media older than {keep_months}-month window: {month_dir.name}")
+    return candidates
+
+
+def wechat_running() -> bool:
+    code, _ = run(["pgrep", "-f", "WeChat.app/Contents/MacOS/WeChat"])
+    return code == 0
 
 
 def scan_screenshots() -> dict[Path, Candidate]:
@@ -713,10 +984,15 @@ def scan_stale_projects(stale_days: int) -> dict[Path, Candidate]:
                 cp = Path(current)
                 keep: list[str] = []
                 for d in dirs:
-                    if d in AGGRESSIVE_DIR_NAMES:
+                    if d in EFFECTIVE_AGGRESSIVE_DIRS:
+                        # A Tauri target holding packaged installers was demoted
+                        # to `manual` by scan_projects; the stale pass must not
+                        # promote it back to aggressive.
+                        if is_tauri_child(cp, d, TAURI_BUILD_DIR_NAMES) and tauri_bundle_present(cp / d):
+                            continue
                         deps_found.append((cp / d, d))
                         continue
-                    if d in PRUNE_NAMES or d in SAFE_DIR_NAMES or d in LOG_DIR_NAMES or d in NOISE_DIR_NAMES:
+                    if d in PRUNE_NAMES or d in EFFECTIVE_SAFE_DIRS or d in LOG_DIR_NAMES or d in NOISE_DIR_NAMES:
                         continue
                     keep.append(d)
                 dirs[:] = keep
@@ -768,6 +1044,7 @@ def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
     candidates.update(scan_app_roots())
     candidates.update(scan_projects(include_aggressive=mode in {"clean-aggressive", "scan"}))
     candidates.update(scan_temp())
+    candidates.update(scan_wechat(int(CONFIG.get("wechat_media_keep_months", 1))))
     candidates.update(scan_screenshots())
     candidates.update(scan_personal_large())
     # stale-project pass runs last so stale-deps/stale-model labels win over
@@ -1088,10 +1365,19 @@ def main() -> int:
 
     actions: dict[Path, str] = {}
     if args.apply:
+        wechat_live: bool | None = None
         operation_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         operation_entries: list[dict[str, object]] = []
         for candidate in candidates:
             if should_delete(candidate, args.mode):
+                # WeChat data must never be moved while the app is live:
+                # live-container moves risk database corruption.
+                if candidate.category in WECHAT_CATEGORIES:
+                    if wechat_live is None:
+                        wechat_live = wechat_running()
+                    if wechat_live:
+                        actions[candidate.path] = "skipped: WeChat is running"
+                        continue
                 ok, message, entry = move_to_quarantine(candidate, operation_id)
                 actions[candidate.path] = message if ok else f"failed: {message}"
                 if entry:
@@ -1101,6 +1387,9 @@ def main() -> int:
             print(f"operation_id: {operation_id}")
             print(f"operation_manifest: {operation_path}")
             print(f"restore_command: python3 {Path(__file__).resolve()} --restore {operation_id}")
+        wechat_skipped = sum(1 for msg in actions.values() if str(msg).startswith("skipped: WeChat"))
+        if wechat_skipped:
+            print(f"warning: {wechat_skipped} WeChat candidates skipped — quit WeChat and re-run to clean them")
 
     after_df = get_free_space()
     state = write_state(args.mode, args.apply, tools, candidates, actions, before_df, after_df, stale_days)
@@ -1122,6 +1411,9 @@ def main() -> int:
     print(f"needs_review (manual): {fmt_size(manual_total)}")
     print(f"stale_deps (aggressive): {fmt_size(stale_deps_total)}")
     print(f"stale_models (manual): {fmt_size(stale_models_total)}")
+    wechat_total = sum(c.size for c in candidates if c.size >= 0 and c.category in WECHAT_CATEGORIES)
+    if wechat_total:
+        print(f"wechat (aggressive): {fmt_size(wechat_total)}")
     if stale_project_names:
         print(f"stale_projects: {', '.join(stale_project_names)}")
     print(f"candidates: {len(candidates)}")

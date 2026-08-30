@@ -74,6 +74,44 @@
 - 小屏（<640px）隐藏表格，改用卡片流（每条候选纵向展示 大小/风险/动作/类别/路径/原因），去除横向滚动。
 - 大屏（≥640px）保留原表格；搜索/筛选在两种视图同步更新。
 
+## 12. 2026-08-23 · feat: 微信缓存与过期聊天媒体清理（白名单制）
+
+- 新增 `wechat-cache`（radium 小程序运行时 / app_data 日志 / crashinfo / 容器 Caches）与 `wechat-media`（`msg/{attach,video,file}` 及账号 `cache` 下严格 `YYYY-MM` 月份目录）两个 aggressive 类别。
+- `wechat_media_keep_months` 配置项（默认 1 = 仅保留当月）；消息数据库（db_storage）、config、favorite、Backup、all_users 因形状校验结构性不可命中。
+- `pruned()` 中枢白名单豁免：仅放行上述精确形状，容器其余部分照旧 pruned。
+- 运行中守卫：`--apply` 时检测到微信进程则跳过全部微信候选并警告，杜绝 live 容器内移动文件导致数据库损坏。
+- dashboard 模板 `zh()` 增加微信类别与跳过状态中文标签；单元测试覆盖月份解析、cutoff、豁免形状与配置校验。
+
+## 13. 2026-08-31 · feat: Tauri / Vite 构建衍生物识别
+
+- 起因：Tauri 应用（skills-hub / skilldo）反复构建会留下 GB 级产物，此前只能人工清理。
+- 规则以 `src-tauri` 父目录为锚点做形状匹配，避免泛名 `gen` 误伤无关目录：
+  - `src-tauri/gen/`（tauri-build 生成的 capability schemas）→ `safe`，cargo build 秒级重建。
+  - `src-tauri/target/` → `aggressive`，reason 标注 `Tauri/Rust build directory`。
+  - `dist-ssr/` 加入 `AGGRESSIVE_DIR_NAMES`；`.vite-temp/` 加入 `SAFE_DIR_NAMES`。
+  - `vite.config.ts.timestamp-*.mjs` 等 Vite 临时配置副本 → `safe`。
+- 交付物保护：`target/release/bundle/**` 出现 `.dmg/.app/.msi/.exe/.deb/.rpm/.AppImage` 时，整个 target 降级为 `manual`，aggressive 不可清；浅层扫描（限深 4 层）避免遍历多 GB 的 target。
+- stale 流程同步该判断，闲置项目的已打包 target 不会被 `stale-deps` 重新提升为 aggressive。
+- 单元测试新增 `TauriBuildTests`（7 例，共 16 例全绿）；SKILL.md 新增「Tauri / Vite build by-products」章节。
+
+## 14. 2026-08-31 · refactor: 构建衍生物规则改为 config 驱动 + 控制台汉化升级
+
+**规则配置化（回应"为什么硬编码在脚本里"）**
+- `config.json` 新增 `build_artifacts` 策略块（safe_dirs / aggressive_dirs / safe_file_globs / tauri_parents / tauri_gen_dirs / tauri_build_dirs / bundle_markers），脚本不再硬编码这些名字。
+- 内置 `SAFE_DIR_NAMES` / `AGGRESSIVE_DIR_NAMES` 保持为不可缩减的安全边界，自定义项以并集方式追加；新增 `EFFECTIVE_SAFE_DIRS` / `EFFECTIVE_AGGRESSIVE_DIRS` 供 walker 使用。
+- `_validate_build_artifacts()` 拒绝未知键与非字符串；嵌套对象按键合并（部分覆盖不丢兄弟默认值）；`bundle_markers` 清空时回退内置列表（交付物保护不可绕过）。
+- `is_vite_timestamp_file()` → `is_build_artifact_file()`，改由 `safe_file_globs` fnmatch 驱动。
+- 新增 `MDC_CONFIG` 环境变量指向备用策略文件（供测试切换配置）；`BuildArtifactConfigTests` 5 例，共 **21 例全绿**。
+
+**控制台（dashboard_template.html）**
+- 汉化：标题/品牌、"API online"→"接口已连接"、工具自检 ok/miss→"已安装"/"缺失"、运行模式 scan/clean-safe/clean-aggressive→中文、设置项标签全部中文化（原为英文键名）。
+- 新增 `REASON_RULES`：31 条 reason 模板正则汉化（$1/$2 参数回填），未命中回退原文；原因列由此前的全英文变为中文。
+- 交互修复：搜索/筛选不再重建整个卡片，只替换 `#listview`，修复了每敲一个字符就丢焦点、中文输入法组合被打断的问题。
+- 新增：toast 轻提示（扫描/保存/复制结果不再藏进折叠的设置面板）、路径点击复制、筛选 chip 显示数量、草稿提示与"放弃草稿"、保存后原地更新配置、数字输入下限校正。
+- 无障碍：设置折叠 `aria-expanded`/键盘可操作、chip `aria-pressed`、输入框 `aria-label`；`fetch` 缺失时静默降级（原先抛未捕获 ReferenceError）。
+- 设置面板改为 `SETTINGS_SCHEMA` 驱动，新增「构建衍生物规则」分组与微信媒体保留月数字段；`readForm` 输出含 `build_artifacts`，与 `--set-config` / `api/config` 闭环。
+- 新增 `scripts/check_dashboard_dom.mjs`（jsdom 无头渲染，31 条断言全通过，零运行时错误）。
+
 ---
 
 ## 物证对照

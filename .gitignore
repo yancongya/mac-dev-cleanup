@@ -15,3 +15,6 @@ __pycache__/
 
 # 已弃用的 vendor（dashboard 已改为零依赖内联 vanilla，不再引用）
 vendor/
+
+# 本地会话记忆（WorkBuddy 工作目录，不入库）
+.workbuddy/
