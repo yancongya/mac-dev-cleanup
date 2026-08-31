@@ -65,9 +65,35 @@ a{color:var(--indigo)}
 .btn.primary:hover{opacity:.9}
 .btn.busy{opacity:.7;cursor:default}
 
-/* sections */
-.section{margin-top:24px}
-@media(min-width:640px){.section{margin-top:28px}}
+/* sections → unified collapsible panels */
+.section{margin-top:16px}
+@media(min-width:640px){.section{margin-top:24px}}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.panel-head{
+  display:flex;align-items:center;gap:8px;width:100%;
+  padding:12px 16px;background:var(--row-hover);
+  border-bottom:1px solid var(--border);cursor:pointer;user-select:none;
+}
+.panel-head:hover{background:var(--track)}
+.panel-head:focus-visible{outline:2px solid var(--indigo);outline-offset:-2px}
+.panel-head h2{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0;flex:0 0 auto}
+.panel-head .note{font-size:11px;color:var(--subtle);margin-left:auto;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.panel-head .note .view-toggle{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:10px;color:var(--subtle);background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:1px 5px;cursor:pointer;line-height:1.4;vertical-align:middle}
+.panel-head .note .view-toggle:hover{color:var(--text);background:var(--row-hover)}
+.panel-head .chev{font-size:15px;color:var(--subtle);transition:transform .2s;flex:0 0 auto;margin-left:8px}
+.panel-head .chev.open{transform:rotate(90deg)}
+.drag-handle{cursor:grab;font-size:14px;color:var(--subtle);flex:0 0 auto;margin-right:2px;line-height:1;touch-action:none}
+.drag-handle:active{cursor:grabbing}
+.panel.dragging{opacity:.5;border:2px dashed var(--indigo);border-radius:var(--radius)}
+.panel.drag-over{box-shadow:inset 0 3px 0 0 var(--indigo)}
+.panel-body{padding:16px}
+.panel-body.no-pad{padding:0}
+@media(max-width:639px){
+  .panel-head{padding:11px 14px}
+  .panel-body{padding:12px 14px}
+  .panel-body.no-pad{padding:0}
+}
+/* legacy sec-head kept for non-panel callers */
 .sec-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;padding:0 2px}
 .sec-head h2{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
 .sec-head .note{font-size:11px;color:var(--subtle)}
@@ -77,34 +103,98 @@ a{color:var(--indigo)}
 /* summary grid */
 .grid{display:grid;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .grid.cols-2{grid-template-columns:1fr 1fr}
-.grid.cols-3{grid-template-columns:1fr 1fr 1fr}
+.grid.cols-3{grid-template-columns:1fr 1fr}
+@media(min-width:640px){.grid.cols-3{grid-template-columns:1fr 1fr 1fr}}
 .grid.cols-4{grid-template-columns:1fr 1fr}
-@media(min-width:640px){.grid.cols-4{grid-template-columns:repeat(4,1fr)}}
+@media(min-width:640px){.grid.cols-4{grid-template-columns:repeat(3,1fr)}}
+@media(min-width:900px){.grid.cols-4{grid-template-columns:repeat(6,1fr)}}
 .sum-cell{background:var(--panel);padding:14px 18px;display:flex;flex-direction:column;gap:6px;min-width:0}
+@media(max-width:639px){.sum-cell{padding:10px 14px}}
 .sum-cell .lbl{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--subtle)}
-.sum-cell .val{font-size:24px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.sum-cell .val{font-size:22px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+@media(max-width:639px){.sum-cell .val{font-size:17px}}
 .sum-cell .sub{font-size:11px;color:var(--muted)}
-.c-indigo{color:var(--indigo)} .c-emerald{color:var(--emerald)} .c-amber{color:var(--amber)} .c-rose{color:var(--rose)}
+.c-indigo{color:var(--indigo)} .c-emerald{color:var(--emerald)} .c-amber{color:var(--amber)} .c-rose{color:var(--rose)} .c-slate{color:var(--slate)}
 
 /* risk bar */
-.risk-bar{height:6px;border-radius:6px;background:var(--track);display:flex;overflow:hidden;margin-bottom:16px}
+.risk-bar{height:6px;border-radius:6px;background:var(--track);display:flex;overflow:hidden;margin-bottom:12px}
 .risk-bar>span{height:100%;transition:width .3s}
-.risk-rows{display:grid;grid-template-columns:1fr;gap:12px}
+/* single-row hover switch (risk / cat compact mode) */
+.cr-single{position:relative;padding:10px 16px;min-height:36px}
+.cr-item{display:none;align-items:center;gap:10px;cursor:pointer;transition:opacity .12s}
+.cr-item.cr-active{display:flex}
+.cr-single:hover .cr-item{display:flex}
+.cr-single:hover .cr-item.cr-active{display:none}
+.cr-item:hover .cr-label{color:var(--text);font-weight:600}
+.cr-item .cr-dot{width:8px;height:8px;border-radius:2px;flex:0 0 auto}
+.cr-item .cr-label{font-size:13px;font-weight:500;flex:0 0 auto;white-space:nowrap}
+.cr-item .cr-meter{width:60px;height:4px;border-radius:4px;background:var(--track);overflow:hidden;flex:1 1 auto}
+@media(min-width:640px){.cr-item .cr-meter{width:100px}}
+.cr-item .cr-meter>span{display:block;height:100%;border-radius:4px}
+.cr-item .cr-val{font-family:ui-monospace,monospace;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right;flex:0 0 auto;min-width:56px}
+.cr-item .cr-pct{font-family:ui-monospace,monospace;font-size:10px;color:var(--subtle);width:32px;text-align:right;flex:0 0 auto}
+.cr-item .cr-desc{font-size:11px;color:var(--subtle);margin-left:auto;white-space:nowrap;flex:0 0 auto}
+/* disk compact row */
+.risk-rows{display:grid;grid-template-columns:1fr;gap:12px;padding:4px 0}
 @media(min-width:640px){.risk-rows{grid-template-columns:repeat(3,1fr)}}
-.risk-row{display:flex;align-items:flex-start;gap:8px}
+.risk-row{display:flex;align-items:flex-start;gap:8px;padding:6px 16px;border-radius:var(--radius-sm)}
 .risk-row .sw{width:8px;height:8px;border-radius:2px;margin-top:6px;flex:0 0 auto}
 .risk-row .rn{font-size:13px;font-weight:500}
 .risk-row .rd{font-size:11px;color:var(--subtle);margin-top:2px;line-height:1.35}
 .risk-row .rs{margin-left:auto;text-align:right;flex:0 0 auto}
 .risk-row .rs .sz{font-family:ui-monospace,monospace;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
 .risk-row .rs .pc{font-family:ui-monospace,monospace;font-size:10px;color:var(--subtle)}
-
-/* cat list */
+/* list view: cat rows with meters */
 .cat-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px;border-bottom:1px solid var(--border)}
 .cat-row:last-child{border-bottom:none}
 .cat-row .cl{font-size:13px;font-weight:500;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cat-row .cr{display:flex;align-items:center;gap:10px;flex:0 0 auto}
-.cat-row .meter{width:56px;height:4px;border-radius:4px;background:var(--track);overflow:hidden}
+.cat-row .meter{width:40px;height:4px;border-radius:4px;background:var(--track);overflow:hidden}
+@media(min-width:640px){.cat-row .meter{width:80px}}
+.cat-row .meter>span{display:block;height:100%;border-radius:4px;background:var(--bar)}
+.cat-row .cs{font-family:ui-monospace,monospace;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;width:56px;text-align:right}
+.cat-row .cp{font-family:ui-monospace,monospace;font-size:10px;color:var(--subtle);width:32px;text-align:right}
+/* disk compact */
+.disk-compact{display:flex;align-items:center;gap:14px;padding:10px 16px;flex-wrap:wrap}
+.disk-compact .dc-metric{text-align:center;min-width:60px}
+.disk-compact .dc-metric .dc-val{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums}
+.disk-compact .dc-metric .dc-lbl{font-size:10px;color:var(--subtle);text-transform:uppercase;letter-spacing:.04em}
+.disk-compact .dc-bar{flex:1 1 120px;height:6px;border-radius:6px;background:var(--track);overflow:hidden;min-width:80px}
+.disk-compact .dc-bar>span{display:block;height:100%;border-radius:6px}
+.disk-compact .dc-est{font-size:12px;color:var(--emerald);font-weight:600;white-space:nowrap}
+/* list view (grid card style for risk/cat) */
+.view-list .risk-grid{display:grid;grid-template-columns:1fr;gap:10px;padding:4px 16px 12px}
+@media(min-width:640px){.view-list .risk-grid{grid-template-columns:repeat(3,1fr)}}
+.view-list .risk-card{background:var(--row-hover);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer;transition:background .15s;border:1px solid transparent}
+.view-list .risk-card:hover{background:var(--track);border-color:var(--border)}
+.view-list .risk-card .rc-top{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.view-list .risk-card .rc-dot{width:10px;height:10px;border-radius:3px}
+.view-list .risk-card .rc-name{font-size:14px;font-weight:600}
+.view-list .risk-card .rc-val{margin-left:auto;font-family:ui-monospace,monospace;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.view-list .risk-card .rc-desc{font-size:11.5px;color:var(--subtle);line-height:1.4}
+.view-list .risk-card .rc-bar{height:4px;border-radius:4px;background:var(--track);overflow:hidden;margin-top:8px}
+.view-list .risk-card .rc-bar>span{display:block;height:100%;border-radius:4px}
+.view-list .cat-grid{display:grid;grid-template-columns:1fr;gap:8px;padding:4px 16px 12px}
+@media(min-width:640px){.view-list .cat-grid{grid-template-columns:repeat(2,1fr)}}
+.view-list .cat-card{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--row-hover);border-radius:var(--radius-sm);cursor:pointer;transition:background .15s;border:1px solid transparent}
+.view-list .cat-card:hover{background:var(--track);border-color:var(--border)}
+.view-list .cat-card .cc-dot{width:8px;height:8px;border-radius:2px;flex:0 0 auto}
+.view-list .cat-card .cc-name{font-size:13px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.view-list .cat-card .cc-bar{width:60px;height:4px;border-radius:4px;background:var(--track);overflow:hidden;flex:0 0 auto}
+@media(min-width:640px){.view-list .cat-card .cc-bar{width:100px}}
+.view-list .cat-card .cc-bar>span{display:block;height:100%;border-radius:4px}
+.view-list .cat-card .cc-val{font-family:ui-monospace,monospace;font-size:12px;font-weight:600;min-width:50px;text-align:right;flex:0 0 auto}
+.clickable{cursor:pointer;transition:background .15s}
+.clickable:hover{background:var(--row-hover)}
+.clickable:focus-visible{outline:2px solid var(--indigo);outline-offset:-2px}
+
+/* cat list */
+.cat-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px;border-bottom:1px solid var(--border)}
+.cat-row:last-child{border-bottom:none}
+@media(max-width:639px){.cat-row{padding:9px 14px}}
+.cat-row .cl{font-size:13px;font-weight:500;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cat-row .cr{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.cat-row .meter{width:40px;height:4px;border-radius:4px;background:var(--track);overflow:hidden}
 @media(min-width:640px){.cat-row .meter{width:80px}}
 .cat-row .meter>span{display:block;height:100%;border-radius:4px;background:var(--bar)}
 .cat-row .cs{font-family:ui-monospace,monospace;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;width:56px;text-align:right}
@@ -117,11 +207,28 @@ a{color:var(--indigo)}
 .tool-cell .ts{font-size:11px;font-weight:600;font-family:ui-monospace,monospace;margin-top:auto}
 .tool-cell .ts.ok{color:var(--emerald)} .tool-cell .ts.miss{color:var(--subtle)}
 .tool-cell .thint{display:block;font-size:9.5px;font-weight:400;font-family:inherit;color:var(--subtle);opacity:.85;margin-top:2px}
+.tool-install{margin-top:auto;font-size:9.5px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--panel);color:var(--subtle);cursor:pointer;font-family:inherit;line-height:1.3}
+.tool-install:hover{color:var(--text);background:var(--row-hover)}
 
 /* disk */
 .pre{font-family:ui-monospace,monospace;font-size:11px;line-height:1.6;color:var(--muted);white-space:pre-wrap;word-break:break-all;margin:0}
 .disk-cell{background:var(--panel);padding:14px 18px}
+@media(max-width:639px){.disk-cell{padding:12px 14px}}
 .disk-cell h4{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--subtle);margin:0 0 6px}
+/* disk grid stacks on mobile */
+.disk-grid{display:grid;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;grid-template-columns:1fr}
+.disk-grid.disk-single{grid-template-columns:1fr}
+@media(min-width:640px){.disk-grid:not(.disk-single){grid-template-columns:1fr 1fr}}
+.disk-metrics{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+.dm-row{display:flex;justify-content:space-between;align-items:center;font-size:12px}
+.dm-label{color:var(--muted)}
+.dm-val{font-family:ui-monospace,monospace;font-weight:600;font-variant-numeric:tabular-nums}
+.dm-pct{color:var(--amber)}
+.dm-bar{height:6px;border-radius:6px;background:var(--track);overflow:hidden}
+.dm-fill{height:100%;border-radius:6px;background:var(--bar);transition:width .3s}
+.df-detail{font-size:11px;color:var(--subtle)}
+.df-detail summary{cursor:pointer;padding:4px 0}
+.df-detail summary:hover{color:var(--text)}
 
 /* table */
 .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);background:var(--row-hover)}
@@ -140,11 +247,17 @@ a{color:var(--indigo)}
 @media(min-width:640px){.scroll{max-height:600px}}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:680px}
 thead th{position:sticky;top:0;background:var(--row-hover);border-bottom:1px solid var(--border);padding:10px 12px;text-align:left;font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);white-space:nowrap;z-index:5}
+thead th[data-sort]{cursor:pointer;user-select:none}
+thead th[data-sort]:hover{color:var(--text)}
+thead th.sort-active{color:var(--text)}
 tbody td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top}
 tbody tr:hover{background:var(--row-hover)}
 td.sz{font-family:ui-monospace,monospace;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 td.path{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--muted);word-break:break-all;line-height:1.6}
 td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
+.row-actions{display:flex;gap:4px}
+.ra-btn{width:22px;height:22px;border:1px solid var(--border);border-radius:4px;background:var(--panel);color:var(--subtle);cursor:pointer;font-size:11px;display:inline-flex;align-items:center;justify-content:center;padding:0}
+.ra-btn:hover{color:var(--text);background:var(--row-hover)}
 .hide-sm{display:none}
 @media(min-width:640px){.hide-sm{display:table-cell}}
 /* responsive: table on desktop, cards on small screens (no horizontal scroll) */
@@ -180,12 +293,7 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
 }
 .empty{padding:32px;text-align:center;color:var(--subtle);font-size:13px}
 
-/* settings */
-.set-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;padding:12px 18px;background:var(--row-hover);border-bottom:1px solid var(--border);cursor:pointer}
-.set-toggle h2{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
-.set-toggle .chev{font-size:16px;color:var(--subtle);transition:transform .2s}
-.set-toggle .chev.open{transform:rotate(90deg)}
-.set-body{padding:16px 18px}
+/* settings (panel-body handles open/close) */
 .fld{display:grid;grid-template-columns:1fr;gap:10px}
 @media(min-width:640px){.fld{grid-template-columns:1fr 1fr}}
 .field{display:flex;flex-direction:column;gap:6px}
@@ -206,6 +314,10 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
 .cmdbox pre{margin:0;padding:10px 44px 10px 12px;background:var(--row-hover);border:1px solid var(--border);border-radius:7px;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;color:var(--muted);white-space:pre-wrap;word-break:break-all}
 .copy-btn{position:absolute;right:8px;top:8px;font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--muted);cursor:pointer}
 .copy-btn:hover{color:var(--text)}
+.cfg-view{margin-top:12px;font-size:11px;color:var(--subtle)}
+.cfg-view summary{cursor:pointer;padding:4px 0}
+.cfg-view summary:hover{color:var(--text)}
+.cfg-pre{margin:4px 0 0;padding:10px;background:var(--row-hover);border:1px solid var(--border);border-radius:7px;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;color:var(--muted);white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto}
 
 /* toast (replaces status text hidden inside the collapsed settings panel) */
 .toast{
@@ -219,6 +331,11 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
 .toast.show{opacity:1; transform:translate(-50%,0)}
 .toast.err{background:var(--rose); color:#fff}
 .toast.ok{background:var(--emerald); color:#fff}
+@media (prefers-color-scheme: dark){
+  .toast{background:var(--accent); color:var(--accent-inv)}
+  .toast.ok{color:#064e3b}
+  .toast.err{color:#fff}
+}
 
 /* settings groups + copy affordance */
 .grp{
@@ -232,6 +349,26 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
   background:rgba(217,119,6,.1); border:1px solid rgba(217,119,6,.25);
   border-radius:7px; padding:8px 10px; line-height:1.45;
 }
+/* operations history */
+.ops-row{display:flex;align-items:center;gap:10px;padding:8px 18px;border-bottom:1px solid var(--border);font-size:12px;flex-wrap:wrap}
+.ops-row:last-child{border-bottom:none}
+@media(max-width:639px){.ops-row{padding:8px 14px;gap:8px}}
+.ops-time{font-family:ui-monospace,monospace;color:var(--muted);white-space:nowrap;min-width:100px}
+@media(max-width:639px){.ops-time{min-width:0;font-size:11px}}
+.ops-count{color:var(--subtle);margin-left:auto}
+@media(max-width:639px){.ops-count{margin-left:0}}
+.ops-size{font-family:ui-monospace,monospace;font-weight:600;font-variant-numeric:tabular-nums;min-width:60px;text-align:right}
+.ops-restore{flex:0 0 auto}
+/* cleanup guide */
+.cleanup-cmd{margin-bottom:12px}
+.cleanup-cmd:last-child{margin-bottom:0}
+.cc-header{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.cc-est{font-size:12px;color:var(--muted);font-family:ui-monospace,monospace}
+.cc-body{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cc-body code{font-family:ui-monospace,monospace;font-size:11px;background:var(--row-hover);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--muted);flex:1;min-width:0;word-break:break-all}
+.cc-copy{flex:0 0 auto;height:28px;font-size:11px}
+.cc-hint{font-size:11px;color:var(--subtle);margin-top:4px;line-height:1.4}
+.cc-warn{border-left:3px solid var(--amber);padding-left:12px}
 .copyable{cursor:pointer; border-radius:4px}
 .copyable:hover{color:var(--text); background:var(--row-hover)}
 .chip .n{opacity:.65; margin-left:5px; font-variant-numeric:tabular-nums}
@@ -362,6 +499,13 @@ const CONFIG = /*__CONFIG__*/null;
       return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
     });
   }
+  function truncatePath(p){
+    if(!p) return "";
+    var sep = p.indexOf("/")===0 ? "/" : "";
+    var parts = p.replace(/^\/|\/$/g,"").split("/");
+    if(parts.length<=3) return p;
+    return sep + "…" + sep + parts.slice(-3).join(sep);
+  }
   function fmt(n){ return (n==null?0:n); }
   function pct(part, total){
     if(!total) return 0;
@@ -373,14 +517,212 @@ const CONFIG = /*__CONFIG__*/null;
     "needs review":"tag-review", failed:"tag-failed"
   };
   var RISK_META = {
-    safe:{cls:"tag-safe", sw:"var(--emerald)", label:"安全 (safe)", desc:"扫描即安全，可随模式自动清理"},
-    aggressive:{cls:"tag-aggressive", sw:"var(--amber)", label:"谨慎 (aggressive)", desc:"默认不删，需显式启用或人工确认"},
-    manual:{cls:"tag-manual", sw:"var(--rose)", label:"待确认 (manual)", desc:"涉及项目源码/个人文件，永不自动删"}
+    safe:{cls:"tag-safe", sw:"var(--emerald)", label:"安全", desc:"扫描即安全，可随模式自动清理"},
+    aggressive:{cls:"tag-aggressive", sw:"var(--amber)", label:"谨慎", desc:"默认不删，需显式启用或人工确认"},
+    manual:{cls:"tag-manual", sw:"var(--rose)", label:"待确认", desc:"涉及项目源码/个人文件，永不自动删"}
   };
   var CAT_COLORS = ["var(--indigo)","var(--emerald)","var(--amber)","var(--violet)","var(--sky)","var(--rose)","var(--slate)"];
 
-  var state = { search:"", risk:"all", settingsOpen:false, apiOnline:false, scanBusy:false, saveBusy:false,
+  var state = { search:"", risk:"all", sortKey:"size", sortDir:-1,
+    apiOnline:false, scanBusy:false, saveBusy:false,
     status:"", statusCls:"idle", cmdOut:"", showCmd:false, hasDraft:false };
+
+  // ---- unified collapsible panels ----
+  // Collapse state is remembered across sessions via localStorage.
+  var PANEL_DEFAULTS = { summary:true, risk:true, cat:false, tools:false,
+    disk:false, table:true, cleanup:true, ops:false, settings:false };
+  var PANELS = Object.assign({}, PANEL_DEFAULTS);
+  try{
+    var savedPanels = JSON.parse(localStorage.getItem("mdc.panels")||"null");
+    if(savedPanels && typeof savedPanels==="object"){
+      for(var pk in PANEL_DEFAULTS){
+        if(typeof savedPanels[pk]==="boolean") PANELS[pk]=savedPanels[pk];
+      }
+    }
+  }catch(e){}
+  function savePanels(){
+    try{ localStorage.setItem("mdc.panels", JSON.stringify(PANELS)); }catch(e){}
+  }
+  // panel(id, title, note, bodyHtml) — unified collapsible section shell.
+  // bodyNoPad for sections that manage their own padding (tables/lists).
+  // draggable panels get a drag handle.
+  function panel(id, title, note, bodyHtml, bodyNoPad, draggable){
+    var open = PANELS[id] !== false;
+    var dragH = draggable !== false ? '<span class="drag-handle" title="拖拽排序">⠿</span>' : '';
+    return '<section class="section panel" id="panel-'+esc(id)+'" draggable="'+(draggable!==false?"true":"false")+'" data-panel-id="'+esc(id)+'">'+
+      '<div class="panel-head" data-panel="'+esc(id)+'" role="button" tabindex="0" '+
+        'aria-expanded="'+(open?"true":"false")+'" aria-controls="pbody-'+esc(id)+'">'+
+        dragH+'<h2>'+esc(title)+'</h2>'+
+        (note?'<span class="note">'+note+'</span>':'')+
+        '<span class="chev'+(open?" open":"")+'">›</span>'+
+      '</div>'+
+      '<div class="panel-body'+(bodyNoPad?" no-pad":"")+'" id="pbody-'+esc(id)+'" '+
+        'style="display:'+(open?"block":"none")+'">'+bodyHtml+'</div>'+
+    '</section>';
+  }
+  function togglePanel(id){
+    if(!(id in PANELS)) return;
+    PANELS[id] = !PANELS[id];
+    savePanels();
+    var body=$("pbody-"+id);
+    if(body) body.style.display = PANELS[id] ? "block" : "none";
+    var head=document.querySelector('[data-panel="'+id+'"]');
+    if(head){
+      var chev=head.querySelector(".chev");
+      if(chev) chev.classList.toggle("open", PANELS[id]);
+      head.setAttribute("aria-expanded", PANELS[id]?"true":"false");
+    }
+    // settings panel has legacy state.settingsOpen consumers
+    if(id==="settings") state.settingsOpen = PANELS[id];
+  }
+  function bindPanels(){
+    var app=$("app");
+    if(!app) return;
+    app.addEventListener("click", function(e){
+      var head=e.target.closest(".panel-head");
+      if(!head) return;
+      // Don't toggle when clicking interactive children inside the head
+      if(e.target.closest("button")) return;
+      if(e.target.closest(".view-toggle")) return;
+      togglePanel(head.getAttribute("data-panel"));
+    });
+    app.addEventListener("keydown", function(e){
+      if(e.key!=="Enter" && e.key!==" ") return;
+      var head=e.target.closest ? e.target.closest(".panel-head") : null;
+      if(!head) return;
+      e.preventDefault();
+      togglePanel(head.getAttribute("data-panel"));
+    });
+    // View toggle for risk/cat panels
+    app.addEventListener("click", function(e){
+      var vt = e.target.closest("[data-view-panel]");
+      if(!vt) return;
+      e.stopPropagation();
+      var pid = vt.getAttribute("data-view-panel");
+      var cur = getView(pid);
+      setView(pid, cur==="compact" ? "list" : "compact");
+      renderAll();
+    });
+    // Drag & drop panel reordering
+    initDrag();
+  }
+
+  // ---- Drag & Drop (Pointer Events — works on desktop + mobile) ----
+  var PANEL_ORDER_KEY = "mdc.panel.order";
+  var dragState = { active:false, src:null, ghost:null, startY:0, panels:[], offsets:[] };
+
+  function getPanelOrder(){
+    try{ return JSON.parse(localStorage.getItem(PANEL_ORDER_KEY)) || null; }catch(e){ return null; }
+  }
+  function savePanelOrder(){
+    var panels = $("app").querySelectorAll(".panel[data-panel-id]");
+    var order = [];
+    for(var i=0;i<panels.length;i++) order.push(panels[i].getAttribute("data-panel-id"));
+    try{ localStorage.setItem(PANEL_ORDER_KEY, JSON.stringify(order)); }catch(e){}
+  }
+  function applyPanelOrder(){
+    var saved = getPanelOrder();
+    if(!saved || !saved.length) return;
+    var app = $("app");
+    var panels = app.querySelectorAll(".panel[data-panel-id]");
+    var map = {};
+    panels.forEach(function(p){ map[p.getAttribute("data-panel-id")] = p; });
+    saved.forEach(function(id){ if(map[id]) app.appendChild(map[id]); });
+  }
+
+  function initDrag(){
+    var app = $("app");
+    if(!app) return;
+
+    // Pointer events work on both mouse and touch
+    app.addEventListener("pointerdown", function(e){
+      var handle = e.target.closest(".drag-handle");
+      if(!handle) return;
+      var panel = handle.closest(".panel[draggable]");
+      if(!panel) return;
+      e.preventDefault();
+
+      dragState.src = panel;
+      dragState.startY = e.clientY;
+      dragState.active = false; // activate on move threshold
+
+      // Cache panel positions
+      dragState.panels = Array.from(app.querySelectorAll(".panel[data-panel-id]"));
+      dragState.offsets = dragState.panels.map(function(p){ return p.getBoundingClientRect(); });
+
+      // Capture pointer so we get events even outside the element
+      handle.setPointerCapture(e.pointerId);
+    });
+
+    // Use pointermove on document to track movement
+    document.addEventListener("pointermove", function(e){
+      if(!dragState.src) return;
+
+      // Activate after 5px movement threshold
+      if(!dragState.active){
+        if(Math.abs(e.clientY - dragState.startY) < 5) return;
+        dragState.active = true;
+        dragState.src.classList.add("dragging");
+        // Create ghost
+        var ghost = dragState.src.cloneNode(true);
+        ghost.style.cssText = "position:fixed;z-index:9999;pointer-events:none;opacity:.85;width:"+
+          dragState.src.offsetWidth+"px;transform:rotate(1deg);box-shadow:0 12px 32px rgba(0,0,0,.2)";
+        ghost.className = "panel dragging";
+        document.body.appendChild(ghost);
+        dragState.ghost = ghost;
+      }
+
+      // Move ghost
+      if(dragState.ghost){
+        dragState.ghost.style.top = (e.clientY - 30) + "px";
+        dragState.ghost.style.left = "8px";
+      }
+
+      // Highlight target
+      var target = findPanelAtY(e.clientY);
+      app.querySelectorAll(".panel.drag-over").forEach(function(p){ p.classList.remove("drag-over"); });
+      if(target && target !== dragState.src) target.classList.add("drag-over");
+    });
+
+    document.addEventListener("pointerup", function(e){
+      if(!dragState.src) return;
+
+      if(dragState.active){
+        // Drop
+        var target = findPanelAtY(e.clientY);
+        if(target && target !== dragState.src){
+          var rect = target.getBoundingClientRect();
+          var mid = rect.top + rect.height / 2;
+          if(e.clientY < mid) target.parentNode.insertBefore(dragState.src, target);
+          else target.parentNode.insertBefore(dragState.src, target.nextSibling);
+          savePanelOrder();
+        }
+      }
+
+      // Cleanup
+      dragState.src.classList.remove("dragging");
+      app.querySelectorAll(".panel.drag-over").forEach(function(p){ p.classList.remove("drag-over"); });
+      if(dragState.ghost){ dragState.ghost.remove(); dragState.ghost = null; }
+      dragState.active = false;
+      dragState.src = null;
+    });
+
+    document.addEventListener("pointercancel", function(){
+      if(dragState.src) dragState.src.classList.remove("dragging");
+      app.querySelectorAll(".panel.drag-over").forEach(function(p){ p.classList.remove("drag-over"); });
+      if(dragState.ghost){ dragState.ghost.remove(); dragState.ghost = null; }
+      dragState.active = false;
+      dragState.src = null;
+    });
+
+    function findPanelAtY(y){
+      for(var i=0;i<dragState.offsets.length;i++){
+        var o = dragState.offsets[i];
+        if(y >= o.top && y <= o.bottom) return dragState.panels[i];
+      }
+      return null;
+    }
+  }
 
   function $(id){ return document.getElementById(id); }
 
@@ -393,21 +735,38 @@ const CONFIG = /*__CONFIG__*/null;
     $("m-cnt").textContent = (DATA.candidate_count||0) + " 项";
   }
 
-  function renderSummary(){
+  function renderSummaryInner(){
     var cards = [
       {lbl:"可清理总量", val:DATA.deletable_human||"0B", cls:"c-indigo", sub:(DATA.candidate_count||0)+" 个候选"},
-      {lbl:"安全 (safe)", val:DATA.safe_human||"0B", cls:"c-emerald", sub:""},
-      {lbl:"谨慎 (aggressive)", val:DATA.aggressive_human||"0B", cls:"c-amber", sub:""},
-      {lbl:"待确认 (manual)", val:DATA.manual_human||"0B", cls:"c-rose", sub:""}
+      {lbl:"安全", val:DATA.safe_human||"0B", cls:"c-emerald", sub:""},
+      {lbl:"谨慎", val:DATA.aggressive_human||"0B", cls:"c-amber", sub:""},
+      {lbl:"待确认", val:DATA.manual_human||"0B", cls:"c-rose", sub:""},
+      {lbl:"隔离区", val:"—", cls:"c-slate", sub:"", id:"trash-info"},
+      {lbl:"上次清理", val:"—", cls:"c-slate", sub:"", id:"last-cleanup-info"}
     ];
     return '<div class="grid cols-4">'+cards.map(function(c){
-      return '<div class="sum-cell"><span class="lbl">'+esc(c.lbl)+'</span>'+
+      return '<div class="sum-cell"'+(c.id?' id="'+c.id+'"':'')+'><span class="lbl">'+esc(c.lbl)+'</span>'+
         '<span class="val '+c.cls+'">'+esc(c.val)+'</span>'+
         (c.sub?'<span class="sub">'+esc(c.sub)+'</span>':'')+'</div>';
     }).join("")+'</div>';
   }
 
-  function renderRisk(){
+  // viewMode state per panel, persisted to localStorage
+  var VIEW_KEY = "mdc.views";
+  var viewModes = {};
+  try{ viewModes = JSON.parse(localStorage.getItem(VIEW_KEY)||"{}"); }catch(e){}
+  function getView(panelId){ return viewModes[panelId] || "compact"; }
+  function setView(panelId, mode){ viewModes[panelId]=mode; try{localStorage.setItem(VIEW_KEY,JSON.stringify(viewModes));}catch(e){} }
+
+  function viewToggleHtml(panelId, noteText){
+    var v = getView(panelId);
+    return esc(noteText)+' <span class="view-toggle" data-view-panel="'+panelId+'" title="切换视图">'+
+      (v==="compact"?"☰ 横条":"▦ 列表")+'</span>';
+  }
+  function riskNote(){ return viewToggleHtml("risk","点击行可筛选"); }
+  function catNote(){ return viewToggleHtml("cat","按总大小 · 点击行可搜索"); }
+
+  function renderRiskInner(){
     var segs = ["safe","aggressive","manual"];
     var total = fmt(DATA.safe_bytes)+fmt(DATA.aggressive_bytes)+fmt(DATA.manual_bytes);
     var bar = segs.map(function(k){
@@ -415,15 +774,36 @@ const CONFIG = /*__CONFIG__*/null;
       var p = pct(v, total);
       return '<span class="'+RISK_META[k].cls+'" style="width:'+p+'%;background:'+RISK_META[k].sw+'"></span>';
     }).join("");
-    var rows = segs.map(function(k){
+    // compact: one row per item, only first visible, hover switches
+    var compactItems = segs.map(function(k,idx){
       var v = fmt(DATA[k+"_bytes"]);
       var m = RISK_META[k];
-      return '<div class="risk-row"><span class="sw" style="background:'+m.sw+'"></span>'+
-        '<div class="flex-1"><div class="rn">'+esc(m.label)+'</div><div class="rd">'+esc(m.desc)+'</div></div>'+
-        '<div class="rs"><div class="sz">'+fmtSize(v)+'</div><div class="pc">'+pct(v,total)+'%</div></div></div>';
+      var p = pct(v,total);
+      return '<div class="cr-item'+(idx===0?' cr-active':'')+'" data-risk="'+k+'" '+
+        'data-idx="'+idx+'" role="button" tabindex="0" aria-label="筛选 '+m.label+'">'+
+        '<span class="cr-dot" style="background:'+m.sw+'"></span>'+
+        '<span class="cr-label">'+esc(m.label)+'</span>'+
+        '<span class="cr-meter"><span style="width:'+p+'%;background:'+m.sw+'"></span></span>'+
+        '<span class="cr-val">'+fmtSize(v)+'</span>'+
+        '<span class="cr-pct">'+p+'%</span>'+
+        '<span class="cr-desc">'+esc(m.desc)+'</span>'+
+      '</div>';
     }).join("");
-    return '<section class="section"><div class="sec-head"><h2>风险分布</h2><span class="note">'+fmtSize(total)+' 受管</span></div>'+
-      '<div class="card" style="padding:16px 20px"><div class="risk-bar">'+bar+'</div><div class="risk-rows">'+rows+'</div></div></section>';
+    // list view: the full expanded grid with risk-bar + 3 columns
+    var listRows = segs.map(function(k){
+      var v = fmt(DATA[k+"_bytes"]);
+      var m = RISK_META[k];
+      var p = pct(v,total);
+      return '<div class="risk-row clickable" data-risk="'+k+'" role="button" tabindex="0" '+
+        'aria-label="筛选 '+m.label+' 级别候选"><span class="sw" style="background:'+m.sw+'"></span>'+
+        '<div class="flex-1"><div class="rn">'+esc(m.label)+'</div><div class="rd">'+esc(m.desc)+'</div></div>'+
+        '<div class="rs"><div class="sz">'+fmtSize(v)+'</div><div class="pc">'+p+'%</div></div></div>';
+    }).join("");
+    var view = getView("risk");
+    if(view==="list"){
+      return '<div class="risk-bar">'+bar+'</div><div class="risk-rows">'+listRows+'</div>';
+    }
+    return '<div class="risk-bar">'+bar+'</div><div class="cr-single">'+compactItems+'</div>';
   }
 
   function fmtSize(n){
@@ -434,23 +814,53 @@ const CONFIG = /*__CONFIG__*/null;
     return (i===0?x:x.toFixed(x<10?2:1))+u[i];
   }
 
-  function renderCat(){
+  function renderCatInner(){
     var bc = DATA.by_category||{};
     var keys = Object.keys(bc);
     var total = keys.reduce(function(s,k){ return s+fmt(bc[k]); },0);
-    if(!keys.length) return '<section class="section"><div class="sec-head"><h2>类别容量</h2></div><div class="card"><div class="empty">暂无数据</div></div></section>';
-    var rows = keys.sort(function(a,b){ return bc[b]-bc[a]; }).map(function(k,idx){
+    if(!keys.length) return '<div class="empty">暂无数据</div>';
+    var sorted = keys.sort(function(a,b){ return bc[b]-bc[a]; });
+    // compact: one row, hover switches
+    var compactItems = sorted.map(function(k,idx){
       var v = fmt(bc[k]);
       var color = CAT_COLORS[idx % CAT_COLORS.length];
-      return '<div class="cat-row"><span class="cl">'+esc(zh(k))+'</span>'+
+      var p = pct(v,total);
+      var cnt = (DATA.candidates||[]).filter(function(c){return c.category===k;}).length;
+      return '<div class="cr-item'+(idx===0?' cr-active':'')+'" data-cat="'+esc(k)+'" '+
+        'data-idx="'+idx+'" role="button" tabindex="0" aria-label="搜索 '+esc(zh(k))+'">'+
+        '<span class="cr-dot" style="background:'+color+'"></span>'+
+        '<span class="cr-label">'+esc(zh(k))+'</span>'+
+        '<span class="cr-meter"><span style="width:'+p+'%;background:'+color+'"></span></span>'+
+        '<span class="cr-val">'+fmtSize(v)+'</span>'+
+        '<span class="cr-pct">'+p+'%</span>'+
+        '<span class="cr-desc">'+cnt+' 个候选</span>'+
+      '</div>';
+    }).join("");
+    // list view: the original full list with meter bars and percentages
+    var listRows = sorted.map(function(k,idx){
+      var v = fmt(bc[k]);
+      var color = CAT_COLORS[idx % CAT_COLORS.length];
+      return '<div class="cat-row clickable" data-cat="'+esc(k)+'" role="button" tabindex="0" '+
+        'aria-label="搜索 '+esc(zh(k))+' 类别"><span class="cl">'+esc(zh(k))+'</span>'+
         '<div class="cr"><span class="meter"><span style="width:'+pct(v,total)+'%;background:'+color+'"></span></span>'+
         '<span class="cs">'+fmtSize(v)+'</span><span class="cp">'+pct(v,total)+'%</span></div></div>';
     }).join("");
-    return '<section class="section"><div class="sec-head"><h2>类别容量</h2><span class="note">按总大小</span></div>'+
-      '<div class="card">'+rows+'</div></section>';
+    var view = getView("cat");
+    if(view==="list"){
+      return '<div class="card">'+listRows+'</div>';
+    }
+    return '<div class="cr-single">'+compactItems+'</div>';
   }
 
-  function renderTools(){
+  var TOOL_INSTALL = {
+    ncdu:"brew install ncdu", docker:"brew install --cask docker",
+    pnpm:"npm install -g pnpm", bun:"curl -fsSL https://bun.sh/install | bash",
+    pip3:"已随 python3 安装", npm:"已随 node 安装", node:"brew install node",
+    brew:"/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
+    python3:"brew install python3"
+  };
+
+  function renderToolsInner(){
     var tools = DATA.tools||{};
     var core = DATA.core_tools||[];
     var opt = DATA.optional_tools||[];
@@ -458,23 +868,63 @@ const CONFIG = /*__CONFIG__*/null;
       var ok = !!tools[name];
       var type = core.indexOf(name)>=0 ? "core" : "optional";
       var miss = opt.indexOf(name)>=0 && !ok;
+      var install = !ok ? (TOOL_INSTALL[name] || "brew install "+name) : "";
       return '<div class="tool-cell"><span class="tn">'+esc(name)+'</span>'+
         '<span class="tt">'+TOOL_ZH[type]+'</span>'+
         '<span class="ts '+(ok?"ok":"miss")+'">'+(ok?TOOL_ZH.ok:TOOL_ZH.miss)+
-        (miss?'<span class="thint">未安装则跳过相关扫描</span>':'')+'</span></div>';
+        (miss?'<span class="thint">未安装则跳过相关扫描</span>':'')+'</span>'+
+        (miss?'<button class="tool-install copyable" data-copy="'+esc(install)+'" title="复制安装命令" aria-label="复制 '+esc(name)+' 安装命令">复制安装命令</button>':'')+
+        '</div>';
     }).join("");
-    var missing = (DATA.missing_tools||[]).length;
-    return '<section class="section"><div class="sec-head"><h2>工具自检</h2>'+
-      '<span class="note">'+(missing?("缺失 "+missing+" 项"):"核心 · 可选，全部就绪")+'</span></div>'+
-      '<div class="grid cols-3">'+cells+'</div></section>';
+    return '<div class="grid cols-3">'+cells+'</div>';
   }
 
-  function renderDisk(){
-    return '<section class="section"><div class="sec-head"><h2>磁盘空间</h2><span class="note">清理前 / 清理后</span></div>'+
-      '<div class="grid cols-2">'+
-      '<div class="disk-cell"><h4>清理前</h4><pre class="pre">'+(esc(DATA.disk_before)||"(无)")+'</pre></div>'+
-      '<div class="disk-cell"><h4>清理后</h4><pre class="pre">'+(esc(DATA.disk_after)||"(无)")+'</pre></div>'+
-      '</div></section>';
+  function parseDf(text){
+    // Parse df -h output:
+    // Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+    // /dev/disk3s5   228Gi   184Gi   6.8Gi    97%    2.0M   71M    3%   /System/Volumes/Data
+    if(!text) return null;
+    var lines = text.trim().split("\n");
+    if(lines.length < 2) return null;
+    // First data line
+    var parts = lines[1].trim().split(/\s+/);
+    // Capacity column (4th, 0-indexed) contains "97%" — strip the % and parse
+    var capStr = parts[4] || "";
+    var pctVal = parseInt(capStr.replace("%",""), 10);
+    if(isNaN(pctVal)) pctVal = 0;
+    function toBytes(h){
+      var n = parseFloat(h);
+      if(isNaN(n)) return 0;
+      var u = h.replace(/[\d.\s]/g,"").toUpperCase();
+      if(u==="K"||u==="KI") return n*1024;
+      if(u==="M"||u==="MI") return n*1048576;
+      if(u==="G"||u==="GI") return n*1073741824;
+      if(u==="T"||u==="TI") return n*1099511627776;
+      return n;
+    }
+    var sB=toBytes(parts[1]), uB=toBytes(parts[2]), aB=toBytes(parts[3]);
+    return { size:parts[1], used:parts[2], avail:parts[3], pct:pctVal,
+             totalBytes:sB, usedBytes:uB, availBytes:aB };
+  }
+
+  function renderDiskInner(){
+    var before = parseDf(DATA.disk_before);
+    var after = parseDf(DATA.disk_after);
+    // Compact single-card: show current + estimated safe cleanup side by side
+    var safeB = DATA.safe_bytes || 0;
+    var estAvail = before ? before.availBytes + safeB : 0;
+    var estUsed = before ? Math.max(0, before.usedBytes - safeB) : 0;
+    var estPct = before && before.totalBytes > 0 ? Math.round(estUsed / before.totalBytes * 100) : 0;
+    var metricsHtml = before ? '<div class="disk-compact">'+
+      '<div class="dc-metric"><div class="dc-val">'+esc(before.avail)+'</div><div class="dc-lbl">可用</div></div>'+
+      '<div class="dc-metric"><div class="dc-val">'+esc(before.used)+' / '+esc(before.size)+'</div><div class="dc-lbl">已用 / 总计</div></div>'+
+      '<div class="dc-bar"><span style="width:'+before.pct+'%;background:var(--bar)"></span></div>'+
+      '<div class="dc-metric"><div class="dc-val">'+before.pct+'%</div><div class="dc-lbl">使用率</div></div>'+
+      (safeB > 0 ? '<div class="dc-est">清理后预估可用 ~'+fmtSize(estAvail)+' (+'+fmtSize(safeB)+')</div>' : '')+
+      '</div>' : '<div class="empty">无磁盘数据</div>';
+    var rawHtml = before ? '<details class="df-detail"><summary>查看原始输出</summary>'+
+      '<pre class="pre">'+esc(DATA.disk_before)+'</pre></details>' : '';
+    return metricsHtml + rawHtml;
   }
 
   function riskCounts(){
@@ -498,7 +948,7 @@ const CONFIG = /*__CONFIG__*/null;
 
   function filtered(){
     var q = state.search.trim().toLowerCase();
-    return (DATA.candidates||[]).filter(function(c){
+    var list = (DATA.candidates||[]).filter(function(c){
       if(state.risk!=="all" && c.risk!==state.risk) return false;
       if(q){
         var hay = (c.path+" "+zh(c.category)+" "+(c.reason||"")).toLowerCase();
@@ -506,23 +956,58 @@ const CONFIG = /*__CONFIG__*/null;
       }
       return true;
     });
+    // Sort by current sort key / direction
+    var key = state.sortKey, dir = state.sortDir;
+    if(key){
+      list.sort(function(a,b){
+        var va, vb;
+        if(key==="size"){ va=a.size||0; vb=b.size||0; }
+        else if(key==="risk"){ var RO={safe:0,aggressive:1,manual:2}; va=RO[a.risk]??9; vb=RO[b.risk]??9; }
+        else if(key==="category"){ va=(a.category||"").toLowerCase(); vb=(b.category||"").toLowerCase(); }
+        else if(key==="action"){ va=(a.action||"").toLowerCase(); vb=(b.action||"").toLowerCase(); }
+        else return 0;
+        if(typeof va==="string") return dir * va.localeCompare(vb, "zh");
+        return dir * (va - vb);
+      });
+    }
+    return list;
   }
 
   function tableRows(list){
     if(!list.length) return '<div class="empty">没有匹配项。</div>';
+    var sortHeaders = [
+      {key:"size", label:"大小"},
+      {key:"risk", label:"风险"},
+      {key:"category", label:"类别"},
+      {key:"action", label:"动作"}
+    ];
+    var thHtml = sortHeaders.map(function(h){
+      var active = state.sortKey===h.key;
+      var arrow = active ? (state.sortDir>0?" ↑":" ↓") : "";
+      var cls = active ? " class=\"sort-active\"" : "";
+      return '<th'+cls+' data-sort="'+h.key+'">'+esc(h.label)+arrow+'</th>';
+    }).join("");
     return '<table><thead><tr>'+
-      '<th>大小</th><th>风险</th><th>类别</th><th>动作</th><th>路径</th><th class="hide-sm">原因</th>'+
+      thHtml+
+      '<th>路径</th><th class="hide-sm">原因</th><th class="hide-sm">操作</th>'+
       '</tr></thead><tbody>'+
       list.map(function(c){
         var rc = RISK_TAG[c.risk]||"";
         var ac = ACT_TAG[c.action]||"tag-scanonly";
+        var parentProject = (c.path||"").replace(/\/[^/]+\/?$/,"");
+        var actions = state.apiOnline ?
+          '<span class="row-actions">'+
+            '<button class="ra-btn" data-action="exclude" data-path="'+esc(c.path)+'" title="排除此路径" aria-label="排除">✕</button>'+
+            '<button class="ra-btn" data-action="protect" data-project="'+esc(parentProject)+'" title="保护此项目" aria-label="保护">★</button>'+
+          '</span>' : '';
         return '<tr>'+
           '<td class="sz">'+esc(c.size_human)+'</td>'+
           '<td><span class="tag '+rc+'">'+esc(zh(c.risk))+'</span></td>'+
           '<td><span class="mono" style="font-size:11px;color:var(--subtle)">'+esc(zh(c.category))+'</span></td>'+
           '<td><span class="tag '+ac+'">'+esc(zh(c.action))+'</span></td>'+
-          '<td class="path copyable" data-copy="'+esc(c.path)+'" title="点击复制路径">'+esc(c.path)+'</td>'+
+          '<td class="path copyable" data-copy="'+esc(c.path)+'" title="'+esc(c.path)+'">'+esc(truncatePath(c.path))+'</td>'+
           '<td class="reason hide-sm">'+esc(zhReason(c.reason))+'</td>'+
+          '<td class="hide-sm">'+actions+'</td>'+
         '</tr>';
       }).join("")+'</tbody></table>';
   }
@@ -540,7 +1025,7 @@ const CONFIG = /*__CONFIG__*/null;
           '<span class="tag '+ac+'">'+esc(zh(c.action))+'</span>'+
         '</div>'+
         '<div class="ccat">'+esc(zh(c.category))+'</div>'+
-        '<div class="cpath copyable" data-copy="'+esc(c.path)+'" title="点击复制路径">'+esc(c.path)+'</div>'+
+        '<div class="cpath copyable" data-copy="'+esc(c.path)+'" title="'+esc(c.path)+'">'+esc(truncatePath(c.path))+'</div>'+
         reason+
       '</div>';
     }).join("");
@@ -553,18 +1038,16 @@ const CONFIG = /*__CONFIG__*/null;
            '<div class="cview">'+cardsRows(list)+'</div>';
   }
 
-  function renderTable(){
+  function renderTableInner(){
     var list = filtered();
     var total = (DATA.candidates||[]).length;
-    return '<section class="section"><div class="sec-head"><h2>候选项</h2>'+
-      '<span class="note">可搜索 · 可筛选 · 点击路径复制</span></div>'+
-      '<div class="card"><div class="toolbar">'+
+    return '<div class="toolbar">'+
         '<div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'+
         '<input id="search-input" type="search" aria-label="搜索候选项" '+
         'placeholder="搜索路径、类别、原因…" value="'+esc(state.search)+'"></div>'+
         '<div class="chips" id="chips">'+chipsHtml()+'</div>'+
         '<span class="count" id="count">'+list.length+' / '+total+'</span>'+
-      '</div><div id="listview">'+views(list)+'</div></div></section>';
+      '</div><div id="listview">'+views(list)+'</div>';
   }
 
   // ---- settings ----
@@ -689,12 +1172,7 @@ const CONFIG = /*__CONFIG__*/null;
       }).join("");
     }).join("");
 
-    return '<section class="section"><div class="card">'+
-      '<div class="set-toggle" id="set-toggle" role="button" tabindex="0" '+
-        'aria-expanded="'+(state.settingsOpen?"true":"false")+'" aria-controls="set-body">'+
-        '<h2>设置</h2><span class="chev'+(state.settingsOpen?" open":"")+'" id="set-chev">›</span></div>'+
-      '<div class="set-body" id="set-body" style="display:'+(state.settingsOpen?"block":"none")+'">'+
-        (state.hasDraft?'<div class="draft-note">已载入上次未保存的草稿，与 config.json 中的值可能不同。'+
+    var inner = (state.hasDraft?'<div class="draft-note">已载入上次未保存的草稿，与 config.json 中的值可能不同。'+
           '<a href="#" id="drop-draft">放弃草稿</a></div>':'')+
         '<div class="fld">'+body+'</div>'+
         '<div class="set-actions">'+
@@ -705,8 +1183,8 @@ const CONFIG = /*__CONFIG__*/null;
         '</div>'+
         (state.showCmd?'<div class="cmdbox"><pre id="cmd-pre">'+esc(state.cmdOut)+'</pre>'+
           '<button class="copy-btn" id="copy-btn" aria-label="复制命令">复制</button></div>':'')+
-      '</div>'+
-    '</div></section>';
+        '<details class="cfg-view"><summary>查看当前生效配置</summary><pre class="cfg-pre">'+esc(JSON.stringify(cfg(),null,2))+'</pre></details>';
+    return panel("settings","设置","策略配置 · 保存到 config.json", inner);
   }
   function field(id,label,hint,min){
     return '<div class="field"><label for="f-'+esc(id)+'">'+esc(label)+'</label>'+
@@ -755,6 +1233,45 @@ const CONFIG = /*__CONFIG__*/null;
     };
   }
 
+  // ---- quick actions ----
+  function quickExclude(path){
+    if(!state.apiOnline){ toast("需要在线模式才能操作", "err"); return; }
+    var f = collectForm(false);
+    var c = toConfigJson(f);
+    if(!c.exclude_paths) c.exclude_paths = [];
+    if(c.exclude_paths.indexOf(path)>=0){ toast("路径已在排除列表中"); return; }
+    c.exclude_paths.push(path);
+    fetch("api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(c)})
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(j.ok){
+          LIVE_CONFIG=c; toast("已排除该路径","ok");
+          // Remove from candidate list visually
+          DATA.candidates=(DATA.candidates||[]).filter(function(x){return x.path!==path;});
+          DATA.candidate_count=(DATA.candidates||[]).length;
+          renderMeta(); refreshList();
+        } else { toast("保存失败：" +(j.error||""), "err"); }
+      }).catch(function(){ toast("网络错误","err"); });
+  }
+  function quickProtect(project){
+    if(!state.apiOnline){ toast("需要在线模式才能操作", "err"); return; }
+    var f = collectForm(false);
+    var c = toConfigJson(f);
+    if(!c.protected_projects) c.protected_projects = [];
+    if(c.protected_projects.indexOf(project)>=0){ toast("项目已在保护列表中"); return; }
+    c.protected_projects.push(project);
+    fetch("api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(c)})
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(j.ok){
+          LIVE_CONFIG=c; toast("已保护该项目","ok");
+          DATA.candidates=(DATA.candidates||[]).filter(function(x){return x.path.indexOf(project)!==0;});
+          DATA.candidate_count=(DATA.candidates||[]).length;
+          renderMeta(); refreshList();
+        } else { toast("保存失败：" +(j.error||""), "err"); }
+      }).catch(function(){ toast("网络错误","err"); });
+  }
+
   function setStatus(msg, cls){ state.status=msg; state.statusCls=cls||"idle"; var el=$("set-status"); if(el){ el.textContent=msg; el.className="status "+(cls||"idle"); } }
 
   function collectForm(remember){
@@ -766,6 +1283,7 @@ const CONFIG = /*__CONFIG__*/null;
   }
 
   function buildCli(cfgObj){
+    // collectForm() already returns nested config.json structure
     var json = JSON.stringify(cfgObj, null, 2);
     var scriptPath = "~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py";
     return "python3 "+scriptPath+" --set-config <<'EOF'\n"+json+"\nEOF";
@@ -801,9 +1319,46 @@ const CONFIG = /*__CONFIG__*/null;
     }
   }
 
+  // Unflatten the form's flat keys back into the nested structure that
+  // config.json actually uses, so the downloaded file is a drop-in replacement.
+  function toConfigJson(f){
+    var c = {};
+    c.stale_days = f.stale_days;
+    c.trash_retention_days = f.trash_retention_days;
+    c.wechat_media_keep_months = f.wechat_media_keep_months;
+    c.thresholds = {
+      app_cache_min_mb: f.thr_app_cache_min_mb,
+      app_log_min_mb: f.thr_app_log_min_mb,
+      large_dir_mb: f.thr_large_dir_mb,
+      large_file_mb: f.thr_large_file_mb
+    };
+    c.scan_roots = f.scan_roots;
+    c.personal_roots = f.personal_roots;
+    c.exclude_paths = f.exclude_paths;
+    c.exclude_globs = f.exclude_globs;
+    c.protected_projects = f.protected_projects;
+    c.protected_categories = f.protected_categories;
+    c.build_artifacts = {
+      safe_dirs: f.ba_safe_dirs,
+      aggressive_dirs: f.ba_aggressive_dirs,
+      safe_file_globs: f.ba_safe_file_globs,
+      tauri_parents: f.ba_tauri_parents,
+      tauri_gen_dirs: f.ba_tauri_gen_dirs,
+      tauri_build_dirs: f.ba_tauri_build_dirs,
+      bundle_markers: f.ba_bundle_markers
+    };
+    return c;
+  }
+
   function downloadConfig(){
     var f = collectForm(false);
-    var blob = new Blob([JSON.stringify(f, null, 2)], {type:"application/json"});
+    var configObj = toConfigJson(f);
+    // Merge with current config as base to preserve any fields not in the form
+    var base = cfg();
+    var merged = Object.assign({}, base, configObj);
+    if(base.thresholds && configObj.thresholds) merged.thresholds = Object.assign({}, base.thresholds, configObj.thresholds);
+    if(base.build_artifacts && configObj.build_artifacts) merged.build_artifacts = Object.assign({}, base.build_artifacts, configObj.build_artifacts);
+    var blob = new Blob([JSON.stringify(merged, null, 2)], {type:"application/json"});
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "config.json";
@@ -842,8 +1397,17 @@ const CONFIG = /*__CONFIG__*/null;
       .then(function(j){
         state.scanBusy=false;
         if(b){ b.disabled=false; b.textContent="重新扫描"; }
-        if(j.ok){
-          // reload so the freshly inlined state is picked up
+        if(j.ok && j.state){
+          // Update in-place without reload, preserving user state
+          Object.assign(DATA, j.state);
+          if(j.state.config) Object.assign(CONFIG, j.state.config);
+          loadForm();
+          renderMeta();
+          renderAll();
+          loadOperations();
+          loadTrash();
+          toast("扫描完成，共 " + (DATA.candidate_count||0) + " 个候选", "ok");
+        } else if(j.ok){
           location.reload();
         } else {
           var msg = "扫描失败：" + (j.error || "未知错误");
@@ -857,6 +1421,104 @@ const CONFIG = /*__CONFIG__*/null;
       });
   }
 
+  // ---- operations history ----
+  var OPERATIONS = [];
+  var TRASH = {total_bytes:0, operations:[]};
+
+  function loadOperations(){
+    if(typeof fetch!=="function") return;
+    fetch("api/operations",{cache:"no-store"}).then(function(r){return r.json();})
+      .then(function(j){ OPERATIONS=j.operations||[]; renderOperations(); renderLastCleanup(); })
+      .catch(function(){});
+  }
+  function loadTrash(){
+    if(typeof fetch!=="function") return;
+    fetch("api/trash",{cache:"no-store"}).then(function(r){return r.json();})
+      .then(function(j){ TRASH=j; renderTrash(); })
+      .catch(function(){});
+  }
+  function clearTrash(){
+    if(!confirm("确定要清空废纸篓中的所有隔离文件？\n清空后无法通过操作历史还原。")) return;
+    fetch("api/trash/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(j.ok){
+          toast("已清空 "+j.deleted+" 个操作目录，释放 "+fmtSize(j.freed_bytes),"ok");
+          loadTrash();
+        } else { toast("清空失败："+(j.error||""),"err"); }
+      }).catch(function(){ toast("网络错误","err"); });
+  }
+
+  function renderTrash(){
+    var el=$("trash-info"); if(!el) return;
+    if(!state.apiOnline) return;  // Keep placeholder until API loads
+    if(!TRASH.total_bytes){
+      el.innerHTML='<span class="lbl">隔离区</span><span class="val c-slate" style="font-size:16px">0</span><span class="sub">无隔离文件</span>';
+      return;
+    }
+    el.innerHTML='<span class="lbl">隔离区</span>'+
+      '<span class="val c-slate" style="font-size:16px">'+fmtSize(TRASH.total_bytes)+'</span>'+
+      '<span class="sub">'+TRASH.operations.length+' 个操作目录</span>'+
+      (state.apiOnline?'<button class="btn" style="margin-top:4px;height:24px;font-size:10px" id="clear-trash-btn">清空废纸篓</button>':'');
+    var btn=$("clear-trash-btn"); if(btn) btn.addEventListener("click",clearTrash);
+  }
+
+  function renderOperationsInner(){
+    // Body shell with an empty ops-list placeholder (filled async by renderOperations)
+    return '<div id="ops-list"><div class="empty">加载中…</div></div>';
+  }
+
+  function renderOperations(){
+    var el=$("ops-list"); if(!el) return;
+    if(!OPERATIONS.length){ el.innerHTML='<div class="empty">暂无操作记录</div>'; return; }
+    el.innerHTML=OPERATIONS.slice(0,10).map(function(op){
+      var t=op.timestamp?op.timestamp.replace("T"," ").slice(0,16):"";
+      var modeLabel=MODE_ZH[op.mode]||op.mode;
+      return '<div class="ops-row">'+
+        '<span class="ops-time">'+esc(t)+'</span>'+
+        '<span class="tag tag-'+(op.mode==="clean-safe"?"safe":"aggressive")+'">'+esc(modeLabel)+'</span>'+
+        '<span class="ops-count">'+op.entry_count+' 项</span>'+
+        '<span class="ops-size">'+fmtSize(op.total_bytes)+'</span>'+
+        '<button class="ra-btn ops-restore copyable" data-copy="'+esc(op.restore_command)+'" title="复制还原命令" aria-label="还原">↺</button>'+
+      '</div>';
+    }).join("");
+    var btns=el.querySelectorAll(".ops-restore");
+    for(var i=0;i<btns.length;i++){
+      btns[i].addEventListener("click",function(e){
+        e.stopPropagation();
+        copyText(this.getAttribute("data-copy"),"还原命令已复制");
+      });
+    }
+  }
+
+  function renderCleanupGuideInner(){
+    var safeBytes=fmtSize(DATA.safe_bytes);
+    var aggrBytes=fmtSize(DATA.aggressive_bytes);
+    var safeCmd="python3 scripts/mac_dev_cleanup.py clean-safe --apply";
+    var aggrCmd="python3 scripts/mac_dev_cleanup.py clean-aggressive --apply";
+    var safeHtml='<div class="cleanup-cmd">'+
+      '<div class="cc-header"><span class="tag tag-safe">安全清理</span><span class="cc-est">预估回收 '+safeBytes+'</span></div>'+
+      '<div class="cc-body"><code>'+esc(safeCmd)+'</code>'+
+      (state.apiOnline?'<button class="btn cc-copy" data-copy="'+esc(safeCmd)+'">复制命令</button>':'')+'</div>'+
+      '<div class="cc-hint">仅清理 safe 级别候选项，文件移入废纸篓可还原</div></div>';
+    var aggrHtml=(DATA.aggressive_bytes||0)>0?'<div class="cleanup-cmd cc-warn">'+
+      '<div class="cc-header"><span class="tag tag-aggressive">深度清理</span><span class="cc-est">预估回收 '+aggrBytes+'</span></div>'+
+      '<div class="cc-body"><code>'+esc(aggrCmd)+'</code>'+
+      (state.apiOnline?'<button class="btn cc-copy" data-copy="'+esc(aggrCmd)+'">复制命令</button>':'')+'</div>'+
+      '<div class="cc-hint">⚠️ 包含谨慎级别，删除后重建成本较高</div></div>':'';
+    return safeHtml+aggrHtml;
+  }
+
+  function renderLastCleanup(){
+    var el=$("last-cleanup-info"); if(!el) return;
+    if(!OPERATIONS.length) return;
+    var last=OPERATIONS[0];
+    var t=last.timestamp?last.timestamp.replace("T"," ").slice(0,16):"";
+    el.innerHTML='<span class="lbl">上次清理</span>'+
+      '<span class="val c-slate" style="font-size:16px">'+fmtSize(last.total_bytes)+'</span>'+
+      '<span class="sub">'+esc(t)+' · '+esc(last.entry_count)+' 项</span>';
+  }
+
   // ---- render orchestration ----
   function renderAll(){
     var app = $("app");
@@ -866,10 +1528,24 @@ const CONFIG = /*__CONFIG__*/null;
       return;
     }
     $("boot-error").classList.remove("show");
-    var html = renderSummary() + renderRisk() + renderCat() + renderTools() + renderDisk() + renderTable() + settingsHtml();
+    // panel() is the unified collapsible shell; each renderXxx supplies its body.
+    var html =
+      panel("summary","概览",(DATA.candidate_count||0)+" 个候选", renderSummaryInner()) +
+      panel("risk","风险分布", riskNote(), renderRiskInner(), true) +
+      panel("cat","类别容量", catNote(), renderCatInner(), true) +
+      panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
+      panel("disk","磁盘空间","清理前 / 清理后", renderDiskInner(), true) +
+      panel("table","候选项","可搜索 · 可筛选 · 点击路径复制", renderTableInner(), true) +
+      panel("cleanup","快速清理","在终端执行", renderCleanupGuideInner()) +
+      panel("ops","操作历史","最近操作 · 可还原", renderOperationsInner(), true) +
+      settingsHtml();
     app.innerHTML = html;
+    applyPanelOrder();
     bindTable();
     bindSettings();
+    renderTrash();
+    renderOperations();
+    renderLastCleanup();
   }
 
   // Only the result list is swapped. Rebuilding the whole card (as the previous
@@ -895,26 +1571,59 @@ const CONFIG = /*__CONFIG__*/null;
     });
     var holder = $("listview");
     if(holder) holder.addEventListener("click", function(e){
+      // Sort header click
+      var th = e.target.closest("[data-sort]");
+      if(th){
+        var key = th.getAttribute("data-sort");
+        if(state.sortKey===key) state.sortDir *= -1;
+        else { state.sortKey=key; state.sortDir = key==="size"?-1:1; }
+        refreshList();
+        return;
+      }
+      // Quick exclude/protect
+      var btn = e.target.closest("[data-action]");
+      if(btn){
+        var action = btn.getAttribute("data-action");
+        var path = btn.getAttribute("data-path");
+        var project = btn.getAttribute("data-project");
+        if(action==="exclude" && path) quickExclude(path);
+        else if(action==="protect" && project) quickProtect(project);
+        return;
+      }
+      // Path copy click
       var el = e.target.closest("[data-copy]"); if(!el) return;
       copyText(el.getAttribute("data-copy"), "路径已复制");
     });
-  }
-
-  function toggleSettings(){
-    state.settingsOpen=!state.settingsOpen;
-    var body=$("set-body"); if(body) body.style.display=state.settingsOpen?"block":"none";
-    var chev=$("set-chev"); if(chev) chev.classList.toggle("open", state.settingsOpen);
-    var tg=$("set-toggle"); if(tg) tg.setAttribute("aria-expanded", state.settingsOpen?"true":"false");
+    // Risk distribution panel → filter
+    var riskRows = document.querySelectorAll(".risk-row.clickable");
+    for(var i=0;i<riskRows.length;i++){
+      riskRows[i].addEventListener("click", function(){
+        state.risk = this.getAttribute("data-risk") || "all";
+        refreshList();
+      });
+    }
+    // Category panel → search
+    var catRows = document.querySelectorAll(".cat-row.clickable");
+    for(var i=0;i<catRows.length;i++){
+      catRows[i].addEventListener("click", function(){
+        var cat = this.getAttribute("data-cat");
+        state.search = cat || "";
+        var si = $("search-input");
+        if(si) si.value = state.search;
+        refreshList();
+      });
+    }
+    // Tool install copy
+    var toolInstalls = document.querySelectorAll(".tool-install");
+    for(var i=0;i<toolInstalls.length;i++){
+      toolInstalls[i].addEventListener("click", function(e){
+        e.stopPropagation();
+        copyText(this.getAttribute("data-copy"), "安装命令已复制");
+      });
+    }
   }
 
   function bindSettings(){
-    var tg = $("set-toggle");
-    if(tg){
-      tg.addEventListener("click", toggleSettings);
-      tg.addEventListener("keydown", function(e){
-        if(e.key==="Enter" || e.key===" "){ e.preventDefault(); toggleSettings(); }
-      });
-    }
     var sb=$("save-btn"); if(sb) sb.addEventListener("click", applyConfig);
     var dl=$("dl-btn"); if(dl) dl.addEventListener("click", downloadConfig);
     var rb=$("reset-btn"); if(rb) rb.addEventListener("click", resetConfig);
@@ -924,17 +1633,16 @@ const CONFIG = /*__CONFIG__*/null;
     });
   }
   function rerenderSettings(){
-    // rebuild settings section only
-    var sec = $("app").querySelectorAll("section");
-    for(var i=sec.length-1;i>=0;i--){
-      if(sec[i].querySelector(".set-toggle")){
-        var ns=document.createElement("div");
-        ns.innerHTML=settingsHtml();
-        sec[i].parentNode.replaceChild(ns.firstChild, sec[i]);
-        bindSettings();
-        return;
-      }
-    }
+    // Rebuild settings panel only — find by data-panel attribute
+    var oldPanel = document.querySelector('[data-panel="settings"]');
+    if(!oldPanel) return;
+    var oldSection = oldPanel.closest(".panel");
+    if(!oldSection) return;
+    var ns=document.createElement("div");
+    ns.innerHTML=settingsHtml();
+    var newSection = ns.querySelector(".panel");
+    if(newSection) oldSection.parentNode.replaceChild(newSection, oldSection);
+    bindSettings();
   }
 
   // ---- boot ----
@@ -957,11 +1665,14 @@ const CONFIG = /*__CONFIG__*/null;
   }
 
   function boot(){
+    bindPanels();  // event delegation — must be called once, before any render
     if(!DATA){ renderAll(); return; }
     loadForm();
     renderMeta();
     renderAll();
     detectApi();
+    loadOperations();
+    loadTrash();
   }
 
   if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", boot);

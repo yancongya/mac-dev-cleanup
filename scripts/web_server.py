@@ -2,14 +2,17 @@
 """Local control plane for mac-dev-cleanup.
 
 Binds to loopback only. The dashboard may read state/config, atomically update the
-validated config, and trigger a read-only scan. Destructive cleanup is
-intentionally unavailable over HTTP.
+validated config, trigger a read-only scan, view operation history, and clear the
+quarantine trash. Destructive per-candidate cleanup is intentionally CLI-only.
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -21,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "mac_dev_cleanup.py"
 CONFIG_PATH = ROOT / "config.json"
 STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "state.json"
+OPERATIONS_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "operations"
+QUARANTINE_DIR = Path.home() / ".Trash" / "mac-dev-cleanup"
 MAX_BODY = 256 * 1024
 SCAN_LOCK = threading.Lock()
 
@@ -78,7 +83,46 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/health":
             self.send_json(200, {"ok": True, "service": "mac-dev-cleanup", "destructive_http_actions": False})
             return
+        if path == "/api/operations":
+            self._handle_operations_get()
+            return
+        if path == "/api/trash":
+            self._handle_trash_get()
+            return
         super().do_GET()
+
+    def _handle_operations_get(self) -> None:
+        """Return operation history from the operations directory."""
+        ops = []
+        if OPERATIONS_DIR.is_dir():
+            for f in sorted(OPERATIONS_DIR.glob("*.json"), reverse=True):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    entries = data.get("entries", [])
+                    total_bytes = sum(e.get("size", 0) for e in entries)
+                    ops.append({
+                        "operation_id": data.get("operation_id", f.stem),
+                        "timestamp": data.get("timestamp", ""),
+                        "mode": data.get("mode", ""),
+                        "entry_count": len(entries),
+                        "total_bytes": total_bytes,
+                        "restore_command": f"python3 scripts/mac_dev_cleanup.py --restore {data.get('operation_id', f.stem)}",
+                    })
+                except (OSError, json.JSONDecodeError):
+                    continue
+        self.send_json(200, {"operations": ops})
+
+    def _handle_trash_get(self) -> None:
+        """Return quarantine trash status and size."""
+        total_bytes = 0
+        op_dirs = []
+        if QUARANTINE_DIR.is_dir():
+            for d in sorted(QUARANTINE_DIR.iterdir()):
+                if d.is_dir():
+                    dir_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                    op_dirs.append({"operation_id": d.name, "bytes": dir_bytes})
+                    total_bytes += dir_bytes
+        self.send_json(200, {"total_bytes": total_bytes, "operations": op_dirs})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
@@ -118,7 +162,26 @@ class Handler(SimpleHTTPRequestHandler):
             finally:
                 SCAN_LOCK.release()
             return
+        if path == "/api/trash/clear":
+            self._handle_trash_clear()
+            return
         self.send_json(404, {"ok": False, "error": "unknown API endpoint"})
+
+    def _handle_trash_clear(self) -> None:
+        """Delete all quarantine directories under ~/.Trash/mac-dev-cleanup/."""
+        if not QUARANTINE_DIR.is_dir():
+            self.send_json(200, {"ok": True, "deleted": 0, "freed_bytes": 0})
+            return
+        deleted = 0
+        freed = 0
+        for d in QUARANTINE_DIR.iterdir():
+            if d.is_dir():
+                dir_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                shutil.rmtree(d, ignore_errors=True)
+                if not d.exists():
+                    deleted += 1
+                    freed += dir_bytes
+        self.send_json(200, {"ok": True, "deleted": deleted, "freed_bytes": freed})
 
 
 class LoopbackServer(ThreadingHTTPServer):

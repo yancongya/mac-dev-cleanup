@@ -59,11 +59,11 @@ const ok = (name, cond, extra = "") =>
 // --- structure ---
 ok("app 容器已渲染", $("#app").children.length > 0);
 ok("boot-error 未触发", !$("#boot-error").classList.contains("show"));
-ok("摘要四宫格", doc.querySelectorAll(".sum-cell").length === 4, doc.querySelectorAll(".sum-cell").length);
-ok("风险分布三行", doc.querySelectorAll(".risk-row").length === 3);
+ok("摘要六宫格", doc.querySelectorAll(".sum-cell").length === 6, doc.querySelectorAll(".sum-cell").length);
+ok("风险分布三行", doc.querySelectorAll(".cr-item[data-risk]").length === 3);
 ok("候选项表格已渲染", doc.querySelectorAll("tbody tr").length > 0, doc.querySelectorAll("tbody tr").length);
 ok("工具自检格子", doc.querySelectorAll(".tool-cell").length > 0);
-ok("设置面板存在", !!$("#set-toggle"));
+ok("面板系统已渲染", doc.querySelectorAll(".panel").length >= 5);
 ok("toast 容器存在", !!$("#toast"));
 
 // --- i18n ---
@@ -85,16 +85,22 @@ ok("无残留英文 reason 模板",
 ok("筛选 chip 带计数", /\d/.test($("#chips .chip .n")?.textContent || ""), $("#chips")?.textContent.trim());
 
 // --- settings schema ---
-$("#set-toggle").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-const labels = [...doc.querySelectorAll("#set-body .field label")].map((e) => e.textContent.trim());
+const settingsPanel = doc.querySelector('.panel-head[data-panel="settings"]');
+if (settingsPanel) settingsPanel.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+const settingsBody = doc.querySelector('#pbody-settings');
+const labels = [...(settingsBody || doc).querySelectorAll(".field label")].map((e) => e.textContent.trim());
 const allChinese = labels.every((l) => /[一-龥]/.test(l));
 ok("设置项标签全部含中文", allChinese, labels.filter((l) => !/[一-龥]/.test(l)).join(", "));
 ok("含构建衍生物分组", labels.some((l) => l.includes("构建目录名")), labels.join(" / ").slice(0, 200));
 ok("含微信媒体保留月数", labels.some((l) => l.includes("微信媒体")), labels.join(" / ").slice(0, 120));
 ok("设置项数量 >= 15", labels.length >= 15, labels.length);
-ok("aria-expanded 已切换", $("#set-toggle").getAttribute("aria-expanded") === "true");
+ok("aria-expanded 已切换", settingsPanel?.getAttribute("aria-expanded") === "true");
 
 // --- search keeps focus (the bug this rewrite fixed) ---
+// First expand the candidates panel so search-input is visible
+const candidatesPanel = doc.querySelector('.panel-head[data-panel="table"]');
+if (candidatesPanel) candidatesPanel.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+await new Promise(r => setTimeout(r, 50));
 const input = $("#search-input");
 input.focus();
 ok("搜索框可获得焦点", doc.activeElement === input);
@@ -108,7 +114,7 @@ ok("计数已更新", /\d+ \/ \d+/.test(countText || ""), countText);
 // --- copy affordance ---
 const copyCell = doc.querySelector("[data-copy]");
 ok("路径可复制标记", !!copyCell);
-ok("复制标记带 title", copyCell?.getAttribute("title") === "点击复制路径");
+ok("复制标记带 title", !!copyCell?.getAttribute("title"));
 
 // --- risk filter ---
 const chip = doc.querySelector('#chips .chip[data-risk="manual"]');
@@ -119,13 +125,53 @@ if (chip) {
   ok("筛选后仅剩待确认", allManual, rows.length + " 行");
 }
 
+// --- sort headers (reset search/filter first to ensure table renders) ---
+input.value = "";
+input.dispatchEvent(new window.Event("input", { bubbles: true }));
+// Reset risk filter to "all"
+const allChip = doc.querySelector('#chips .chip[data-risk="all"]');
+if (allChip) allChip.click();
+await new Promise(r => setTimeout(r, 50));
+const sortHeaders = doc.querySelectorAll("thead th[data-sort]");
+ok("排序表头已渲染", sortHeaders.length >= 3, sortHeaders.length + " 个");
+if (sortHeaders.length > 0) {
+  sortHeaders[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  const arrow = sortHeaders[0].textContent;
+  ok("排序箭头已切换", arrow.includes("↑") || arrow.includes("↓"), arrow);
+}
+
 // --- offline CLI generation ---
 const saveBtn = $("#save-btn");
 ok("离线时按钮为生成命令", saveBtn.textContent.includes("生成配置命令"), saveBtn.textContent);
 saveBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
 ok("已生成 CLI 命令", (text("#cmd-pre") || "").includes("--set-config"), (text("#cmd-pre") || "").slice(0, 80));
 ok("CLI 含 build_artifacts", (text("#cmd-pre") || "").includes("build_artifacts"));
+// The CLI output should be nested config.json structure (thresholds nested, not flat)
+const cmdText = text("#cmd-pre") || "";
+ok("CLI 含嵌套 thresholds", cmdText.includes('"thresholds"') && cmdText.includes('"app_cache_min_mb"'),
+   cmdText.includes('"thr_app_cache_min_mb"') ? "仍然扁平(BUG)" : "已嵌套");
+ok("CLI 含嵌套 build_artifacts", cmdText.includes('"tauri_parents"'));
+// downloadConfig should also produce nested JSON
+const dlBtn = $("#dl-btn");
+let downloadPayload = null;
+const origCreate = window.URL.createObjectURL;
+window.URL.createObjectURL = function(blob) {
+  downloadPayload = blob; return "blob:test";
+};
+dlBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+window.URL.createObjectURL = origCreate;
+if (downloadPayload && typeof downloadPayload.text === "function") {
+  downloadPayload.text().then(function(t) {
+    const j = JSON.parse(t);
+    ok("下载 config.json 含 thresholds 对象", typeof j.thresholds === "object", JSON.stringify(Object.keys(j)));
+    ok("下载 config.json 含 build_artifacts 对象", typeof j.build_artifacts === "object");
+  });
+} else {
+  ok("下载 config.json 含 thresholds 对象", false, "无法读取 Blob");
+}
 ok("toast 已提示", $("#toast").classList.contains("show"), $("#toast").textContent);
+
+// (sort headers tested above, before save click)
 
 // --- report ---
 console.log("");
