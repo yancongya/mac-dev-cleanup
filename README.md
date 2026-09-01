@@ -40,6 +40,8 @@
 - **三级风险模型**：`safe` / `aggressive` / `manual`（`manual` 永不自动删除，仅报告待确认）
 - **Stale 项目识别**：以源码 mtime + 最后 git commit 判定（默认 90 天）
 - **可恢复清理**：真实清理「先进废纸篓」，写入操作清单，可一键还原——绝不使用裸 `rm`
+- **清理后自动释放空间**：`--apply` 完成后自动清空废纸篓（后台 osascript + 10 分钟轮询），并用 `df -h ~` 验证回收；无需手动重启
+- **项目内结构整理（Project hygiene）**：除磁盘级缓存外，还能整理单个项目——清空格目录、删 AI IDE 残留（`.agents`/`.claude`/`.opencode`/`.superpowers`/`.workflow`/` .DS_Store`/`*.bak`）、把散落的 `migrate_*`/`fix_*`/`test_*`/`init_*` 脚本归位到 `scripts/`/`tests/`、合并冗余文档。全程 Git 感知（`git mv`/`git rm`），不碰源码与数据库
 - **配置化**：单一 `config.json` 管理阈值/扫描根/排除项；附带本地 Web 控制台
 - **零运行时依赖**：纯 Python 标准库
 
@@ -57,4 +59,6 @@ python3 ~/.codex/skills/mac-dev-cleanup/scripts/web_server.py                   
 
 ## 安全须知
 
-清理后空间可能因 **APFS 快照占位**而不立即释放，**重启是最可靠的释放方式**。切勿因 `df` 未变就误判清理失败（验证用 `df -h ~`，而非 `df /`）。详见 SKILL.md 的「APFS snapshots」章节。
+清理采用「Trash-first」策略：真实删除会先把文件移入 `~/.Trash/mac-dev-cleanup/<操作ID>/` 并写入操作清单，便于一键还原。完成后 Skill 会自动清空废纸篓释放空间（后台 osascript + 10 分钟轮询），并用 `df -h ~` 验证回收。
+
+若仍因 **APFS 快照占位**未及时回血（多见于系统级大目录），**重启是最可靠的兜底释放方式**。切勿因 `df` 未变就误判清理失败（验证用 `df -h ~`，而非 `df /`）。详见 SKILL.md 的「APFS snapshots」章节。

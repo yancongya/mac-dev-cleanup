@@ -1,5 +1,10 @@
 # 变更历史 / Commit History（重构）
 
+## Unreleased
+
+### Added
+- **Project hygiene 章节**（SKILL.md）：新增项目内结构整理工作流，覆盖空目录清理、AI IDE 残留删除、散落脚本归类、冗余文档合并、Git 感知移动/删除、标准目录约定。源自 pilinote 项目实际整理经验（2026-09-01）。
+
 > 本文件基于会话迭代记录与各文件的磁盘时间戳（mtime）重建。
 > 真实的 git 仓库于 **2026-08-03** 才初始化，此前在多个 IDE（Codex / Trae / WorkBuddy）中的迭代未留下独立文件副本，
 > 仅存两份可用物证：

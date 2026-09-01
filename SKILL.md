@@ -18,6 +18,7 @@ Use this skill for macOS developer storage cleanup. Prefer the bundled script ov
 - The `manual` risk level is **reported but never auto-deleted** by any mode. It covers screenshots, large project dirs, archives, dumps, and large files in personal roots — these require explicit human review.
 - If required tools are not installed, continue with built-in Python scanning and report missing tools in the HTML log.
 - Real cleanup is Trash-first: eligible items move to `~/.Trash/mac-dev-cleanup/<operation-id>/` and an operation manifest is written for recovery. Never bypass this with ad hoc `rm` or `shutil.rmtree`.
+- After cleanup (`--apply`), **automatically empty the Trash** to actually reclaim disk space. Use `osascript -e 'tell application "Finder" to empty trash'` running in the background with a 10-minute polling wait (Finder AppleScript times out at ~2 min for large Trash; background + extended wait is mandatory). Verify reclaim with `df -h ~` afterward. If osascript times out, report the failure but do not block the cleanup report.
 - The local HTTP API may read state/config, atomically save validated config, and trigger scan only. Destructive HTTP endpoints are intentionally forbidden; cleanup stays in the CLI confirmation flow.
 
 ## Important: APFS snapshots & disk space release
@@ -295,6 +296,70 @@ Dashboard conventions worth preserving:
 - Guard optional browser APIs (`fetch`, `navigator.clipboard`) with `typeof` checks — the page must degrade quietly instead of throwing.
 
 If the runtime fails to boot, the page must show a visible diagnostic instead of silently removing `x-cloak` and leaving inert `<template>` blocks.
+
+## Project hygiene (项目内结构整理)
+
+Beyond disk-level cache cleanup, this skill also handles **in-project hygiene** — tidying scattered files, removing stale artifacts, and normalizing directory structure within a single project root.
+
+### When to trigger
+
+- User says "整理项目", "清理项目内文件", "规范目录结构", "项目内散文件", or names a specific project for cleanup.
+- After a disk-level scan reveals a project with many empty dirs, scattered scripts, or AI IDE residue.
+
+### Scan checklist
+
+Run a Python or shell pass over the project tree to find:
+
+| Category | What to look for | Action |
+|---|---|---|
+| **Empty directories** | `find . -type d -empty` | Delete |
+| **macOS metadata** | `.DS_Store` files | Delete |
+| **Backup files** | `*.bak`, `*.backup`, `*.orig`, `*.swp` | Delete |
+| **Git keepers** | `.gitkeep` in dirs that now have content | Delete |
+| **AI IDE residue** | `.agents/`, `.claude/`, `.iflow/`, `.opencode/`, `.superpowers/`, `.workflow/` | Delete (these are per-AI-tool work dirs, not project code) |
+| **Tool lock files** | `skills-lock.json`, etc. when the tool is uninstalled | Delete |
+| **Scattered scripts** | `migrate_*.py`, `fix_*.py`, `init_*.py` in project root or `apps/api/` root | Move to `scripts/` |
+| **Scattered tests** | `test_*.py` in project root or `apps/api/` root when a `tests/` dir exists | Move to `tests/` |
+| **Redundant docs** | `README_LAN.md`, `LAN_ACCESS.md` duplicating `README.md` | Merge into `README.md`, delete originals |
+| **Config in wrong place** | `playwright.config.ts` in root when tests live in `tests/` | Move to `tests/` |
+
+### Rules
+
+1. **Git-aware moves**: prefer `git mv` over plain `mv` to preserve history. Fall back to `mv` if the file is untracked.
+2. **Git-aware deletes**: use `git rm` for tracked files, plain `rm` for untracked junk.
+3. **Never touch**: `.git/`, `.gitignore`, source code, database files (`.db`), lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `Cargo.lock`), `.env.example` files, or anything the user explicitly wants to keep.
+4. **Merge before delete**: for redundant docs (e.g. `README_LAN.md`), always merge content into the primary doc first. Never delete without merging.
+5. **Idempotent**: re-running on an already-tidy project should be a no-op (no errors, no moves).
+
+### Suggested directory conventions
+
+For a typical monorepo project:
+
+```
+project/
+├── README.md              ← single source of truth
+├── CHANGELOG.md
+├── package.json / pyproject.toml
+├── docker-compose.*.yml
+├── start-*.command / start-*.sh   ← launch scripts
+├── apps/
+│   ├── web/               ← frontend
+│   └── api/               ← backend
+│       ├── src/           ← source code
+│       ├── scripts/       ← migrate, fix, init, verify scripts
+│       └── tests/         ← test files
+├── scripts/               ← project-level scripts (NAS, CI, etc.)
+├── tests/                 ← integration/e2e tests
+├── data/                  ← runtime data (DB, caches)
+└── docs/ or <name>-docs/  ← documentation site
+```
+
+### Post-cleanup verification
+
+After reorganizing, verify:
+- No empty directories remain: `find . -type d -empty -not -path './.git/*'`
+- No `.DS_Store` left: `find . -name '.DS_Store'`
+- Git status is clean or only shows expected renames: `git status`
 
 ## Useful follow-up checks
 
