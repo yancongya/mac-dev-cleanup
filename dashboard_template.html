@@ -7,17 +7,28 @@
 <style>
 :root{
   --bg:#fafafa; --panel:#ffffff; --border:#e4e4e7; --text:#18181b; --muted:#71717a;
-  --subtle:#a1a1aa; --row:#ffffff; --row-hover:#f4f4f5; --accent:#18181b; --accent-inv:#ffffff;
+  --subtle:#a1a1aa; --row:#ffffff; --row-hover:#f4f4f5; --accent:#c2185b; --accent-inv:#ffffff;
   --track:#f4f4f5; --bar:#d4d4d8;
-  --indigo:#4f46e5; --emerald:#059669; --amber:#d97706; --rose:#e11d48; --violet:#7c3aed; --sky:#0284c7; --slate:#64748b;
+  --indigo:#e23e7d; --emerald:#059669; --amber:#d97706; --rose:#e11d48; --violet:#7c3aed; --sky:#0284c7; --slate:#64748b;
+  --brand:#f95c93;
   --radius:10px;
 }
+/* Manual dark theme (toggle) — wine-tinted dark using the logo's pink */
+:root[data-theme="dark"]{
+  --bg:#150a11; --panel:#1f1119; --border:#3a2230; --text:#fbe9f1; --muted:#c89bb0;
+  --subtle:#8a5f73; --row:#1f1119; --row-hover:#2a1822; --accent:#f95c93; --accent-inv:#1a0712;
+  --track:#2a1822; --bar:#4a2c3b;
+  --indigo:#ff8fb3; --emerald:#10b981; --amber:#f59e0b; --rose:#f43f5e; --violet:#a78bfa; --sky:#38bdf8; --slate:#94a3b8;
+  --brand:#f95c93;
+}
+/* System dark — applies unless the user explicitly chose light */
 @media (prefers-color-scheme: dark){
-  :root{
-    --bg:#09090b; --panel:#18181b; --border:#27272a; --text:#fafafa; --muted:#a1a1aa;
-    --subtle:#52525b; --row:#18181b; --row-hover:#1f1f23; --accent:#fafafa; --accent-inv:#09090b;
-    --track:#27272a; --bar:#3f3f46;
-    --indigo:#818cf8; --emerald:#10b981; --amber:#f59e0b; --rose:#f43f5e; --violet:#a78bfa; --sky:#38bdf8; --slate:#94a3b8;
+  :root:not([data-theme="light"]){
+    --bg:#150a11; --panel:#1f1119; --border:#3a2230; --text:#fbe9f1; --muted:#c89bb0;
+    --subtle:#8a5f73; --row:#1f1119; --row-hover:#2a1822; --accent:#f95c93; --accent-inv:#1a0712;
+    --track:#2a1822; --bar:#4a2c3b;
+    --indigo:#ff8fb3; --emerald:#10b981; --amber:#f59e0b; --rose:#f43f5e; --violet:#a78bfa; --sky:#38bdf8; --slate:#94a3b8;
+    --brand:#f95c93;
   }
 }
 *{box-sizing:border-box}
@@ -52,7 +63,14 @@ a{color:var(--indigo)}
 .brand svg{width:20px;height:20px;flex:0 0 auto;color:var(--text)}
 .logo-light{display:block}
 .logo-dark{display:none}
-@media (prefers-color-scheme: dark){.logo-light{display:none}.logo-dark{display:block}}
+:root[data-theme="dark"] .logo-light{display:none}
+:root[data-theme="dark"] .logo-dark{display:block}
+:root[data-theme="light"] .logo-light{display:block}
+:root[data-theme="light"] .logo-dark{display:none}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]) .logo-light{display:none}
+  :root:not([data-theme="light"]) .logo-dark{display:block}
+}
 .brand h1{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:600;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .brand .dim{color:var(--subtle);font-weight:400}
 .meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;flex:0 0 auto}
@@ -67,6 +85,16 @@ a{color:var(--indigo)}
 .btn.primary{background:var(--accent);color:var(--accent-inv);border-color:var(--accent)}
 .btn.primary:hover{opacity:.9}
 .btn.busy{opacity:.7;cursor:default}
+.theme-toggle{width:32px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.theme-toggle svg{width:16px;height:16px;display:block}
+.theme-toggle .ic-sun{display:none}
+.theme-toggle .ic-moon{display:block}
+:root[data-theme="dark"] .theme-toggle .ic-sun{display:block}
+:root[data-theme="dark"] .theme-toggle .ic-moon{display:none}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]) .theme-toggle .ic-sun{display:block}
+  :root:not([data-theme="light"]) .theme-toggle .ic-moon{display:none}
+}
 
 /* sections → unified collapsible panels */
 .section{margin-top:16px}
@@ -399,6 +427,10 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
 #boot-error p{font-size:13px;color:var(--muted);margin:0 0 12px}
 #boot-error code{display:inline-block;font-family:ui-monospace,monospace;font-size:11px;background:var(--row-hover);border:1px solid var(--border);padding:6px 12px;border-radius:7px}
 </style>
+<script>
+/* Apply saved theme before paint to avoid a flash of the wrong theme */
+(function(){try{var t=localStorage.getItem("mdc.theme");if(t==="light"||t==="dark"){document.documentElement.dataset.theme=t;}}catch(e){}})();
+</script>
 </head>
 <body>
 <header class="topbar">
@@ -536,6 +568,10 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
     </div>
     <div class="meta">
       <span class="pill"><span class="dot" id="api-dot"></span><span id="api-text">静态查看</span></span>
+      <button class="btn theme-toggle" id="theme-btn" title="切换亮色/暗色" aria-label="切换主题">
+        <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
       <button class="btn" id="scan-btn" disabled title="需通过本地服务打开才能触发扫描">重新扫描</button>
       <span id="m-ts">—</span><span class="sep">·</span><span id="m-mode">—</span><span class="sep">·</span><span id="m-cnt">—</span>
     </div>
@@ -570,6 +606,22 @@ const CONFIG = /*__CONFIG__*/null;
   };
   var MODE_ZH = { scan:"仅扫描", "clean-safe":"安全清理", "clean-aggressive":"深度清理" };
   var TOOL_ZH = { ok:"已安装", miss:"缺失", core:"核心", optional:"可选" };
+
+  /* Theme toggle: persisted to localStorage, overrides system preference */
+  (function(){
+    var btn = document.getElementById("theme-btn");
+    if(!btn) return;
+    function current(){
+      var t = document.documentElement.dataset.theme;
+      if(t==="light"||t==="dark") return t;
+      return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+    }
+    btn.addEventListener("click", function(){
+      var next = current()==="dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      try{ localStorage.setItem("mdc.theme", next); }catch(e){}
+    });
+  })();
 
   // Reason strings come from the Python engine in English; translate the known
   // templates and fall back to the original text for anything unrecognized.
