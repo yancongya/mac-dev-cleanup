@@ -17,6 +17,7 @@
     --accent:#15803d; --accent-ink:#ffffff; --accent-soft:rgba(21,128,61,.09);
     --code-bg:#0d130e; --code-ink:#d9f2e2; --code-dim:#7fa68d; --code-line:rgba(255,255,255,.07);
     --green:#15803d; --amber:#b45309; --rose:#be123c;
+    --brand-pink:#f95c93;
     --mono:ui-monospace,SFMono-Regular,Menlo,"JetBrains Mono",Consolas,monospace;
     --shadow:0 1px 2px rgba(22,27,22,.05),0 10px 30px rgba(22,27,22,.07);
     --shadow-lg:0 2px 6px rgba(22,27,22,.06),0 24px 60px rgba(22,27,22,.12);
@@ -33,6 +34,31 @@
       --shadow-lg:0 2px 6px rgba(0,0,0,.45),0 24px 60px rgba(0,0,0,.5);
     }
   }
+  /* Manual overrides driven by the toggle button (data-theme) */
+  :root[data-theme="dark"]{
+    --bg:#0a0d0a; --panel:#10140f; --panel-2:#0d110c;
+    --ink:#e7efe8; --muted:#9fb0a2; --subtle:#687a6e;
+    --border:#1e261f; --border-strong:#2c372e;
+    --accent:#34d399; --accent-ink:#052e1b; --accent-soft:rgba(52,211,153,.1);
+    --code-bg:#040704; --code-ink:#c9e9d5; --code-dim:#5f7a6a; --code-line:rgba(255,255,255,.06);
+    --green:#4ade80; --amber:#fbbf24; --rose:#fb7185;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+    --shadow-lg:0 2px 6px rgba(0,0,0,.45),0 24px 60px rgba(0,0,0,.5);
+  }
+  :root[data-theme="light"]{
+    --bg:#f4f2ec; --panel:#ffffff; --panel-2:#faf9f4;
+    --ink:#161b16; --muted:#4c574c; --subtle:#76816f;
+    --border:#e3e1d6; --border-strong:#cfccbf;
+    --accent:#15803d; --accent-ink:#ffffff; --accent-soft:rgba(21,128,61,.09);
+    --code-bg:#0d130e; --code-ink:#d9f2e2; --code-dim:#7fa68d; --code-line:rgba(255,255,255,.07);
+    --green:#15803d; --amber:#b45309; --rose:#be123c;
+    --shadow:0 1px 2px rgba(22,27,22,.05),0 10px 30px rgba(22,27,22,.07);
+    --shadow-lg:0 2px 6px rgba(22,27,22,.06),0 24px 60px rgba(22,27,22,.12);
+  }
+  :root[data-theme="light"] .tl.you{color:#7cc4f5}
+  :root[data-theme="light"] .tl .hl{color:#ecfdf5}
+  :root[data-theme="dark"] .tl.you{color:#8fd3ff}
+  :root[data-theme="dark"] .tl .hl{color:#f0fdf4}
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
   body{
@@ -65,6 +91,21 @@
     border:1px solid var(--border-strong); color:var(--ink) !important; font-weight:600; font-size:13px; background:var(--panel)}
   .nav-gh:hover{border-color:var(--accent)}
   @media (max-width:820px){ .nav-links a:not(.nav-gh){display:none} }
+  /* theme toggle */
+  .theme-toggle{display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; padding:0;
+    border-radius:8px; border:1px solid var(--border-strong); background:var(--panel); color:var(--brand-pink); cursor:pointer; flex:0 0 auto}
+  .theme-toggle:hover{border-color:var(--brand-pink)}
+  .theme-toggle svg{width:17px; height:17px; display:block}
+  .theme-toggle .ic-sun{display:none}
+  .theme-toggle .ic-moon{display:block}
+  :root[data-theme="dark"] .theme-toggle .ic-sun{display:block}
+  :root[data-theme="dark"] .theme-toggle .ic-moon{display:none}
+  :root[data-theme="light"] .theme-toggle .ic-sun{display:none}
+  :root[data-theme="light"] .theme-toggle .ic-moon{display:block}
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]) .theme-toggle .ic-sun{display:block}
+    :root:not([data-theme="light"]) .theme-toggle .ic-moon{display:none}
+  }
 
   /* ===== hero ===== */
   .hero{padding:76px 0 56px}
@@ -212,6 +253,14 @@
     .btn,.cell{transition:none}
   }
 </style>
+<script>
+  (function(){
+    try{
+      var t = localStorage.getItem('mdc-docs-theme');
+      if(t === 'light' || t === 'dark'){ document.documentElement.setAttribute('data-theme', t); }
+    }catch(e){}
+  })();
+</script>
 </head>
 <body>
 <a class="skip" href="#main">跳到主要内容</a>
@@ -229,6 +278,10 @@
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
         GitHub
       </a>
+      <button class="theme-toggle" id="theme-btn" title="切换亮色/暗色" aria-label="切换主题">
+        <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
     </nav>
   </div>
 </header>
@@ -478,6 +531,19 @@ python3 ~/.codex/skills/mac-dev-cleanup/scripts/web_server.py</div>
       } else { fallback(); }
     });
   });
+
+  /* theme toggle */
+  (function(){
+    var btn = document.getElementById('theme-btn');
+    if(!btn) return;
+    btn.addEventListener('click', function(){
+      var cur = document.documentElement.getAttribute('data-theme');
+      var isDark = cur === 'dark' || (cur !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      var next = isDark ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('mdc-docs-theme', next); } catch(e){}
+    });
+  })();
 </script>
 </body>
 </html>
