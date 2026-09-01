@@ -1,9 +1,8 @@
-# 运行时生成 / 本地状态（由 scan 自动生成，源码在 dashboard_template.html）
+# 运行时生成 / 本地状态（由 scan 自动生成；dashboard.html 现为纯预览壳，可入库）
 state.json
 config.json
 config_data.js
 dashboard_data.js
-dashboard.html
 
 # 备份
 *.bak.*

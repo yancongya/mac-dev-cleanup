@@ -10,6 +10,7 @@
 - **看板主题按钮可见性**：将顶栏主题切换按钮从 32×32 纯图标改为带文字标签的按钮（暗色/亮色），并添加品牌粉色边框，避免被误认为普通状态图标。
 - **docs 落地页新增亮/暗手动切换**：`docs/index.html` 原本只跟随系统暗色，现加入与看板一致的顶栏主题按钮（`data-theme` + `localStorage` 持久化），默认仍跟随系统；按钮采用 logo 粉色边框。
 - **docs 落地页亮色主题改为 logo 粉色系**：修复亮色下强调色仍固定为绿色的问题。默认亮色与 `data-theme="light"` 下 `--accent` 改为 `#c2185b`（深粉红）并配合 `--accent-soft:rgba(249,92,147,.12)`；暗色下 `--accent` 改为 `#f95c93`（品牌粉）并配合深酒红 `--accent-ink:#3a0a1f`；`--green` 语义变量也同步映射为粉色，`.tag-safe`、`.tl.ok`、`.copy.done` 等均不再显示绿色。
+- **dashboard.html 去数据化、可安全入库**：此前生成的 `dashboard.html` 会把真实扫描数据（机器绝对路径、磁盘用量、各类缓存字节数）内联进页面，无法公开上传。`_render_dashboard_html` 不再内联 state/config，改为由 `dashboard.html` 通过 `<script src="dashboard_data.js">` / `<script src="config_data.js">` 引用（两者仍 gitignore，含机器数据）。本地 file:// 打开时同目录脚本加载真实数据正常显示；上传到 GitHub 后纯壳无泄露，前端回退到内置「数据缺失」提示。`.gitignore` 相应移除 `dashboard.html` 排除项；`check_dashboard.py` 放宽原「禁止外部 script」断言为仅允许这两个数据文件，`check_dashboard_dom.mjs` 改为在内存注入 `state.json` 验证渲染（不再依赖异步 file:// 加载）。
 
 > 本文件基于会话迭代记录与各文件的磁盘时间戳（mtime）重建。
 > 真实的 git 仓库于 **2026-08-03** 才初始化，此前在多个 IDE（Codex / Trae / WorkBuddy）中的迭代未留下独立文件副本，

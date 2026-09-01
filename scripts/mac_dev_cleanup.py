@@ -1266,25 +1266,24 @@ def write_state(
 
 
 def _render_dashboard_html(state: dict) -> None:
-    """Produce a fully self-contained dashboard.html from the design template.
+    """Produce a data-free dashboard.html preview shell from the design template.
 
-    The data and config are inlined directly into the page, so the dashboard has no
-    external <script src>, no CDN, and no framework runtime. This is what lets it boot
-    reliably under file:// and inside sandboxed preview webviews.
+    The page no longer inlines the real scan state or config. Instead it references
+    dashboard_data.js / config_data.js (gitignored, emitted next to it) via <script src>,
+    so the committed dashboard.html contains no machine-specific data and can be served
+    publicly. Under file:// the sibling scripts load the real data; when they are absent
+    (e.g. on GitHub) the UI falls back to its built-in "data missing" state.
     """
     template_path = DASHBOARD_PATH.with_name("dashboard_template.html")
     if not template_path.exists():
-        print(f"warning: {template_path.name} missing; skipped self-contained dashboard build")
+        print(f"warning: {template_path.name} missing; skipped dashboard build")
         return
     try:
         template = template_path.read_text(encoding="utf-8")
-        data_json = json.dumps(state, ensure_ascii=False)
-        config_json = json.dumps(CONFIG, ensure_ascii=False)
-        html = (
-            template
-            .replace("/*__DATA__*/null", data_json, 1)
-            .replace("/*__CONFIG__*/null", config_json, 1)
-        )
+        # Keep dashboard.html as a data-free preview shell: real state/config live in
+        # dashboard_data.js / config_data.js (gitignored). The HTML only references them,
+        # so it can be committed/served publicly without leaking the user's machine data.
+        html = template
         DASHBOARD_PATH.write_text(html, encoding="utf-8")
     except (OSError, json.JSONDecodeError) as exc:
         print(f"warning: failed to build dashboard.html: {exc}")

@@ -21,6 +21,11 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+# Local data files the dashboard may reference. They are gitignored (machine-specific),
+# emitted next to dashboard.html by scan, and make the committed HTML a data-free shell.
+ALLOWED_EXTERNAL_SCRIPTS = {"dashboard_data.js", "config_data.js"}
+
+
 def check_html(path: Path, *, generated: bool) -> str:
     if not path.exists() or path.stat().st_size == 0:
         fail(f"missing or empty dashboard: {path}")
@@ -28,12 +33,18 @@ def check_html(path: Path, *, generated: bool) -> str:
     lowered = html.lower()
     if "cdn.jsdelivr.net" in lowered or "unpkg.com" in lowered:
         fail(f"dashboard depends on a remote runtime: {path}")
-    if re.search(r'<script[^>]+src=', html, re.I):
-        fail(f"dashboard loads external scripts; keep it self-contained: {path}")
+    for src in re.findall(r'<script[^>]+src="([^"]+)"', html, re.I):
+        if src not in ALLOWED_EXTERNAL_SCRIPTS:
+            fail(f"dashboard loads unexpected external script ({src}); only {sorted(ALLOWED_EXTERNAL_SCRIPTS)} are allowed: {path}")
     if re.search(r"alpine|tailwind", lowered):
         fail(f"deprecated framework reference found: {path}")
-    if generated and ("/*__DATA__*/" in html or "/*__CONFIG__*/" in html):
-        fail("generated dashboard still contains injection tokens")
+    # The committed HTML must not inline the real scan data/config. It may keep the
+    # /*__DATA__*/null / /*__CONFIG__*/null placeholder (a no-op fallback), but must
+    # never inline a data object literal (const DATA = {...} / const CONFIG = [...]).
+    if generated and re.search(r"const DATA\s*=\s*[\{\[]", html):
+        fail("generated dashboard inlines real DATA; keep it data-free (reference dashboard_data.js)")
+    if generated and re.search(r"const CONFIG\s*=\s*[\{\[]", html):
+        fail("generated dashboard inlines real CONFIG; keep it data-free (reference config_data.js)")
     if not generated and ("/*__DATA__*/null" not in html or "/*__CONFIG__*/null" not in html):
         fail("dashboard template injection tokens are missing")
     if 'id="boot-error"' not in html:

@@ -11,6 +11,7 @@
  * translated.
  */
 import { readFileSync } from "node:fs";
+import os from "node:os";
 
 async function loadJsdom() {
   const candidates = ["jsdom", process.env.MDC_JSDOM].filter(Boolean);
@@ -32,13 +33,26 @@ async function loadJsdom() {
 const { JSDOM, VirtualConsole } = await loadJsdom();
 
 const html = readFileSync(process.argv[2], "utf8");
+// The committed dashboard.html is a data-free shell that references dashboard_data.js
+// (gitignored). For the DOM checks we inline the latest scan state so rendering is
+// deterministic and does not depend on async file:// script loading.
+const statePath = `${os.homedir()}/.codex/logs/mac-dev-cleanup/state.json`;
+let renderHtml = html;
+try {
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  renderHtml = renderHtml
+    .replace("/*__DATA__*/null", JSON.stringify(state))
+    .replace("/*__CONFIG__*/null", JSON.stringify(state.config || {}));
+} catch (e) {
+  // fall through with null DATA; checks will fail clearly rather than render silently
+}
 const errors = [];
 const vc = new VirtualConsole();
 vc.on("jsdomError", (e) => errors.push("jsdomError: " + (e.stack || e.message)));
 vc.on("error", (...a) => errors.push("console.error: " + a.join(" ")));
 vc.on("warn", (...a) => errors.push("console.warn: " + a.join(" ")));
 
-const dom = new JSDOM(html, {
+const dom = new JSDOM(renderHtml, {
   runScripts: "dangerously",
   pretendToBeVisual: true,
   virtualConsole: vc,
