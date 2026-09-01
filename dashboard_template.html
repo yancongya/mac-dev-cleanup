@@ -85,15 +85,16 @@ a{color:var(--indigo)}
 .btn.primary{background:var(--accent);color:var(--accent-inv);border-color:var(--accent)}
 .btn.primary:hover{opacity:.9}
 .btn.busy{opacity:.7;cursor:default}
-.theme-toggle{width:32px;padding:0;display:inline-flex;align-items:center;justify-content:center}
-.theme-toggle svg{width:16px;height:16px;display:block}
-.theme-toggle .ic-sun{display:none}
-.theme-toggle .ic-moon{display:block}
-:root[data-theme="dark"] .theme-toggle .ic-sun{display:block}
-:root[data-theme="dark"] .theme-toggle .ic-moon{display:none}
+.theme-toggle{width:auto;padding:0 8px;gap:6px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:var(--brand);border-color:var(--brand)}
+.theme-toggle:hover{background:rgba(249,92,147,.12)}
+.theme-toggle svg{width:16px;height:16px;display:block;flex:0 0 auto}
+.theme-toggle .ic-sun,.theme-toggle .lbl-sun{display:none}
+.theme-toggle .ic-moon,.theme-toggle .lbl-moon{display:inline}
+:root[data-theme="dark"] .theme-toggle .ic-sun,:root[data-theme="dark"] .theme-toggle .lbl-sun{display:inline}
+:root[data-theme="dark"] .theme-toggle .ic-moon,:root[data-theme="dark"] .theme-toggle .lbl-moon{display:none}
 @media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]) .theme-toggle .ic-sun{display:block}
-  :root:not([data-theme="light"]) .theme-toggle .ic-moon{display:none}
+  :root:not([data-theme="light"]) .theme-toggle .ic-sun,:root:not([data-theme="light"]) .theme-toggle .lbl-sun{display:inline}
+  :root:not([data-theme="light"]) .theme-toggle .ic-moon,:root:not([data-theme="light"]) .theme-toggle .lbl-moon{display:none}
 }
 
 /* sections → unified collapsible panels */
@@ -571,6 +572,7 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
       <button class="btn theme-toggle" id="theme-btn" title="切换亮色/暗色" aria-label="切换主题">
         <svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         <svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <span class="theme-label"><span class="lbl-moon">暗色</span><span class="lbl-sun">亮色</span></span>
       </button>
       <button class="btn" id="scan-btn" disabled title="需通过本地服务打开才能触发扫描">重新扫描</button>
       <span id="m-ts">—</span><span class="sep">·</span><span id="m-mode">—</span><span class="sep">·</span><span id="m-cnt">—</span>
