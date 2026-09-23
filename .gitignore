@@ -4,6 +4,10 @@ config.json
 config_data.js
 dashboard_data.js
 
+# SkillDo 仓储缓存标记（last_fetched_ms + head，仅本机有效）。skilldo 每次
+# update 都会把它写回技能根目录，不忽略就会被 push 提交进公开仓库。
+.skilldo-cache.json
+
 # 备份
 *.bak.*
 scripts/*.bak*
