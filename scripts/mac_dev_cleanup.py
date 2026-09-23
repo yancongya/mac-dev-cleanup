@@ -179,6 +179,12 @@ DEFAULT_CONFIG = {
     "protected_categories": [],
     "trash_retention_days": 30,
     "wechat_media_keep_months": 1,
+    # Loopback port for `web_server.py`. The conventional 8765 is frequently
+    # already taken (on this machine a Codex auto-resume daemon holds it), and a
+    # collision means the dashboard silently fails to start, so the default is
+    # deliberately off that number. Override per-run with `--port`, or per-shell
+    # with the MDC_PORT environment variable.
+    "dashboard_port": 8766,
     # Build by-product rules are user policy, not a hard safety boundary, so
     # they are configurable. Everything here is ADDITIVE on top of the built-in
     # SAFE_DIR_NAMES / AGGRESSIVE_DIR_NAMES sets, which can never be shrunk.
@@ -377,6 +383,10 @@ def validate_config(cfg: dict) -> dict:
             raise ValueError(f"{key} must be a non-negative integer")
     if not isinstance(merged["wechat_media_keep_months"], int) or merged["wechat_media_keep_months"] < 1:
         raise ValueError("wechat_media_keep_months must be an integer >= 1")
+    # Unprivileged range only: binding below 1024 would need root, and anything
+    # above 65535 is not a port.
+    if not isinstance(merged["dashboard_port"], int) or not (1024 <= merged["dashboard_port"] <= 65535):
+        raise ValueError("dashboard_port must be an integer between 1024 and 65535")
     for key, value in merged["thresholds"].items():
         if not isinstance(value, (int, float)) or value < 0:
             raise ValueError(f"thresholds.{key} must be a non-negative number")

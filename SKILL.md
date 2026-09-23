@@ -48,15 +48,15 @@ Consequences that matter when editing:
   - policy → `~/.codex/logs/mac-dev-cleanup/config.json` (the script's `CONFIG_PATH`)
   - state, history, reports → `~/.codex/logs/mac-dev-cleanup/`
   - this Skill's own notes → `~/.codex/logs/mac-dev-cleanup/.workbuddy/`, symlinked in
-- **⚠️ The CLI's `update` re-materialises every target as a real directory copy.** `skilldo update` runs `update_managed_skill_from_source_cli`, which re-syncs *all* targets through `sync_dir_copy_with_overwrite` regardless of the recorded mode — so a single CLI update silently turns these five symlinks into five independent copies, and it leaves the database still claiming `mode=symlink`, so `skilldo list` gives no warning. Restore the single-copy layout afterwards:
-  
+- **CLI `update` respects symlink targets** (fixed 2026-09-23 in SkillDo, `src-tauri/src/core/installer.rs`). The CLI path used to re-sync *all* targets through `sync_dir_copy_with_overwrite` regardless of the recorded mode, so one `skilldo update` silently turned these five symlinks into five independent copies — and it left the database still claiming `mode=symlink`, so `skilldo list` reported a link that was no longer there. It now skips any target that is already a correct link, re-materialises copy targets (plus Cursor, which cannot use symlinks), and repairs a link that is missing or pointing elsewhere — the same semantics the GUI path always had. On a SkillDo build older than that fix, restore the layout by hand:
+
   ```bash
   for t in codex claude_code mimocode workbuddy "custom:$HOME/Desktop/OH-WorkSpace/.agents/skills"; do
     skilldo sync --skill mac-dev-cleanup --tool "$t"
   done
   ```
-  
-  Verified 2026-09-23 (all five targets flipped to `Directory` after one CLI `update`). The GUI's update path (`update_managed_skill_from_source`) respects the recorded mode and only force-copies targets already in `copy` mode or Cursor, so it leaves symlinks alone. `skilldo push` never touches targets at all.
+
+  `skilldo push` never touches targets at all.
 - `.gitignore` excludes `config.json`, `state.json`, `config_data.js`, `dashboard_data.js`, `*.bak.*`, `__pycache__/`, `.workbuddy` (written without a trailing slash — the slash form matches directories only and would let the *symlink* be committed with a local absolute path inside), and the deprecated `vendor/`. Machine-local state can never reach the public repository.
 
 ## Important: APFS snapshots & disk space release
@@ -299,17 +299,19 @@ System-level safety sets (`GLOBAL_SAFE_PATHS`, `PRUNE_PATHS`, `SAFE_DIR_NAMES`, 
 
 ## Local web control panel
 
-Start the Skill's loopback-only control server:
+Start the Skill's loopback-only control server (any of the install paths works — they are all symlinks into the one central directory):
 
 ```bash
-python3 ~/.codex/skills/mac-dev-cleanup/scripts/web_server.py
+python3 ~/.skillshub/mac-dev-cleanup/scripts/web_server.py
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:8765/dashboard.html
+http://127.0.0.1:8766/dashboard.html
 ```
+
+The port resolves as `--port` → `MDC_PORT` → `config.json: dashboard_port`, defaulting to **8766**. That default deliberately avoids 8765: it is a crowded neighbour on a developer Mac (a Codex auto-resume daemon already listens there on this machine) and a collision makes the server exit the moment it starts, which looks like the command doing nothing.
 
 When served this way, the dashboard can:
 

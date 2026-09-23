@@ -35,6 +35,32 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg["wechat_media_keep_months"], 3)
 
 
+class DashboardPortTests(unittest.TestCase):
+    """The dashboard port is policy, not a hardcoded constant.
+
+    8765 is often already taken on a developer Mac, so the default must live in
+    config.json (overridable by --port / MDC_PORT) and an unusable value must be
+    rejected rather than producing a server that cannot bind.
+    """
+
+    def test_default_port_avoids_the_crowded_8765(self) -> None:
+        self.assertEqual(cleanup.DEFAULT_CONFIG["dashboard_port"], 8766)
+        self.assertNotEqual(cleanup.DEFAULT_CONFIG["dashboard_port"], 8765)
+
+    def test_port_is_part_of_the_validated_config(self) -> None:
+        cfg = cleanup.validate_config({"dashboard_port": 9000})
+        self.assertEqual(cfg["dashboard_port"], 9000)
+        # An untouched policy still exposes the key, so the server never has to
+        # invent its own fallback.
+        self.assertIn("dashboard_port", cleanup.validate_config({}))
+
+    def test_unusable_ports_are_rejected(self) -> None:
+        for bad in (80, 0, -1, 70000, "8766", 8766.5, None, True):
+            with self.subTest(port=bad):
+                with self.assertRaises(ValueError):
+                    cleanup.validate_config({"dashboard_port": bad})
+
+
 class ConfigLocationTests(unittest.TestCase):
     """config.json must live outside the Skill directory.
 

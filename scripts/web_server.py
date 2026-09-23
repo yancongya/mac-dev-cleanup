@@ -192,12 +192,33 @@ class LoopbackServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def resolve_port(cli_port: int | None) -> int:
+    """Pick the dashboard port: --port, then MDC_PORT, then the policy file.
+
+    8765 is a common neighbour (a Codex auto-resume daemon already listens there
+    on this machine), so the default lives in `config.json: dashboard_port`
+    rather than being hardcoded here.
+    """
+    if cli_port is not None:
+        return cli_port
+    env = os.environ.get("MDC_PORT", "").strip()
+    if env.isdigit():
+        return int(env)
+    return int(cleanup.CONFIG.get("dashboard_port", 8766))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Serve the mac-dev-cleanup dashboard and safe local API.")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="override the port (default: MDC_PORT env var, else config.json dashboard_port)",
+    )
     args = parser.parse_args()
-    server = LoopbackServer(("127.0.0.1", args.port), Handler)
-    print(f"mac-dev-cleanup dashboard: http://127.0.0.1:{args.port}/dashboard.html")
+    port = resolve_port(args.port)
+    server = LoopbackServer(("127.0.0.1", port), Handler)
+    print(f"mac-dev-cleanup dashboard: http://127.0.0.1:{port}/dashboard.html")
     print("HTTP actions: read state/config, update validated config, read-only scan. Cleanup remains CLI-only.")
     try:
         server.serve_forever()
