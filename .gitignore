@@ -1,8 +1,13 @@
-# 运行时生成 / 本地状态（由 scan 自动生成；dashboard.html 现为纯预览壳，可入库）
+# 运行时生成 / 本地状态（由 scan 自动生成）
 state.json
 config.json
 config_data.js
 dashboard_data.js
+
+# dashboard.html 是 dashboard_template.html 的生成物（scan 时按恒等拷贝重建）。
+# 设计源是模板；生成物不再入库——两者逐字节相同，提交两份等于把同一个 123KB
+# 文件重复放进仓库，且每次 scan 都会刷出无意义的 diff。
+dashboard.html
 
 # SkillDo 仓储缓存标记（last_fetched_ms + head，仅本机有效）。skilldo 每次
 # update 都会把它写回技能根目录，不忽略就会被 push 提交进公开仓库。

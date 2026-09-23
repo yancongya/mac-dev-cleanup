@@ -1533,10 +1533,11 @@ def write_state(
         encoding="utf-8",
     )
 
-    # Build a fully self-contained dashboard.html (no external scripts, no CDN, no
-    # framework) by injecting the state + config into the design template. This keeps
-    # the dashboard working under file:// and inside sandboxed preview webviews where
-    # sibling <script src> loads and inlined frameworks can fail to boot.
+    # Rebuild dashboard.html from the design template. The two are byte-identical by
+    # design: the page is a data-free shell that loads dashboard_data.js / config_data.js
+    # (both written just above, both gitignored), so no per-run data is ever injected into
+    # the HTML and the generated file stays safe to serve. Keeping the HTML free of CDN and
+    # inlined frameworks is what lets it boot under file:// and in sandboxed preview webviews.
     _render_dashboard_html(state)
 
     summary = {
@@ -1553,26 +1554,30 @@ def write_state(
 
 
 def _render_dashboard_html(state: dict) -> None:
-    """Produce a data-free dashboard.html preview shell from the design template.
+    """Produce dashboard.html from the design template as a data-free preview shell.
 
-    The page no longer inlines the real scan state or config. Instead it references
-    dashboard_data.js / config_data.js (gitignored, emitted next to it) via <script src>,
-    so the committed dashboard.html contains no machine-specific data and can be served
+    The page does not inline the real scan state or config. It references
+    dashboard_data.js / config_data.js instead (gitignored, emitted next to it) via
+    <script src>, so dashboard.html carries no machine-specific data and can be served
     publicly. Under file:// the sibling scripts load the real data; when they are absent
     (e.g. on GitHub) the UI falls back to its built-in "data missing" state.
+
+    Because nothing is injected any more, this is an exact copy of the template: the
+    output is byte-identical to dashboard_template.html. That is why the template is the
+    only tracked file and dashboard.html is gitignored — see .gitignore. The function is
+    kept (rather than the template simply being served directly) so that dashboard.html
+    always exists at DASHBOARD_PATH after a scan, which is what web_server.py serves and
+    what check_dashboard.py inspects. `state` is accepted for signature stability; no
+    field of it reaches the page.
     """
     template_path = DASHBOARD_PATH.with_name("dashboard_template.html")
     if not template_path.exists():
         print(f"warning: {template_path.name} missing; skipped dashboard build")
         return
     try:
-        template = template_path.read_text(encoding="utf-8")
-        # Keep dashboard.html as a data-free preview shell: real state/config live in
-        # dashboard_data.js / config_data.js (gitignored). The HTML only references them,
-        # so it can be committed/served publicly without leaking the user's machine data.
-        html = template
+        html = template_path.read_text(encoding="utf-8")
         DASHBOARD_PATH.write_text(html, encoding="utf-8")
-    except (OSError, json.JSONDecodeError) as exc:
+    except OSError as exc:
         print(f"warning: failed to build dashboard.html: {exc}")
 
 

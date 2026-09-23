@@ -33,7 +33,7 @@ async function loadJsdom() {
 const { JSDOM, VirtualConsole } = await loadJsdom();
 
 const html = readFileSync(process.argv[2], "utf8");
-// The committed dashboard.html is a data-free shell that references dashboard_data.js
+// The generated dashboard.html is a data-free shell that references dashboard_data.js
 // (gitignored). For the DOM checks we inline the latest scan state so rendering is
 // deterministic and does not depend on async file:// script loading.
 const statePath = `${os.homedir()}/.codex/logs/mac-dev-cleanup/state.json`;
@@ -56,7 +56,9 @@ const dom = new JSDOM(renderHtml, {
   runScripts: "dangerously",
   pretendToBeVisual: true,
   virtualConsole: vc,
-  url: "http://127.0.0.1:8765/dashboard.html",
+  // Origin only — nothing is fetched over the network. Kept in step with the dashboard's
+  // default port (web_server.py: `--port` > MDC_PORT > config.json: dashboard_port, 8766).
+  url: "http://127.0.0.1:8766/dashboard.html",
 });
 
 const { window } = dom;

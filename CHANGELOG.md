@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Changed
+- **仓库去衍生物：`dashboard.html` 不再入库**。`dashboard.html` 与 `dashboard_template.html` 逐字节相同（`shasum 6b0a3b84…`）——自看板改为「不内联数据、由 `dashboard_data.js` / `config_data.js` 承载」之后，`_render_dashboard_html()` 已退化为模板的恒等拷贝，仓库却仍在提交两份 123,711 B 的文件。现收敛为**只跟踪模板**，`dashboard.html` 写入 `.gitignore`（每次 `scan` 重建，本地照常可打开）。连带把「`skilldo update` 会丢失的本地文件」清单从 3 项更正为 **4 项**（多出 `dashboard.html`），`_render_dashboard_html()` 的文档字符串也写明「恒等拷贝」这一事实与其保留原因（保证 `DASHBOARD_PATH` 在 scan 后必定存在，供 `web_server.py` 与门禁使用）。
+- **删除零引用的 `assets/` 目录**：全仓搜不到任何 `assets/` 引用（README、`docs/index.html`、全部脚本均无）；`assets/logo-light.svg` 与 `docs/logo.svg` 同哈希（`54f1658a…`）属纯重复，唯一独有内容 `logo-dark.svg` 先移入 `docs/` 再删目录。落地页仍从 `docs/logo.svg` 取图，展示不受影响。
+- **`check_dashboard.py` 修掉一处自相矛盾并合为单一路径**：原脚本 44–47 行**禁止** generated 页面出现 `const DATA = {`，63–66 行又**要求**存在 `const DATA =`——两段都是「数据内联时代」的残留，只因实际值是 `/*__DATA__*/null` 才恰好都不触发。现统一为 `check_shell()`：模板与生成物同规则（禁 CDN / 禁非白名单外链脚本 / 禁 alpine·tailwind / 禁内联真实 DATA·CONFIG / 保留两个 `null` 回退令牌 / 保留 `#boot-error`），并新增「生成物必须与模板逐字节一致」断言（防止手改生成物导致漂移）。生成物缺失时（克隆后未 scan）降级为 `[note]` 提示而非失败——它已是 gitignore 的构建产物。
 - **看板端口改为可配置，默认 8766**：`web_server.py` 原先硬编码 `--port` 默认 8765，而该端口在本机被保持运行的 CodexAutoResume 守护进程占用 —— 端口冲突时服务会立刻退出，看起来就像命令什么都没做。现解析顺序为 `--port` → `MDC_PORT` 环境变量 → `config.json: dashboard_port`，默认值 8766；`validate_config` 拒绝 1024–65535 之外的取值（含字符串与浮点），新增 `DashboardPortTests` 三例（单测 34 → 37）。SKILL.md 同步说明冲突原因与三种改法。
 
 ### Added
