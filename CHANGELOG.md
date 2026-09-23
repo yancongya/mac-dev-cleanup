@@ -3,14 +3,27 @@
 ## Unreleased
 
 ### Added
+- **应用白名单缓存识别（`config.json: app_support_whitelist`）**：`~/Library/Application Support` 一直是整体 prune 的，于是把多 GB 缓存放在那里的应用对扫描**完全不可见**。新增 config 驱动的形状白名单（对齐微信白名单的做法，但条目来自 `config.json`，新增应用只是改配置而非改代码）：仅**逐字列出**的相对路径被豁免，应用自身的数据库/配置/授权一律不匹配。`safe` 条目归入新分类 `app-support-cache`（temp、录屏恢复、崩溃转储、运行日志，`clean-safe` 可清）；`manual` 条目归入 `app-support-manual`（截图历史等用户数据，只上报、永不自动删）。条目可选 `require_quit`：该进程在跑时 `--apply` 跳过其 `safe` 路径并打印 `skipped: <name> is running`，避免移动正在录制的文件。首条内置规则为 PixPin —— 其 `Temp/RecordingRecovery` 单文件曾达 **2.2G** 且完全扫描不到（2026-09-23）；同目录 43 个 `.his` 截图历史归为 `manual`。校验拒绝：root 不在任何 `PRUNE_PATHS` 之下、绝对路径 / `~` 前缀 / 含 `..` 的逃逸路径、同一路径同时列为 safe 与 manual、空条目与未知键。
+- **Docker / OrbStack 章节**（SKILL.md）：明确「绝不盲扫」禁区——`docker container prune` 会删掉只是当前未运行的服务容器（如 n8n，应 `docker start` 而非 prune）、`docker volume prune` 会删掉无运行容器认领的业务数据卷（如 `bwvault-data`）、`docker system prune -a` 两者兼有；给出安全序列（`docker system df` → `image prune` → `builder prune`）。并区分字节位置：本机 OrbStack 由宿主驱动，NAS（tyconfn）的 Docker root 在 `/vol1`（≈900G）而非 ≈20G 系统盘。
+- **`df` 记账失灵对照实验**（SKILL.md）：新增「是没删掉还是没记账」的判定法——`dd` 写入 512MB，看 `df -k` 是否上涨、删除后是否回落；「写入涨、删除不降」= 系统记账卡住（待装更新/重启占位），不是清理失败，别重复删。同时补正：查快照必须用 `tmutil listlocalsnapshots /System/Volumes/Data`，`diskutil apfs listSnapshots` 返回 `No snapshots` 是误导。
 - **Project hygiene 章节**（SKILL.md）：新增项目内结构整理工作流，覆盖空目录清理、AI IDE 残留删除、散落脚本归类、冗余文档合并、Git 感知移动/删除、标准目录约定。源自 pilinote 项目实际整理经验（2026-09-01）。
 - **看板亮/暗主题手动切换**：顶栏新增主题按钮，可在亮色/暗色间切换并持久化到 `localStorage`（`mdc.theme`）；未手动选择时仍跟随系统 `prefers-color-scheme`。默认主题采用 logo 的粉色系（`#f95c93` 品牌粉 + `#650340` 深酒红），链接/焦点环/主按钮/拖拽高亮均改为粉色，暗色背景改为酒红微染（`#150a11`）。新增防闪烁初始化脚本（2026-09-01）。
 
+- **Install layout 章节（SKILL.md，SkillDo 管理）**：新增「单一物理副本 + 5 个软链」的安装布局说明——`~/.skillshub/mac-dev-cleanup` 是唯一实目录，codex / claude_code / mimocode / workbuddy / OH-WorkSpace 全部软链到它。写明三条铁律：只在中心目录改、发布走 `skilldo push` 拉取走 `skilldo update`、**`skilldo update` 会按仓库整体重建中心目录（删掉所有未被 git 跟踪的文件）**，因此必须跨 update 存活的东西一律放在技能目录之外。背景：本机曾出现**三份副本**（codex 实目录 + 中心镜像 + workbuddy 实目录），4 个工具读到的是一个月前的镜像，只有 codex 读得到新代码。
+- **Core rules 补两条现场规则（SKILL.md）**：① 判定废纸篓已清空要看 `du -sk ~/.Trash/mac-dev-cleanup` 是否为 0，**不能等隔离目录消失**——清空后空的 `mac-dev-cleanup/` 外壳仍在，等它消失必然跑满超时并误报失败（实测白等 600 s）。② 目标被运行中进程占用时必须**中止该条目**（不是打印提示后继续）：2026-09-09 曾在 HanaAgent 子进程运行时移动 `.hanako` 应用数据目录，打断运行中的服务并需人工恢复；应用运行数据目录（`~/.hanako`、`~/.workbuddy`、`~/.codex`、`~/.claude`、容器存储）默认不动，内置形态是微信硬跳过、config 形态是 `require_quit`。
+- **aggressive 收益提醒（SKILL.md Risk levels）**：updater / runtime 类缓存**当天就会重新下载**，清它只赔带宽。实测 2026-09-22：aggressive 清掉 `~/.cache/codex-runtimes` 1.6G、`hanako-updater` 437M、`com.google.antigravity` 352M，数小时内全部回归。aggressive 的力气应花在构建产物（`target`/`build`/`dist`/`.venv`/`node_modules`）上。
+
 ### Fixed
+- **清空废纸篓的降级路径**（SKILL.md Core rules）：原文只写 `osascript`，但实测在 TCC 下被拒（`-10004`，退出码 1，**非超时**）。现补判别法（用只读 AppleScript 探测，同样失败 ⇒ 宿主进程缺 Finder 自动化授权）与已验证的降级方案 `rm -rf ~/.Trash/mac-dev-cleanup/<op-id>`（只动本工具隔离内容，不波及老板废纸篓里的其它内容），并注明代价是 `--restore` 失效；补充 `ls ~/.Trash/` 会被 TCC 拒绝、改用 `du -sh` 校验结果。
+- **看板动态 action 翻译**：`zh()` 支持 `skipped: <应用名> is running` 形状的动态翻译（原静态表只能匹配写死的「微信运行中」）；新增 `app-support-cache` / `app-support-manual` 中文标签与两条 reason 翻译规则。
 - **看板主题按钮可见性**：将顶栏主题切换按钮从 32×32 纯图标改为带文字标签的按钮（暗色/亮色），并添加品牌粉色边框，避免被误认为普通状态图标。
 - **docs 落地页新增亮/暗手动切换**：`docs/index.html` 原本只跟随系统暗色，现加入与看板一致的顶栏主题按钮（`data-theme` + `localStorage` 持久化），默认仍跟随系统；按钮采用 logo 粉色边框。
 - **docs 落地页亮色主题改为 logo 粉色系**：修复亮色下强调色仍固定为绿色的问题。默认亮色与 `data-theme="light"` 下 `--accent` 改为 `#c2185b`（深粉红）并配合 `--accent-soft:rgba(249,92,147,.12)`；暗色下 `--accent` 改为 `#f95c93`（品牌粉）并配合深酒红 `--accent-ink:#3a0a1f`；`--green` 语义变量也同步映射为粉色，`.tag-safe`、`.tl.ok`、`.copy.done` 等均不再显示绿色。
 - **dashboard.html 去数据化、可安全入库**：此前生成的 `dashboard.html` 会把真实扫描数据（机器绝对路径、磁盘用量、各类缓存字节数）内联进页面，无法公开上传。`_render_dashboard_html` 不再内联 state/config，改为由 `dashboard.html` 通过 `<script src="dashboard_data.js">` / `<script src="config_data.js">` 引用（两者仍 gitignore，含机器数据）。本地 file:// 打开时同目录脚本加载真实数据正常显示；上传到 GitHub 后纯壳无泄露，前端回退到内置「数据缺失」提示。`.gitignore` 相应移除 `dashboard.html` 排除项；`check_dashboard.py` 放宽原「禁止外部 script」断言为仅允许这两个数据文件，`check_dashboard_dom.mjs` 改为在内存注入 `state.json` 验证渲染（不再依赖异步 file:// 加载）。
+
+### Changed
+- **`config.json` 迁出技能目录**：策略文件从 `<skill>/config.json` 移到 `~/.codex/logs/mac-dev-cleanup/config.json`。原因是 `skilldo update` 会按仓库整体重建技能目录，留在其中的策略文件会被删除、本机设置被静默重置。新增 `adopt_legacy_config()`（把旧位置的文件**移动**过来：不覆盖已存在策略、`MDC_CONFIG` 生效时不执行），模块加载时自动做一次性迁移；`LOG_DIR` 尚未创建时 `save_config()` 会先建父目录。`web_server.py` 不再自己拼 `ROOT / "config.json"`，改为复用 `cleanup.CONFIG_PATH`，避免看板与 CLI 读写两份配置。新增 `ConfigLocationTests`（5 例）锁死「配置必须位于技能目录之外」这条规则。
+- **技能内 `.workbuddy/` 记忆迁出并软链回来**：该目录（WorkBuddy 会话记忆 + 每日清理自动化的运行记录）同样会被 `skilldo update` 抹掉，现实体存放于 `~/.codex/logs/mac-dev-cleanup/.workbuddy/`，技能目录内只留软链。顺带清理 1 个 0 字节空日志。
 
 > 本文件基于会话迭代记录与各文件的磁盘时间戳（mtime）重建。
 > 真实的 git 仓库于 **2026-08-03** 才初始化，此前在多个 IDE（Codex / Trae / WorkBuddy）中的迭代未留下独立文件副本，

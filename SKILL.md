@@ -1,6 +1,6 @@
 ---
 name: mac-dev-cleanup
-description: Scan, analyze, configure, and safely clean macOS developer caches with a local web control panel, JSON policy, recoverable Trash-first cleanup, operation logs, exclusions, test artifacts, build outputs, node_modules, virtualenvs, Tauri/Vite build by-products (src-tauri/target, gen schemas, dist-ssr, vite timestamp configs), Playwright traces, Rust/Flutter caches, Blender asset/render caches, app caches/logs, WeChat caches and expired chat media (month-window), screenshots, and large-file review. Use whenever the user asks to clean or inspect Mac storage, caches, developer artifacts, Tauri/Rust build outputs, Blender caches, WeChat caches, temp files, logs, stale projects, or manage cleanup settings and reports.
+description: Scan, analyze, configure, and safely clean macOS developer caches with a local web control panel, JSON policy, recoverable Trash-first cleanup, operation logs, exclusions, test artifacts, build outputs, node_modules, virtualenvs, Tauri/Vite build by-products (src-tauri/target, gen schemas, dist-ssr, vite timestamp configs), Playwright traces, Rust/Flutter caches, Blender asset/render caches, app caches/logs, screenshot and screen-recorder app caches inside Application Support (PixPin recording recovery, screenshot history), WeChat caches and expired chat media (month-window), screenshots, Docker/OrbStack image and volume review, and large-file review. Use whenever the user asks to clean or inspect Mac storage, caches, developer artifacts, Tauri/Rust build outputs, Blender caches, screenshot or screen-recorder caches, WeChat caches, Docker/OrbStack disk usage, temp files, logs, stale projects, or manage cleanup settings and reports.
 ---
 
 # mac-dev-cleanup
@@ -14,12 +14,37 @@ Use this skill for macOS developer storage cleanup. Prefer the bundled script ov
 - Never delete personal media/documents, app support data, source files, `.git`, package lockfiles, or user-created assets.
 - Treat `node_modules`, `.venv`, `venv`, Rust `target`, `.next`, `build`, `out`, `dist`, `.dart_tool`, `.gradle` as aggressive project-generated cleanup targets.
 - Treat caches, test reports, traces, coverage, logs, temp files, and package-manager caches as safe cleanup targets when generated and rebuildable.
-- Skip system directories and app data unless the user explicitly asks for those.
+- Skip system directories and app data unless the user explicitly asks for those. **If a target turns out to be in use, abort that entry — never warn and continue.** Moving files out from under a running process corrupts live state (a 2026-09-09 pass moved the `.hanako` app-data directory while a HanaAgent child process was running and had to be restored by hand). App-runtime data directories (`~/.hanako`, `~/.workbuddy`, `~/.codex`, `~/.claude`, container stores) are off-limits by default: quit the app first, or leave it alone. The built-in form of this rule is the WeChat hard skip; the config-driven form is `require_quit` on an app-support entry.
 - The `manual` risk level is **reported but never auto-deleted** by any mode. It covers screenshots, large project dirs, archives, dumps, and large files in personal roots — these require explicit human review.
 - If required tools are not installed, continue with built-in Python scanning and report missing tools in the HTML log.
 - Real cleanup is Trash-first: eligible items move to `~/.Trash/mac-dev-cleanup/<operation-id>/` and an operation manifest is written for recovery. Never bypass this with ad hoc `rm` or `shutil.rmtree`.
-- After cleanup (`--apply`), **automatically empty the Trash** to actually reclaim disk space. Use `osascript -e 'tell application "Finder" to empty trash'` running in the background with a 10-minute polling wait (Finder AppleScript times out at ~2 min for large Trash; background + extended wait is mandatory). Verify reclaim with `df -h ~` afterward. If osascript times out, report the failure but do not block the cleanup report.
+- After cleanup (`--apply`), **automatically empty the Trash** to actually reclaim disk space. Prefer `osascript -e 'tell application "Finder" to empty trash'` running in the background with a 10-minute polling wait (Finder AppleScript times out at ~2 min for large Trash; background + extended wait is mandatory). Verify reclaim with `df -h ~` afterward. If osascript times out, report the failure but do not block the cleanup report.
+- **If AppleScript is blocked, fall back to deleting the Skill's own quarantine directory.** A TCC automation denial is *not* a timeout — it returns `execution error: … 发生权限违例 (-10004)` with exit code 1 immediately. Probe it with a read-only call: `osascript -e 'tell application "Finder" to get name of startup disk'`. If that also fails, the host process (WorkBuddy / Terminal) lacks Finder automation permission under 系统设置 → 隐私与安全性 → 自动化 — nothing is wrong with the Trash itself. The verified fallback is `rm -rf ~/.Trash/mac-dev-cleanup/<operation-id>`, which only touches quarantine this Skill created and leaves the user's other Trash contents alone. Same trade-off as emptying: `--restore` stops working. Verify with `du -sh ~/.Trash/mac-dev-cleanup` — `ls ~/.Trash/` is TCC-denied, so a failed top-level `readdir` proves nothing, while `du` can read the subpath.
+- **Judge an emptied Trash by `du`, never by the quarantine directory disappearing.** A successful empty leaves the (now empty) `~/.Trash/mac-dev-cleanup/` shell in place, so a polling loop that waits for the directory to vanish always burns its full timeout and then reports a failure that never happened (600 s wasted on an already-empty Trash). Poll `du -sk ~/.Trash/mac-dev-cleanup` until it reads `0`, and only then report the reclaim as confirmed.
 - The local HTTP API may read state/config, atomically save validated config, and trigger scan only. Destructive HTTP endpoints are intentionally forbidden; cleanup stays in the CLI confirmation flow.
+
+## Install layout (SkillDo-managed, one physical copy)
+
+This Skill is managed by **SkillDo**, which keeps a single physical directory and points every AI tool at it with symlinks:
+
+```
+~/.skillshub/mac-dev-cleanup                 <- the only real directory (central)
+~/.codex/skills/mac-dev-cleanup              -> symlink to it
+~/.claude/skills/mac-dev-cleanup             -> symlink to it
+~/.config/mimocode/skills/mac-dev-cleanup    -> symlink to it
+~/.workbuddy/skills/mac-dev-cleanup          -> symlink to it
+~/Desktop/OH-WorkSpace/.agents/skills/mac-dev-cleanup -> symlink to it
+```
+
+Consequences that matter when editing:
+
+- **Edit only in the central directory.** Any symlink resolves to it, so all five tools see a change at once. Never keep a second *real* copy of the Skill: that is precisely how this install once drifted into three copies, with four tools reading a month-old mirror while only one read the new code.
+- Publish with `skilldo push --skill mac-dev-cleanup -m "..."` and pull with `skilldo update`. Do not maintain a parallel hand-rolled Git checkout of the same Skill.
+- **`skilldo update` rebuilds the central directory from the repository**, deleting every file the repo does not track (`remove_dir_all` + re-clone). Anything that must survive belongs *outside* the Skill directory:
+  - policy → `~/.codex/logs/mac-dev-cleanup/config.json` (the script's `CONFIG_PATH`)
+  - state, history, reports → `~/.codex/logs/mac-dev-cleanup/`
+  - this Skill's own notes → `.workbuddy/`, kept in the log directory and symlinked in
+- `.gitignore` excludes `config.json`, `state.json`, `config_data.js`, `dashboard_data.js`, `*.bak.*`, `__pycache__/`, `.workbuddy/`, and the deprecated `vendor/`, so machine-local state can never reach the public repository.
 
 ## Important: APFS snapshots & disk space release
 
@@ -33,24 +58,47 @@ After any real deletion (`--apply`), **a reboot is the most reliable way to rele
 Verify disk space correctly (note: `df /` returns the read-only system volume on modern macOS and is misleading):
 
 ```bash
-df -h ~                      # data volume, real available space
-diskutil info / | grep -i "container free"
-tmutil listlocalsnapshots /  # snapshot list
+df -h ~                                          # data volume, real available space
+tmutil listlocalsnapshots /System/Volumes/Data  # the real snapshot list
+diskutil apfs list | grep -i "Capacity Not Allocated"
 ```
 
+**Use `tmutil`, never `diskutil`, to look for snapshots.** `diskutil apfs listSnapshots /System/Volumes/Data` prints `No snapshots` on a volume that is in fact held by Time Machine local snapshots. Acting on that output sends you chasing the wrong cause. Only `tmutil listlocalsnapshots` sees them. If it lists `com.apple.os.update-*` (especially `…MSUPrepareUpdate`), a **pending macOS update** is holding every byte you just deleted — confirm with `softwareupdate --list` and let the update install. Never hand-delete an `com.apple.os.update-*` snapshot; it is the update's rollback point.
+
+### "Not deleted" or "not accounted for"? Run the control experiment
+
+`df` can also freeze outright: the free-space counter on some macOS 26.x APFS Data volumes stops tracking reality, so neither writing nor deleting moves it. Distinguish the two causes *before* deleting anything a second time:
+
+```bash
+df -k /System/Volumes/Data
+dd if=/dev/zero of=/tmp/__spacetest__.bin bs=1m count=512 && sync
+df -k /System/Volumes/Data     # rose by ~512M? the counter still works
+rm -f /tmp/__spacetest__.bin && sync
+df -k /System/Volumes/Data     # did NOT fall back? the counter is stuck
+```
+
+- **Write moved it, delete did not** → the accounting is stuck (pending update / reboot placeholder). This is not a failed cleanup — stop re-deleting and reboot.
+- **Neither moved it** → the counter is frozen outright; trust `du` instead.
+
+Evidence order after an `--apply`: ① `du -sh ~/.Trash/mac-dev-cleanup` back to zero (or the quarantine `rm` succeeding) proves the bytes are really gone; ② `diskutil apfs list` → `Capacity Not Allocated` trend over a few minutes; ③ reboot, then re-check `df -h ~`.
+
 Field-tested 2026-07-31: two cleanup rounds deleted 14.6G but `df` before/after stayed at 100% full (~590M free); after reboot, used dropped 185Gi→160Gi and available jumped 590Mi→44Gi with all `com.apple.os.update-*` snapshots gone.
+
+Field-tested 2026-09-23: 8.2G removed with `du` back to zero, yet `df -k` never moved; a 512M control write moved it by <1M and the delete moved it not at all — a frozen counter plus a pending update, not a failed delete.
 
 ## Risk levels
 
 | risk | behavior | examples |
 |---|---|---|
-| `safe` | deleted by `clean-safe` and `clean-aggressive` (with `--apply`) | `__pycache__`, pip/npm/uv cache, playwright temp, project logs, coverage |
+| `safe` | deleted by `clean-safe` and `clean-aggressive` (with `--apply`) | `__pycache__`, pip/npm/uv cache, playwright temp, project logs, coverage, `app-support-cache` |
 | `aggressive` | deleted only by `clean-aggressive` (with `--apply`) | `node_modules`, `.venv`, `build`, `dist`, Codex/Trae caches, large app caches/logs, `stale-deps`, `wechat-cache`, `wechat-media` |
-| `manual` | never auto-deleted; shown in report as "needs review" | screenshots, large dirs, archives, dumps, large personal files, `stale-model` |
+| `manual` | never auto-deleted; shown in report as "needs review" | screenshots, large dirs, archives, dumps, large personal files, `stale-model`, `app-support-manual` |
+
+Cleaning `aggressive` is not automatically worth it: **updater/runtime caches are deleted and re-downloaded the same day**, so a pass over them costs bandwidth and changes nothing. Field-observed 2026-09-22: an aggressive run removed `~/.cache/codex-runtimes` (1.6G), `hanako-updater` (437M) and `com.google.antigravity` (352M), and all three were back within hours. Spend aggressive effort on build output (`target`, `build`, `dist`, `.venv`, `node_modules`) instead, and leave self-updating runtime caches alone unless space is genuinely critical.
 
 ## Categories recognized
 
-`global-cache`, `app-cache`, `app-log`, `project-generated`, `log-file`, `temp-browser`, `temp-file`, `test-artifact`, `screenshot`, `large-dir`, `large-file`, `stale-deps`, `stale-model`, `wechat-cache`, `wechat-media`
+`global-cache`, `app-cache`, `app-log`, `app-support-cache`, `app-support-manual`, `project-generated`, `log-file`, `temp-browser`, `temp-file`, `test-artifact`, `screenshot`, `large-dir`, `large-file`, `stale-deps`, `stale-model`, `wechat-cache`, `wechat-media`
 
 ## Tauri / Vite build by-products (config-driven)
 
@@ -97,6 +145,39 @@ WeChat data lives in `~/Library/Containers/com.tencent.xinWeChat` (pruned by def
 Never touched under any mode: message databases (`db_storage`), account `config`, `favorite`, `Backup/`, `all_users` — the shape check makes them structurally unmatchable.
 
 Hard rule: if WeChat is running, `--apply` **skips all WeChat candidates** (`skipped: WeChat is running`) because moving files inside a live container risks database corruption. Quit WeChat and re-run. Note the nightly `clean-safe` automation never touches WeChat — both categories are aggressive-only.
+
+## App-support whitelist (config-driven, shape-checked)
+
+`~/Library/Application Support` is pruned wholesale because it holds live app data — which means an app that parks a multi-GB temp cache there is invisible to every scan. This rule mirrors the WeChat whitelist, except the shape list comes from `config.json`, so onboarding a new app is a config edit rather than a code change.
+
+Only the **exact relative paths named in an entry** are ever exempted, and the check is a string comparison at runtime: an app's databases, settings, licences, and every other path under its root stay behind the prune wall.
+
+```jsonc
+"app_support_whitelist": [
+  {
+    "name": "PixPin",                                   // shown in reports
+    "root": "~/Library/Application Support/PixPin",       // must sit under a PRUNE_PATHS root
+    "safe": ["Temp/RecordingRecovery", "Crashpad", "pixpin.log"],
+    "manual": ["History"],
+    "require_quit": "PixPin.app/Contents/MacOS/PixPin"
+  }
+]
+```
+
+- `safe` → category `app-support-cache`, risk `safe`: temp, recording-recovery, crash-dump, and run-log data the app rebuilds on demand. Reclaimed by `clean-safe`.
+- `manual` → category `app-support-manual`, risk `manual`: user-visible data such as a screenshot history. Reported for review and **never** auto-deleted — surface it explicitly in the report and ask the user before touching it.
+- `require_quit` (optional) → a process match for `pgrep -f`. While that process runs, the entry's `safe` paths may be live state (a recording in progress, a log being appended), so `--apply` **skips** them and prints `skipped: <name> is running`. Quit the app and re-run to reclaim.
+
+`_validate_app_support_whitelist` refuses anything that would widen the blast radius:
+
+- a `root` outside every `PRUNE_PATHS` root — otherwise the whitelist would become a route to arbitrary app data;
+- an absolute path, a `~`-prefixed path, or anything containing `..` — nothing may escape the entry root;
+- the same path listed as both `safe` and `manual`;
+- an entry with neither list, a missing or blank `name`/`root`, or an unknown key.
+
+Onboarding one app is a config edit. The bundled PixPin entry exists because that app's recording-recovery cache reached **2.2G in a single orphaned file** (2026-09-23) while being entirely invisible to the scanner; its `History/_ScreenshotRecord` (43 files / 106M) sits beside it as `manual`, so a screenshot history is never deleted without being asked.
+
+This key is deliberately **not** in the dashboard's Settings form: it is a list of objects, which the flat `SETTINGS_SCHEMA` ↔ `flatConfig()` mapping cannot express. Maintain it with `--set-config` or by editing `config.json` directly.
 
 ## Stale project detection
 
@@ -165,7 +246,7 @@ python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan --stale-
 
 ## Configuration (config.json)
 
-User-tunable settings live in `~/.codex/skills/mac-dev-cleanup/config.json`. The script reads it on every run; if missing, defaults are written. The web dashboard edits this file via the Settings panel.
+User-tunable settings live in `~/.codex/logs/mac-dev-cleanup/config.json` — deliberately **outside** the Skill directory, because `skilldo update` rebuilds that directory from the repository and would delete a policy file kept there, silently resetting this machine's settings. An install that still carries the legacy `<skill>/config.json` has it **moved** into place on first run (`adopt_legacy_config`; it never overwrites an existing policy and never runs while `MDC_CONFIG` is set). The script reads the file on every run; if missing, defaults are written. The web dashboard edits this same file via the Settings panel — `web_server.py` reuses the module's `CONFIG_PATH` rather than re-deriving its own.
 
 ```json
 {
@@ -184,7 +265,8 @@ User-tunable settings live in `~/.codex/skills/mac-dev-cleanup/config.json`. The
   "protected_categories": [],
   "trash_retention_days": 30,
   "wechat_media_keep_months": 1,
-  "build_artifacts": { "...": "see Tauri / Vite build by-products" }
+  "build_artifacts": { "...": "see Tauri / Vite build by-products" },
+  "app_support_whitelist": [ { "...": "see App-support whitelist" } ]
 }
 ```
 
@@ -240,7 +322,11 @@ Opening `dashboard.html` directly with `file://` remains supported as a read-onl
 
 ## Pruned (never walked)
 
-`~/Library/Application Support`, `~/Library/Containers`, `~/Library/Group Containers`, `~/Library/Mobile Documents`, `~/Music`, `~/Movies`, `~/.Trash`. `.git`/`.svn`/`.hg` are skipped inside project walks. Exception: the WeChat whitelist described above (shape-checked exemption for four cache dirs and `YYYY-MM` media months only).
+`~/Library/Application Support`, `~/Library/Containers`, `~/Library/Group Containers`, `~/Library/Mobile Documents`, `~/Music`, `~/Movies`, `~/.Trash`, `~/.pub-cache`, `~/go/pkg/mod`. `.git`/`.svn`/`.hg` are skipped inside project walks. Two shape-checked exceptions: the WeChat whitelist above (four cache dirs plus `YYYY-MM` media months) and the app-support whitelist (only the exact relative paths named in `config.json`).
+
+**Mount points are also never walked.** Every traversal goes through `safe_walk()`, which prunes any directory that is an active mount point (detected by string comparison against the `mount` table, so no filesystem I/O is added). This exists because a **stale network mount hangs the entire scan forever**: a dead SMB/NFS share (e.g. `//host/share` on `/tmp/<name>` whose backing service was stopped) blocks indefinitely on the first `stat()` inside it — the process shows 0% CPU with no open directory handles and never finishes. If `scan` appears stuck with no output, run `mount | grep -E "smbfs|nfs"` and check for a dead share under a scan root (`/tmp` is a scan root), then either `docker start` the service that exports it or force-unmount it. Do **not** "fix" this by patching `pruned()` — `pruned()` calls `Path.resolve()`, which stats, and would hang the same way.
+
+The same dead mount defeats *any* recursive walk of `/tmp`, not just this Skill's: a recursive glob (`**/*`), a bare `find /tmp`, or a disk-usage tool hangs identically. Even `diskutil unmount force` can hang, because an orphaned kernel mount has no `mount_smbfs` process left to kill. The real fix is to bring the exporting side back (`docker start <container>`) or force-unmount it — and never probe `/tmp` recursively while a stale share is mounted.
 
 ## Dashboard and state
 
@@ -360,6 +446,32 @@ After reorganizing, verify:
 - No empty directories remain: `find . -type d -empty -not -path './.git/*'`
 - No `.DS_Store` left: `find . -name '.DS_Store'`
 - Git status is clean or only shows expected renames: `git status`
+
+## Docker / OrbStack (never blind-prune)
+
+Container runtimes hide tens of GB in images, build cache, and volumes, but their own prune commands are the most dangerous thing in this document — several of them delete **running services**, not caches.
+
+**Never run:**
+
+- `docker container prune` — removes stopped containers, including service containers that simply are not running right now. A stopped `n8n` container is a service, not junk: `docker start <name>` it, never prune it.
+- `docker volume prune` — deletes volumes no *running* container claims. Business data sitting in a mounted-but-idle volume (e.g. OrbStack's `bwvault-data`) is indistinguishable from garbage to this command.
+- `docker system prune -a` — everything above, plus every unused image.
+
+**Safe sequence:**
+
+```bash
+docker system df            # what is actually reclaimable, first
+docker image prune          # dangling images only (no -a)
+docker builder prune        # build cache only
+docker image rm <id>        # remove one specific known-stale image
+```
+
+**Where the bytes live depends on the host:**
+
+- **This Mac (OrbStack)** — driven from the host, so `docker` works normally. Keep business data volumes out of every prune. Inspect volumes by name before deciding anything: `docker volume ls` then `docker volume inspect <name>`.
+- **NAS (`tyconfn`)** — the Docker root lives on `/vol1` (≈900G), **not** the ≈20G system disk. A "disk full" alert is a `/vol1` question, so do not troubleshoot the system volume. Reach it over SSH rather than from this Mac's Docker context, and confirm what a container does before touching it.
+
+Docker sits deliberately outside the scan's candidate model: this Skill reports and removes *files*, and these are runtime objects. Treat the commands above as a human-confirmed, host-specific step, and always bracket them with `docker system df`.
 
 ## Useful follow-up checks
 

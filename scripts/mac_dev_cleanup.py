@@ -28,13 +28,125 @@ HOME = Path.home()
 LOG_DIR = HOME / ".codex" / "logs" / "mac-dev-cleanup"
 STATE_PATH = LOG_DIR / "state.json"
 HISTORY_PATH = LOG_DIR / "history.jsonl"
+
+
+def _norm_mount_point(raw: str) -> str:
+    """Normalize a mount point path for pure string comparison.
+
+    macOS reports /tmp as /private/tmp in the mount table, so strip the
+    /private prefix to make "/tmp/nas-mount" and "/private/tmp/nas-mount"
+    compare equal.
+    """
+    return raw[len("/private"):] if raw.startswith("/private/") else raw
+
+
+def _load_mount_points() -> frozenset[str]:
+    """Collect active mount points from the system mount table.
+
+    Walkers must never descend into a mount point: a stale network share
+    (dead SMB/NFS export) blocks forever on the first stat() inside it,
+    which hangs the whole scan. Reading the mount table is pure string
+    work, so this probe can never block.
+    """
+    points: set[str] = set()
+    try:
+        table = subprocess.run(["mount"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    for line in table.splitlines():
+        marker = line.find(" on ")
+        if marker == -1:
+            continue
+        tail = line[marker + 4:]
+        close = tail.find(" (")
+        if close == -1:
+            continue
+        point = tail[:close]
+        if point.startswith("/"):
+            points.add(_norm_mount_point(point))
+    return frozenset(points)
+
+
+MOUNT_POINTS = _load_mount_points()
+
+
+def is_mount_point(path: Path) -> bool:
+    """True when *path* is an active mount point (string compare, no stat)."""
+    return _norm_mount_point(path.as_posix()) in MOUNT_POINTS
+
+
+def safe_walk(top, topdown: bool = True):
+    """os.walk that prunes mount points before descending into them.
+
+    Prevents the scanner from blocking on stale network mounts (see
+    _load_mount_points) while adding no extra filesystem I/O.
+    """
+    for current, dirs, files in os.walk(top, topdown=topdown):
+        if topdown:
+            base = Path(current)
+            dirs[:] = [d for d in dirs if not is_mount_point(base / d)]
+        yield current, dirs, files
 OPERATIONS_DIR = LOG_DIR / "operations"
 TRASH_ROOT = HOME / ".Trash" / "mac-dev-cleanup"
 DASHBOARD_PATH = Path(__file__).resolve().parents[1] / "dashboard.html"
 # MDC_CONFIG lets tests (and alternate setups) point at a different policy file
 # without touching the installed config.json.
-CONFIG_PATH = Path(os.environ["MDC_CONFIG"]).expanduser() if os.environ.get("MDC_CONFIG") \
-    else Path(__file__).resolve().parents[1] / "config.json"
+CONFIG_PATH = (
+    Path(os.environ["MDC_CONFIG"]).expanduser()
+    if os.environ.get("MDC_CONFIG")
+    else LOG_DIR / "config.json"
+)
+# config.json is this machine's policy, so it must not live inside the Skill
+# directory: SkillDo manages that directory as a content-only mirror, and
+# `skilldo update` rebuilds it from the repository, deleting every file the repo
+# does not track — config.json among them. Policy kept there would be silently
+# reset to defaults by the next update, so it lives in LOG_DIR (beside
+# state.json) and pre-migration installs are adopted once, just below.
+LEGACY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+
+
+def adopt_legacy_config(legacy: Path | None = None, target: Path | None = None) -> bool:
+    """Move a pre-migration in-Skill config.json to its new home in LOG_DIR.
+
+    Returns True when a config was adopted. Explicit paths keep this testable;
+    the module-level call below is skipped while MDC_CONFIG is set, so tests
+    pointing at a scratch policy file never touch the installed one.
+    """
+    source = LEGACY_CONFIG_PATH if legacy is None else legacy
+    dest = CONFIG_PATH if target is None else target
+    if source == dest or dest.exists() or not source.exists():
+        return False
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+    except OSError:
+        return False
+    try:
+        source.unlink()
+    except OSError:
+        pass  # adopted; the legacy copy stays behind, harmless and gitignored
+    return True
+
+
+if not os.environ.get("MDC_CONFIG") and adopt_legacy_config():
+    print(f"note: adopted config.json into {CONFIG_PATH}", file=sys.stderr)
+
+# Trees that are never walked: live app data, containers, media libraries, and
+# package caches holding user-visible state. Declared before DEFAULT_CONFIG
+# because config validation requires an app-support whitelist root to sit
+# inside one of these — otherwise the whitelist would become a way to reach
+# arbitrary app data. Containment is checked as a string comparison (no I/O).
+PRUNE_PATHS = [
+    HOME / "Library" / "Application Support",
+    HOME / "Library" / "Containers",
+    HOME / "Library" / "Group Containers",
+    HOME / "Library" / "Mobile Documents",
+    HOME / "Music",
+    HOME / "Movies",
+    HOME / ".Trash",
+    HOME / ".pub-cache",
+    HOME / "go" / "pkg" / "mod",
+]
 
 # Default config written to config.json on first run. Web dashboard edits this
 # file; the script reads it on every run. System-level safety sets
@@ -88,6 +200,24 @@ DEFAULT_CONFIG = {
         # to the built-in list when emptied keeps that protection unbreakable.
         "bundle_markers": [".dmg", ".app", ".msi", ".exe", ".deb", ".rpm", ".AppImage"],
     },
+    # App-support trees are pruned wholesale because they hold live app data.
+    # This is a SHAPE whitelist mirroring the WeChat rule, but the shape list
+    # lives here instead of being hardcoded: only the exact relative paths named
+    # under a known root are ever exempted, so an app's databases, settings,
+    # and licences can never match. `safe` entries are rebuildable temp / crash
+    # / log data; `manual` entries are user-visible data that is only reported.
+    # `require_quit` names a process that, while running, turns the entry's
+    # `safe` paths into live state — cleanup then skips them rather than moving
+    # a file the app is still writing (e.g. a recording in progress).
+    "app_support_whitelist": [
+        {
+            "name": "PixPin",
+            "root": "~/Library/Application Support/PixPin",
+            "safe": ["Temp/RecordingRecovery", "Crashpad", "pixpin.log"],
+            "manual": ["History"],
+            "require_quit": "PixPin.app/Contents/MacOS/PixPin",
+        },
+    ],
 }
 
 BUILD_ARTIFACT_KEYS = tuple(DEFAULT_CONFIG["build_artifacts"])
@@ -119,6 +249,81 @@ def _validate_build_artifacts(value: object) -> dict:
         if key == "bundle_markers" and not cleaned:
             cleaned = list(FALLBACK_BUNDLE_MARKERS)
         merged[key] = cleaned
+    return merged
+
+
+APP_SUPPORT_ENTRY_KEYS = ("name", "root", "safe", "manual", "require_quit")
+
+
+def _prune_root_texts() -> tuple[str, ...]:
+    """PRUNE_PATHS as normalized strings, for I/O-free containment checks."""
+    return tuple(p.as_posix().rstrip("/") for p in PRUNE_PATHS)
+
+
+def _validate_app_support_whitelist(value: object) -> list:
+    """Normalize the app-support shape whitelist.
+
+    Safety rules that no config edit can relax:
+    - an entry's root must live inside a hard-coded PRUNE_PATHS root, so the
+      whitelist can only ever carve into an already-pruned app tree;
+    - relative paths must be plain children (not absolute, no `..`), so an
+      edit cannot escape the root;
+    - the same path may not be listed as both safe and manual.
+    """
+    if not isinstance(value, list):
+        raise ValueError("app_support_whitelist must be an array")
+    prune_roots = _prune_root_texts()
+
+    def clean_rel(raw: object, field: str, idx: int) -> list[str]:
+        if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+            raise ValueError(f"app_support_whitelist[{idx}].{field} must be an array of strings")
+        out: list[str] = []
+        for item in raw:
+            bare = item.strip()
+            rel = bare.strip("/")
+            if not rel:
+                continue
+            if os.path.isabs(bare) or bare.startswith("~") or ".." in Path(rel).parts:
+                raise ValueError(
+                    f"app_support_whitelist[{idx}].{field} must be relative to the entry root and free of '..'"
+                )
+            if rel not in out:
+                out.append(rel)
+        return out
+
+    merged: list[dict] = []
+    for idx, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ValueError(f"app_support_whitelist[{idx}] must be an object")
+        unknown = set(entry) - set(APP_SUPPORT_ENTRY_KEYS)
+        if unknown:
+            raise ValueError(f"unknown app_support_whitelist key: {sorted(unknown)[0]}")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"app_support_whitelist[{idx}].name must be a non-empty string")
+        root = entry.get("root")
+        if not isinstance(root, str) or not root.strip():
+            raise ValueError(f"app_support_whitelist[{idx}].root must be a non-empty string")
+        root_text = _expand(root).as_posix().rstrip("/")
+        if not any(root_text == p or root_text.startswith(p + "/") for p in prune_roots):
+            raise ValueError(f"app_support_whitelist[{idx}].root must live under a pruned path")
+        safe = clean_rel(entry.get("safe", []), "safe", idx)
+        manual = clean_rel(entry.get("manual", []), "manual", idx)
+        if not safe and not manual:
+            raise ValueError(f"app_support_whitelist[{idx}] lists neither safe nor manual paths")
+        shared = set(safe) & set(manual)
+        if shared:
+            raise ValueError(f"app_support_whitelist[{idx}]: {sorted(shared)[0]} is both safe and manual")
+        require_quit = entry.get("require_quit", "")
+        if not isinstance(require_quit, str):
+            raise ValueError(f"app_support_whitelist[{idx}].require_quit must be a string")
+        merged.append({
+            "name": name.strip(),
+            "root": root.strip(),
+            "safe": safe,
+            "manual": manual,
+            "require_quit": require_quit.strip(),
+        })
     return merged
 
 
@@ -159,6 +364,8 @@ def validate_config(cfg: dict) -> dict:
             merged["thresholds"].update(value)
         elif key == "build_artifacts":
             merged[key] = _validate_build_artifacts(value)
+        elif key == "app_support_whitelist":
+            merged[key] = _validate_app_support_whitelist(value)
         else:
             merged[key] = value
     for key in ("scan_roots", "personal_roots", "exclude_paths", "exclude_globs", "protected_projects", "protected_categories"):
@@ -173,11 +380,16 @@ def validate_config(cfg: dict) -> dict:
     for key, value in merged["thresholds"].items():
         if not isinstance(value, (int, float)) or value < 0:
             raise ValueError(f"thresholds.{key} must be a non-negative number")
+    # Re-normalize even an untouched default so the returned structure never
+    # shares mutable objects with DEFAULT_CONFIG.
+    merged["app_support_whitelist"] = _validate_app_support_whitelist(merged["app_support_whitelist"])
     return merged
 
 
 def save_config(cfg: dict) -> Path:
     normalized = validate_config(cfg)
+    # CONFIG_PATH now lives in LOG_DIR, which the first run may not have created.
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp = CONFIG_PATH.with_suffix(".json.tmp")
     temp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temp, CONFIG_PATH)
@@ -408,18 +620,6 @@ PRUNE_NAMES = {
     "venv",
 }
 
-PRUNE_PATHS = [
-    HOME / "Library" / "Application Support",
-    HOME / "Library" / "Containers",
-    HOME / "Library" / "Group Containers",
-    HOME / "Library" / "Mobile Documents",
-    HOME / "Music",
-    HOME / "Movies",
-    HOME / ".Trash",
-    HOME / ".pub-cache",
-    HOME / "go" / "pkg" / "mod",
-]
-
 # --- WeChat (com.tencent.xinWeChat) whitelist cleanup ----------------------
 # The whole container is pruned by default. These are the ONLY paths ever
 # exempted, and the exemption is shape-checked at runtime: message databases,
@@ -490,6 +690,64 @@ def wechat_exempt(path: Path) -> bool:
     return wechat_media_month(path) is not None
 
 
+# --- App-support whitelist (config-driven, shape-checked) ------------------
+# `~/Library/Application Support` is pruned wholesale, so an app that parks a
+# multi-GB temp / recording-recovery / crash cache there is invisible to every
+# scan. This mirrors the WeChat rule with the shape list coming from config:
+# only the exact relative paths named in an entry are ever exempted.
+APP_SUPPORT_CACHE_CATEGORY = "app-support-cache"
+APP_SUPPORT_MANUAL_CATEGORY = "app-support-manual"
+APP_SUPPORT_CATEGORIES = (APP_SUPPORT_CACHE_CATEGORY, APP_SUPPORT_MANUAL_CATEGORY)
+
+
+@dataclass(frozen=True)
+class AppSupportEntry:
+    name: str
+    root: Path
+    safe: tuple[str, ...]
+    manual: tuple[str, ...]
+    require_quit: str = ""
+
+    def prefix_for(self, rel: str) -> str:
+        return self.root.as_posix().rstrip("/") + "/" + rel.strip("/")
+
+    @property
+    def prefixes(self) -> tuple[str, ...]:
+        return tuple(self.prefix_for(rel) for rel in self.safe + self.manual)
+
+
+APP_SUPPORT_ENTRIES: tuple[AppSupportEntry, ...] = tuple(
+    AppSupportEntry(
+        name=raw.get("name", ""),
+        root=_expand(raw.get("root", "~")),
+        safe=tuple(raw.get("safe", [])),
+        manual=tuple(raw.get("manual", [])),
+        require_quit=raw.get("require_quit", ""),
+    )
+    for raw in CONFIG.get("app_support_whitelist", [])
+)
+
+
+def app_support_owner(path: Path) -> AppSupportEntry | None:
+    """The whitelist entry covering `path`, or None. Pure string comparison."""
+    text = path.as_posix()
+    for entry in APP_SUPPORT_ENTRIES:
+        for prefix in entry.prefixes:
+            if text == prefix or text.startswith(prefix + "/"):
+                return entry
+    return None
+
+
+def app_support_exempt(path: Path) -> bool:
+    """Whether `path` may bypass the Application Support prune rule."""
+    return app_support_owner(path) is not None
+
+
+def process_running(pattern: str) -> bool:
+    code, _ = run(["pgrep", "-f", pattern])
+    return code == 0
+
+
 @dataclass(frozen=True)
 class Candidate:
     path: Path
@@ -523,7 +781,7 @@ def size_bytes(path: Path) -> int:
         if path.is_file():
             return path.stat().st_size
         total = 0
-        for root, dirs, files in os.walk(path, topdown=True):
+        for root, dirs, files in safe_walk(path, topdown=True):
             dirs[:] = [d for d in dirs if d not in PRUNE_NAMES]
             for name in files:
                 p = Path(root) / name
@@ -558,7 +816,8 @@ def excluded(path: Path, category: str | None = None) -> bool:
 
 
 def pruned(path: Path, category: str | None = None) -> bool:
-    if not wechat_exempt(path) and any(is_under(path, p) for p in PRUNE_PATHS if p.exists()):
+    exempt = wechat_exempt(path) or app_support_exempt(path)
+    if not exempt and any(is_under(path, p) for p in PRUNE_PATHS if p.exists()):
         return True
     return excluded(path, category)
 
@@ -646,7 +905,7 @@ def tauri_bundle_present(target_dir: Path) -> bool:
         return False
     base_depth = len(bundle.parts)
     try:
-        for current, dirs, files in os.walk(bundle, topdown=True):
+        for current, dirs, files in safe_walk(bundle, topdown=True):
             if len(Path(current).parts) - base_depth >= TAURI_BUNDLE_MAX_DEPTH:
                 dirs[:] = []
                 continue
@@ -663,7 +922,7 @@ def scan_projects(include_aggressive: bool) -> dict[Path, Candidate]:
     roots = [p for p in PROJECT_ROOTS if p.exists()]
     for root in roots:
         depth0_dirs: list[Path] = []
-        for current, dirs, files in os.walk(root, topdown=True):
+        for current, dirs, files in safe_walk(root, topdown=True):
             current_path = Path(current)
             depth = len(current_path.parts) - len(root.parts)
             if depth == 0:
@@ -759,7 +1018,7 @@ def scan_temp() -> dict[Path, Candidate]:
     for root in temp_roots:
         if not root.exists():
             continue
-        for current, dirs, files in os.walk(root, topdown=True):
+        for current, dirs, files in safe_walk(root, topdown=True):
             depth = len(Path(current).parts) - len(root.parts)
             if depth > 5:
                 dirs[:] = []
@@ -840,8 +1099,25 @@ def scan_wechat(keep_months: int) -> dict[Path, Candidate]:
 
 
 def wechat_running() -> bool:
-    code, _ = run(["pgrep", "-f", "WeChat.app/Contents/MacOS/WeChat"])
-    return code == 0
+    return process_running("WeChat.app/Contents/MacOS/WeChat")
+
+
+def scan_app_support() -> dict[Path, Candidate]:
+    """Whitelisted paths inside otherwise-pruned app-support directories.
+
+    Safe entries are rebuildable temp / crash / log data the app recreates on
+    demand; manual entries are user-visible data (e.g. a screenshot history)
+    that is reported for review but never auto-deleted.
+    """
+    candidates: dict[Path, Candidate] = {}
+    for entry in APP_SUPPORT_ENTRIES:
+        for rel in entry.safe:
+            add_path(candidates, entry.root / rel, APP_SUPPORT_CACHE_CATEGORY, "safe",
+                     f"{entry.name} rebuildable cache/temp: {rel}")
+        for rel in entry.manual:
+            add_path(candidates, entry.root / rel, APP_SUPPORT_MANUAL_CATEGORY, "manual",
+                     f"{entry.name} user data; review before deleting: {rel}")
+    return candidates
 
 
 def scan_screenshots() -> dict[Path, Candidate]:
@@ -980,7 +1256,7 @@ def scan_stale_projects(stale_days: int) -> dict[Path, Candidate]:
             latest = 0.0
             deps_found: list[tuple[Path, str]] = []
             models_found: list[tuple[Path, int]] = []
-            for current, dirs, files in os.walk(project, topdown=True):
+            for current, dirs, files in safe_walk(project, topdown=True):
                 cp = Path(current)
                 keep: list[str] = []
                 for d in dirs:
@@ -1045,6 +1321,7 @@ def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
     candidates.update(scan_projects(include_aggressive=mode in {"clean-aggressive", "scan"}))
     candidates.update(scan_temp())
     candidates.update(scan_wechat(int(CONFIG.get("wechat_media_keep_months", 1))))
+    candidates.update(scan_app_support())
     candidates.update(scan_screenshots())
     candidates.update(scan_personal_large())
     # stale-project pass runs last so stale-deps/stale-model labels win over
@@ -1365,6 +1642,7 @@ def main() -> int:
     actions: dict[Path, str] = {}
     if args.apply:
         wechat_live: bool | None = None
+        app_live: dict[str, bool] = {}
         operation_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
         operation_entries: list[dict[str, object]] = []
         for candidate in candidates:
@@ -1377,6 +1655,17 @@ def main() -> int:
                     if wechat_live:
                         actions[candidate.path] = "skipped: WeChat is running"
                         continue
+                # An app-support safe path may be live state while its app runs
+                # (a recording in progress, a log being appended). Skip it and
+                # let a later run — after the app is quit — reclaim it.
+                if candidate.category == APP_SUPPORT_CACHE_CATEGORY:
+                    owner = app_support_owner(candidate.path)
+                    if owner and owner.require_quit:
+                        if owner.require_quit not in app_live:
+                            app_live[owner.require_quit] = process_running(owner.require_quit)
+                        if app_live[owner.require_quit]:
+                            actions[candidate.path] = f"skipped: {owner.name} is running"
+                            continue
                 ok, message, entry = move_to_quarantine(candidate, operation_id)
                 actions[candidate.path] = message if ok else f"failed: {message}"
                 if entry:
@@ -1389,6 +1678,14 @@ def main() -> int:
         wechat_skipped = sum(1 for msg in actions.values() if str(msg).startswith("skipped: WeChat"))
         if wechat_skipped:
             print(f"warning: {wechat_skipped} WeChat candidates skipped — quit WeChat and re-run to clean them")
+        app_skips = sorted({
+            str(msg) for msg in actions.values()
+            if str(msg).startswith("skipped: ") and str(msg).endswith(" is running")
+            and not str(msg).startswith("skipped: WeChat")
+        })
+        for msg in app_skips:
+            count = sum(1 for m in actions.values() if str(m) == msg)
+            print(f"warning: {count} candidates skipped — {msg[len('skipped: '):]}; quit the app and re-run")
 
     after_df = get_free_space()
     state = write_state(args.mode, args.apply, tools, candidates, actions, before_df, after_df, stale_days)

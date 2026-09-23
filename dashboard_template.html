@@ -605,6 +605,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     "temp-file":"临时文件", "test-artifact":"测试产物", "screenshot":"截图", "large-dir":"大目录",
     "large-file":"大文件", "stale-deps":"闲置依赖", "stale-model":"闲置模型",
     "wechat-cache":"微信缓存", "wechat-media":"微信过期媒体",
+    "app-support-cache":"应用白名单缓存", "app-support-manual":"应用用户数据",
     "scan only":"仅扫描", "would delete":"将删除", deleted:"已删除", "needs review":"待确认", failed:"失败",
     "skipped: WeChat is running":"跳过：微信运行中"
   };
@@ -665,10 +666,20 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     [/^WeChat crash reports; no user data$/, "微信崩溃报告，不含用户数据"],
     [/^WeChat container Caches; rebuilt on demand$/, "微信容器 Caches，按需重建"],
     [/^WeChat chat media older than (\d+)-month window: (.+)$/, "微信聊天媒体，超出 $1 个月保留窗口：$2"],
-    [/^WeChat account cache month (.+)$/, "微信账号缓存月份目录 $1"]
+    [/^WeChat account cache month (.+)$/, "微信账号缓存月份目录 $1"],
+    [/^(.+) rebuildable cache\/temp: (.+)$/, "$1 可重建的缓存/临时数据：$2"],
+    [/^(.+) user data; review before deleting: (.+)$/, "$1 用户数据（$2），删除前请确认"]
   ];
 
-  function zh(k){ return L[k] || k; }
+  function zh(k){
+    if(L[k]) return L[k];
+    // "skipped: <App> is running" carries a dynamic app name, so it cannot live
+    // in the static L table; translate the shape instead.
+    if(typeof k==="string" && k.indexOf("skipped: ")===0 && / is running$/.test(k)){
+      return "跳过：" + k.slice(9, -11) + " 运行中";
+    }
+    return k;
+  }
   function zhReason(s){
     s = String(s==null?"":s);
     if(!s) return "";

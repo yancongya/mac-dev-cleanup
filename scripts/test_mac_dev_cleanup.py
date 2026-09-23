@@ -35,6 +35,61 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg["wechat_media_keep_months"], 3)
 
 
+class ConfigLocationTests(unittest.TestCase):
+    """config.json must live outside the Skill directory.
+
+    SkillDo manages that directory as a content-only mirror of the Git repo and
+    `skilldo update` rebuilds it wholesale, so a policy file kept there would be
+    deleted — silently resetting this machine's settings to defaults.
+    """
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory(prefix="mdc-cfg-loc-")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+
+    def test_config_path_is_outside_the_skill_directory(self) -> None:
+        if os.environ.get("MDC_CONFIG"):
+            self.skipTest("MDC_CONFIG overrides the policy path by design")
+        skill_dir = Path(cleanup.__file__).resolve().parent.parent
+        self.assertEqual(cleanup.CONFIG_PATH.parent, cleanup.LOG_DIR)
+        self.assertEqual(cleanup.LEGACY_CONFIG_PATH, skill_dir / "config.json")
+        self.assertNotEqual(cleanup.CONFIG_PATH, cleanup.LEGACY_CONFIG_PATH)
+
+    def test_legacy_config_is_adopted_once(self) -> None:
+        legacy = self.root / "skill" / "config.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('{"stale_days": 7}', encoding="utf-8")
+        target = self.root / "logs" / "config.json"
+
+        self.assertTrue(cleanup.adopt_legacy_config(legacy, target))
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["stale_days"], 7)
+        self.assertFalse(legacy.exists(), "legacy policy should be moved, not duplicated")
+
+    def test_existing_target_wins_over_legacy(self) -> None:
+        legacy = self.root / "config.json"
+        legacy.write_text('{"stale_days": 7}', encoding="utf-8")
+        target = self.root / "logs" / "config.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"stale_days": 11}', encoding="utf-8")
+
+        self.assertFalse(cleanup.adopt_legacy_config(legacy, target))
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["stale_days"], 11)
+        self.assertTrue(legacy.exists(), "a live policy must never be clobbered")
+
+    def test_missing_legacy_is_a_noop(self) -> None:
+        target = self.root / "logs" / "config.json"
+        self.assertFalse(cleanup.adopt_legacy_config(self.root / "absent.json", target))
+        self.assertFalse(target.exists())
+
+    def test_save_config_creates_missing_parent(self) -> None:
+        target = self.root / "nested" / "config.json"
+        with patch.object(cleanup, "CONFIG_PATH", target):
+            written = cleanup.save_config({"stale_days": 42})
+        self.assertEqual(written, target)
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["stale_days"], 42)
+
+
 class WeChatMonthTests(unittest.TestCase):
     def test_month_key_strict(self) -> None:
         self.assertEqual(cleanup.wechat_month_key("2026-07"), (2026, 7))
@@ -278,6 +333,125 @@ class BuildArtifactConfigTests(unittest.TestCase):
         self.assertEqual(merged["build_artifacts"]["safe_dirs"], [".tmp"])
         # Partial override keeps the sibling defaults.
         self.assertEqual(merged["build_artifacts"]["tauri_build_dirs"], ["target"])
+
+
+class AppSupportWhitelistTests(unittest.TestCase):
+    """App-support trees stay pruned; a config whitelist may carve out exact
+    relative paths only. Live app data must remain unreachable, and manual
+    entries must never reach an auto-delete path."""
+
+    def _reload(self, cfg: dict, tag: str):
+        """Reload the script against a temporary policy file (MDC_CONFIG)."""
+        cfg_dir = tempfile.mkdtemp(prefix="mdc-appcfg-")
+        cfg_file = Path(cfg_dir) / "config.json"
+        cfg_file.write_text(json.dumps(cfg), encoding="utf-8")
+        previous = os.environ.get("MDC_CONFIG")
+        os.environ["MDC_CONFIG"] = str(cfg_file)
+        try:
+            name = f"mdc_app_reload_{tag}"
+            spec = importlib.util.spec_from_file_location(
+                name, Path(__file__).resolve().parent / "mac_dev_cleanup.py")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
+        finally:
+            if previous is None:
+                os.environ.pop("MDC_CONFIG", None)
+            else:
+                os.environ["MDC_CONFIG"] = previous
+        return module
+
+    def _entry(self, module, root: Path, safe=(), manual=()):
+        return module.AppSupportEntry("TestApp", root, tuple(safe), tuple(manual), "")
+
+    def test_default_config_ships_pixpin_entry(self) -> None:
+        entry = next((e for e in cleanup.APP_SUPPORT_ENTRIES if e.name == "PixPin"), None)
+        self.assertIsNotNone(entry, "default config must whitelist PixPin")
+        self.assertIn("Temp/RecordingRecovery", entry.safe)
+        self.assertIn("History", entry.manual)
+        self.assertTrue(entry.require_quit, "live recording recovery needs a quit guard")
+
+    def test_exempt_covers_only_listed_relative_paths(self) -> None:
+        module = self._reload({}, "exempt1")
+        entry = next(e for e in module.APP_SUPPORT_ENTRIES if e.name == "PixPin")
+        self.assertTrue(module.app_support_exempt(entry.root / "Temp" / "RecordingRecovery"))
+        self.assertTrue(module.app_support_exempt(entry.root / "History" / "_ScreenshotRecord" / "a.his"))
+        # Everything not named in the entry stays behind the prune wall.
+        for unreachable in (entry.root, entry.root / "Data", entry.root / "Config",
+                            entry.root / "Temp", entry.root / "OcrModel"):
+            self.assertFalse(module.app_support_exempt(unreachable), str(unreachable))
+
+    def test_pruned_respects_exemption_and_wall(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            module = self._reload({}, "prune1")
+            app = (Path(temp) / "App").resolve()
+            (app / "Temp" / "RecordingRecovery").mkdir(parents=True)
+            (app / "Data").mkdir()
+            entry = self._entry(module, app, safe=["Temp/RecordingRecovery"], manual=["History"])
+            with patch.object(module, "PRUNE_PATHS", [app]), \
+                    patch.object(module, "APP_SUPPORT_ENTRIES", (entry,)):
+                self.assertFalse(module.pruned(app / "Temp" / "RecordingRecovery"))
+                self.assertTrue(module.pruned(app / "Data"))
+                self.assertTrue(module.pruned(app))
+
+    def test_rejects_root_outside_pruned_paths(self) -> None:
+        for bad_root in ("~/Documents/NotPruned", "/etc", "~/Library/Caches"):
+            with self.assertRaises(ValueError):
+                cleanup.validate_config({"app_support_whitelist": [
+                    {"name": "X", "root": bad_root, "safe": ["cache"]}]})
+
+    def test_rejects_escaping_relative_paths(self) -> None:
+        for bad_rel in ("../../etc", "/etc/passwd", "~/secret", "a/../../b"):
+            with self.assertRaises(ValueError):
+                cleanup.validate_config({"app_support_whitelist": [
+                    {"name": "X", "root": "~/Library/Application Support/X", "safe": [bad_rel]}]})
+
+    def test_rejects_overlap_empty_and_unknown_keys(self) -> None:
+        good_root = "~/Library/Application Support/X"
+        with self.assertRaises(ValueError):  # same path safe and manual
+            cleanup.validate_config({"app_support_whitelist": [
+                {"name": "X", "root": good_root, "safe": ["cache"], "manual": ["cache"]}]})
+        with self.assertRaises(ValueError):  # neither list populated
+            cleanup.validate_config({"app_support_whitelist": [{"name": "X", "root": good_root}]})
+        with self.assertRaises(ValueError):  # unknown entry key
+            cleanup.validate_config({"app_support_whitelist": [
+                {"name": "X", "root": good_root, "safe": ["c"], "surprise": 1}]})
+        with self.assertRaises(ValueError):  # missing name
+            cleanup.validate_config({"app_support_whitelist": [
+                {"root": good_root, "safe": ["c"]}]})
+
+    def test_manual_entry_is_never_auto_deleted(self) -> None:
+        module = self._reload({}, "manual1")
+        entry = next(e for e in module.APP_SUPPORT_ENTRIES if e.name == "PixPin")
+        history = module.Candidate(entry.root / "History", 1 << 20,
+                                   module.APP_SUPPORT_MANUAL_CATEGORY, "manual", "x")
+        self.assertFalse(module.is_eligible(history, "clean-safe"))
+        self.assertFalse(module.is_eligible(history, "clean-aggressive"))
+        self.assertFalse(module.should_delete(history, "clean-aggressive"))
+
+    def test_scan_labels_paths_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            module = self._reload({}, "scan1")
+            app = (Path(temp) / "App").resolve()
+            (app / "Temp" / "RecordingRecovery").mkdir(parents=True)
+            (app / "Temp" / "RecordingRecovery" / "s.srndata").write_bytes(b"x" * 8)
+            (app / "History").mkdir()
+            if not hasattr(module, "TRASH_ROOT"):  # pragma: no cover - sanity
+                self.fail("module failed to load")
+            entry = self._entry(module, app, safe=["Temp/RecordingRecovery"], manual=["History"])
+            with patch.object(module, "PRUNE_PATHS", [app]), \
+                    patch.object(module, "APP_SUPPORT_ENTRIES", (entry,)), \
+                    patch.object(module, "EXCLUDE_PATHS", []), \
+                    patch.object(module, "PROTECTED_PROJECTS", []), \
+                    patch.object(module, "EXCLUDE_GLOBS", ()), \
+                    patch.object(module, "PROTECTED_CATEGORIES", set()):
+                found = module.scan_app_support()
+        by_name = {c.path.name: c for c in found.values()}
+        self.assertEqual(by_name["RecordingRecovery"].category, "app-support-cache")
+        self.assertEqual(by_name["RecordingRecovery"].risk, "safe")
+        self.assertEqual(by_name["RecordingRecovery"].size, 8)
+        self.assertEqual(by_name["History"].category, "app-support-manual")
+        self.assertEqual(by_name["History"].risk, "manual")
 
 
 class RecoveryTests(unittest.TestCase):

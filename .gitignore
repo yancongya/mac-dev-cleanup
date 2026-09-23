@@ -15,5 +15,7 @@ __pycache__/
 # 已弃用的 vendor（dashboard 已改为零依赖内联 vanilla，不再引用）
 vendor/
 
-# 本地会话记忆（WorkBuddy 工作目录，不入库）
-.workbuddy/
+# 本地会话记忆（WorkBuddy 工作目录，不入库）。写成无斜杠形式：实体已迁到
+# ~/.codex/logs/mac-dev-cleanup/.workbuddy/，技能目录内只留软链，而带斜杠的
+# pattern 只匹配目录、不会忽略软链——那会把本地绝对路径写进公开仓库。
+.workbuddy

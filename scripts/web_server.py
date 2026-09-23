@@ -22,7 +22,6 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "mac_dev_cleanup.py"
-CONFIG_PATH = ROOT / "config.json"
 STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "state.json"
 OPERATIONS_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "operations"
 QUARANTINE_DIR = Path.home() / ".Trash" / "mac-dev-cleanup"
@@ -31,6 +30,11 @@ SCAN_LOCK = threading.Lock()
 
 sys.path.insert(0, str(SCRIPT.parent))
 import mac_dev_cleanup as cleanup  # noqa: E402
+
+# The CLI module owns the policy path; never re-derive it here. It resolves to
+# LOG_DIR/config.json (outside the Skill directory), so a `skilldo update` that
+# rebuilds the Skill directory cannot reset the panel's policy.
+CONFIG_PATH = cleanup.CONFIG_PATH
 
 
 def read_json(path: Path, fallback: object) -> object:
