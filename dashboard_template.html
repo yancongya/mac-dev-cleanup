@@ -893,11 +893,14 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   // ---- unified collapsible panels ----
   // Collapse state is remembered across sessions via localStorage.
-  var PANEL_DEFAULTS = { summary:true, risk:true, cat:false, tools:false,
-    disk:false, table:true, cleanup:true, ops:false, settings:false };
+  var PANEL_DEFAULTS = { summary:true, risk:true, cat:true, tools:true,
+    disk:true, table:true, cleanup:true, exechist:true, ops:true, settings:true };
   var PANELS = Object.assign({}, PANEL_DEFAULTS);
+  // .v2: 2026-09-24 — all panels default expanded; bumping the key discards
+  // previously saved collapsed states so the new defaults actually apply.
+  var PANEL_STORE_KEY = "mdc.panels.v2";
   try{
-    var savedPanels = JSON.parse(localStorage.getItem("mdc.panels")||"null");
+    var savedPanels = JSON.parse(localStorage.getItem(PANEL_STORE_KEY)||"null");
     if(savedPanels && typeof savedPanels==="object"){
       for(var pk in PANEL_DEFAULTS){
         if(typeof savedPanels[pk]==="boolean") PANELS[pk]=savedPanels[pk];
@@ -905,7 +908,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     }
   }catch(e){}
   function savePanels(){
-    try{ localStorage.setItem("mdc.panels", JSON.stringify(PANELS)); }catch(e){}
+    try{ localStorage.setItem(PANEL_STORE_KEY, JSON.stringify(PANELS)); }catch(e){}
   }
   // panel(id, title, note, bodyHtml) — unified collapsible section shell.
   // bodyNoPad for sections that manage their own padding (tables/lists).
@@ -925,7 +928,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     '</section>';
   }
   function togglePanel(id){
-    if(!(id in PANELS)) return;
+    if(!(id in PANELS)) PANELS[id]=true;  // panel() treats unknown as expanded
     PANELS[id] = !PANELS[id];
     savePanels();
     var body=$("pbody-"+id);

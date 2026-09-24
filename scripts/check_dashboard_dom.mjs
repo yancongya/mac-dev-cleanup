@@ -152,7 +152,11 @@ ok("设置项标签全部含中文", allChinese, labels.filter((l) => !/[一-龥
 ok("含构建衍生物分组", labels.some((l) => l.includes("构建目录名")), labels.join(" / ").slice(0, 200));
 ok("含微信媒体保留月数", labels.some((l) => l.includes("微信媒体")), labels.join(" / ").slice(0, 120));
 ok("设置项数量 >= 15", labels.length >= 15, labels.length);
-ok("aria-expanded 已切换", settingsPanel?.getAttribute("aria-expanded") === "true");
+// default-expanded now: first click collapses, second re-expands (full round-trip)
+ok("aria-expanded 折叠切换", settingsPanel?.getAttribute("aria-expanded") === "false");
+if (settingsPanel) click(settingsPanel);
+await sleep(30);
+ok("aria-expanded 再展开", settingsPanel?.getAttribute("aria-expanded") === "true");
 
 // --- search keeps focus (the bug an earlier rewrite fixed) ---
 window.location.hash = "clean";
