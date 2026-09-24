@@ -1067,6 +1067,13 @@ def scan_wechat(keep_months: int) -> dict[Path, Candidate]:
 
     Both run under clean-aggressive only; clean-safe never touches WeChat.
     """
+    # Field-tested 2026-09-24: with WeChat running, opendir() into the sandboxed
+    # container BLOCKS INDEFINITELY (not EPERM — a kernel-level wait), hanging
+    # the whole collect() phase. The nightly clean-safe once hung 7.5h this way.
+    # The apply phase already skips WeChat candidates while it runs; the scan
+    # phase must not even walk the container in that state.
+    if wechat_running():
+        return {}
     candidates: dict[Path, Candidate] = {}
     for root, reason in WECHAT_CACHE_DIRS.items():
         if root.is_dir():
@@ -1121,6 +1128,11 @@ def scan_app_support() -> dict[Path, Candidate]:
     """
     candidates: dict[Path, Candidate] = {}
     for entry in APP_SUPPORT_ENTRIES:
+        # Same indefinite-opendir hazard as the WeChat container: while the
+        # app named by require_quit is running its whitelisted paths may be
+        # live state, and the apply phase skips them anyway — do not walk.
+        if entry.require_quit and process_running(entry.require_quit):
+            continue
         for rel in entry.safe:
             add_path(candidates, entry.root / rel, APP_SUPPORT_CACHE_CATEGORY, "safe",
                      f"{entry.name} rebuildable cache/temp: {rel}")

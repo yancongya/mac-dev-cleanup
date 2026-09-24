@@ -28,3 +28,6 @@ vendor/
 # ~/.codex/logs/mac-dev-cleanup/.workbuddy/，技能目录内只留软链，而带斜杠的
 # pattern 只匹配目录、不会忽略软链——那会把本地绝对路径写进公开仓库。
 .workbuddy
+
+# Node 依赖（jsdom 仅 DOM 校验脚本用，本地 npm i 即可，不入库）
+node_modules/

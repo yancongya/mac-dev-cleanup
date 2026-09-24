@@ -137,6 +137,32 @@ class WeChatMonthTests(unittest.TestCase):
             mock_dt.date.today.return_value = fake_today(2026, 8)
             self.assertEqual(cleanup._wechat_cutoff(1), (2026, 8))
             self.assertEqual(cleanup._wechat_cutoff(2), (2026, 7))
+
+    def test_scan_wechat_skips_while_wechat_running(self) -> None:
+        # Field-tested 2026-09-24: with WeChat running, opendir() into the
+        # sandboxed container blocks indefinitely — the nightly clean-safe hung
+        # 7.5h in collect(). The scan phase must not walk the container at all.
+        with patch.object(cleanup, "wechat_running", return_value=True), \
+             patch.object(cleanup, "WECHAT_CACHE_DIRS", {}), \
+             patch.object(cleanup, "WECHAT_FILES", Path("/nonexistent-wechat-files")):
+            self.assertEqual(cleanup.scan_wechat(1), {})
+
+    def test_scan_app_support_skips_running_require_quit_entry(self) -> None:
+        entry = cleanup.AppSupportEntry(
+            name="TestApp", root=Path("/nonexistent-testapp"), safe=["Cache"], manual=[],
+            require_quit="TestApp.app/Contents/MacOS/TestApp")
+        with patch.object(cleanup, "APP_SUPPORT_ENTRIES", [entry]), \
+             patch.object(cleanup, "process_running", return_value=True):
+            self.assertEqual(cleanup.scan_app_support(), {})
+
+    def test_cutoff_spans_year_boundary(self) -> None:
+        def fake_today(year: int, month: int):
+            day = MagicMock()
+            day.year = year
+            day.month = month
+            return day
+
+        with patch.object(cleanup, "dt") as mock_dt:
             mock_dt.date.today.return_value = fake_today(2026, 1)
             self.assertEqual(cleanup._wechat_cutoff(1), (2026, 1))
             self.assertEqual(cleanup._wechat_cutoff(2), (2025, 12))

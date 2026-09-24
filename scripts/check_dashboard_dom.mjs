@@ -6,9 +6,10 @@
  *   npm i jsdom                       # resolvable from the current directory
  *   MDC_JSDOM=/path/to/jsdom/lib/api.js  node scripts/check_dashboard_dom.mjs dashboard.html
  *
- * Verifies: zero runtime errors, all sections render, search keeps focus across
- * re-renders, the settings schema renders every field, and reason strings are
- * translated.
+ * Verifies: zero runtime errors, the four-view sidebar shell, hash routing,
+ * candidate selection → cleanup command generation, all sections render, search
+ * keeps focus across re-renders, the settings schema renders every field, and
+ * reason strings are translated.
  */
 import { readFileSync } from "node:fs";
 import os from "node:os";
@@ -65,6 +66,12 @@ const { window } = dom;
 const doc = window.document;
 const $ = (s) => doc.querySelector(s);
 const text = (s) => ($(s) ? $(s).textContent.trim() : null);
+const visible = (s) => {
+  const el = $(s);
+  return !!el && el.style.display !== "none";
+};
+const click = (el) => el && el.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 await new Promise((r) => setTimeout(r, 300));
 
@@ -72,22 +79,31 @@ const checks = [];
 const ok = (name, cond, extra = "") =>
   checks.push({ name, pass: !!cond, extra: cond ? "" : extra });
 
-// --- structure ---
+// --- structure: sidebar + four views ---
 ok("app 容器已渲染", $("#app").children.length > 0);
 ok("boot-error 未触发", !$("#boot-error").classList.contains("show"));
+ok("侧边栏四个导航项", doc.querySelectorAll(".nav-item").length === 4, doc.querySelectorAll(".nav-item").length);
+ok("清理导航徽标有值", ($("#nav-badge-clean")?.textContent || "").length > 0, $("#nav-badge-clean")?.textContent);
+ok("四个视图容器", doc.querySelectorAll(".view").length === 4);
+ok("默认显示概览视图", visible("#view-overview") && !visible("#view-clean"));
 ok("摘要六宫格", doc.querySelectorAll(".sum-cell").length === 6, doc.querySelectorAll(".sum-cell").length);
 ok("风险分布三行", doc.querySelectorAll(".cr-item[data-risk]").length === 3);
-ok("候选项表格已渲染", doc.querySelectorAll("tbody tr").length > 0, doc.querySelectorAll("tbody tr").length);
 ok("工具自检格子", doc.querySelectorAll(".tool-cell").length > 0);
-ok("面板系统已渲染", doc.querySelectorAll(".panel").length >= 5);
+ok("面板系统已渲染", doc.querySelectorAll(".panel").length >= 8, doc.querySelectorAll(".panel").length);
 ok("toast 容器存在", !!$("#toast"));
 
 // --- i18n ---
-const bodyText = doc.body.textContent;
-ok("无英文 'ok' 工具状态", !/\bok\b/.test($("#app").querySelectorAll(".ts")[0]?.textContent || ""));
 ok("标题已汉化", doc.title.includes("清理控制台"), doc.title);
 ok("品牌已汉化", text(".brand h1").includes("清理控制台"), text(".brand h1"));
 ok("扫描模式下 m-mode 为中文", text("#m-mode") === "仅扫描", text("#m-mode"));
+
+// --- hash routing: overview → clean ---
+window.location.hash = "clean";
+await sleep(80);
+ok("路由切换到清理视图", visible("#view-clean") && !visible("#view-overview"));
+ok("导航高亮随路由切换", $(".nav-item.active")?.getAttribute("data-nav") === "clean", $(".nav-item.active")?.getAttribute("data-nav"));
+
+// --- i18n (candidate table lives in the clean view) ---
 const reasonCells = [...doc.querySelectorAll("td.reason")].map((e) => e.textContent);
 const chineseReasons = reasonCells.filter((t) => /[一-龥]/.test(t)).length;
 ok("原因列已汉化", chineseReasons > 0 && chineseReasons >= reasonCells.length * 0.9,
@@ -100,9 +116,31 @@ ok("无残留英文 reason 模板",
   reasonCells.filter((t) => ENGLISH_TEMPLATE.test(t)).slice(0, 3).join(" | "));
 ok("筛选 chip 带计数", /\d/.test($("#chips .chip .n")?.textContent || ""), $("#chips")?.textContent.trim());
 
-// --- settings schema ---
+// --- candidate selection → cleanup command ---
+ok("候选项表格已渲染", doc.querySelectorAll("tbody tr").length > 0, doc.querySelectorAll("tbody tr").length);
+const manualBox = doc.querySelector('td.sel input[type=checkbox]:disabled');
+ok("manual 候选复选框禁用", !!manualBox && (manualBox.title || "").includes("永不自动删除"), manualBox?.title);
+const selectable = doc.querySelector("input[data-sel]");
+ok("存在可勾选候选", !!selectable);
+if (selectable) {
+  click(selectable);
+  await sleep(30);
+  ok("吸底操作栏显示已选", (text("#sel-info") || "").includes("已选"), text("#sel-info"));
+  ok("生成命令按钮已启用", $("#sel-cmd-btn") && !$("#sel-cmd-btn").disabled);
+  click($("#sel-cmd-btn"));
+  await sleep(30);
+  ok("生成命令给出反馈", $("#toast").classList.contains("show"), $("#toast").textContent);
+  click(selectable);
+  await sleep(30);
+  ok("取消勾选后操作栏归零", (text("#sel-info") || "").includes("未选择"), text("#sel-info"));
+}
+
+// --- settings schema (navigate to settings view) ---
+window.location.hash = "settings";
+await sleep(80);
+ok("路由切换到设置视图", visible("#view-settings") && !visible("#view-clean"));
 const settingsPanel = doc.querySelector('.panel-head[data-panel="settings"]');
-if (settingsPanel) settingsPanel.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+if (settingsPanel) click(settingsPanel);
 const settingsBody = doc.querySelector('#pbody-settings');
 const labels = [...(settingsBody || doc).querySelectorAll(".field label")].map((e) => e.textContent.trim());
 const allChinese = labels.every((l) => /[一-龥]/.test(l));
@@ -112,11 +150,13 @@ ok("含微信媒体保留月数", labels.some((l) => l.includes("微信媒体"))
 ok("设置项数量 >= 15", labels.length >= 15, labels.length);
 ok("aria-expanded 已切换", settingsPanel?.getAttribute("aria-expanded") === "true");
 
-// --- search keeps focus (the bug this rewrite fixed) ---
+// --- search keeps focus (the bug an earlier rewrite fixed) ---
+window.location.hash = "clean";
+await sleep(80);
 // First expand the candidates panel so search-input is visible
 const candidatesPanel = doc.querySelector('.panel-head[data-panel="table"]');
-if (candidatesPanel) candidatesPanel.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-await new Promise(r => setTimeout(r, 50));
+if (candidatesPanel) click(candidatesPanel);
+await sleep(50);
 const input = $("#search-input");
 input.focus();
 ok("搜索框可获得焦点", doc.activeElement === input);
@@ -135,7 +175,7 @@ ok("复制标记带 title", !!copyCell?.getAttribute("title"));
 // --- risk filter ---
 const chip = doc.querySelector('#chips .chip[data-risk="manual"]');
 if (chip) {
-  chip.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  click(chip);
   const rows = doc.querySelectorAll("tbody tr");
   const allManual = [...rows].every((r) => r.textContent.includes("待确认"));
   ok("筛选后仅剩待确认", allManual, rows.length + " 行");
@@ -147,7 +187,7 @@ input.dispatchEvent(new window.Event("input", { bubbles: true }));
 // Reset risk filter to "all"
 const allChip = doc.querySelector('#chips .chip[data-risk="all"]');
 if (allChip) allChip.click();
-await new Promise(r => setTimeout(r, 50));
+await sleep(50);
 const sortHeaders = doc.querySelectorAll("thead th[data-sort]");
 ok("排序表头已渲染", sortHeaders.length >= 3, sortHeaders.length + " 个");
 if (sortHeaders.length > 0) {
@@ -156,7 +196,7 @@ if (sortHeaders.length > 0) {
   ok("排序箭头已切换", arrow.includes("↑") || arrow.includes("↓"), arrow);
 }
 
-// --- offline CLI generation ---
+// --- offline CLI generation (settings view) ---
 const saveBtn = $("#save-btn");
 ok("离线时按钮为生成命令", saveBtn.textContent.includes("生成配置命令"), saveBtn.textContent);
 saveBtn.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));

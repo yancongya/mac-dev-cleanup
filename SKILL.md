@@ -182,7 +182,7 @@ WeChat data lives in `~/Library/Containers/com.tencent.xinWeChat` (pruned by def
 
 Never touched under any mode: message databases (`db_storage`), account `config`, `favorite`, `Backup/`, `all_users` — the shape check makes them structurally unmatchable.
 
-Hard rule: if WeChat is running, `--apply` **skips all WeChat candidates** (`skipped: WeChat is running`) because moving files inside a live container risks database corruption. Quit WeChat and re-run. Note the nightly `clean-safe` automation never touches WeChat — both categories are aggressive-only.
+Hard rule: while WeChat is running, `opendir()` into the sandboxed container **blocks indefinitely** (kernel-level wait, not EPERM) — field-tested 2026-09-24, the nightly `clean-safe --apply` hung 7.5 h in `collect()` this way because WeChat had been left running overnight. So **both** phases skip WeChat while it runs: `scan_wechat()` returns no candidates (the scan/walk phase never touches the container), and `--apply` reports `skipped: WeChat is running`. Quit WeChat and re-run. Note the nightly `clean-safe` automation never touches WeChat anyway — both categories are aggressive-only.
 
 ## App-support whitelist (config-driven, shape-checked)
 
@@ -370,6 +370,10 @@ The same dead mount defeats *any* recursive walk of `/tmp`, not just this Skill'
 
 ## Dashboard and state
 
+The page is an **app-like console with a sidebar and four hash-routed views** (`#overview` / `#clean` / `#history` / `#settings`); on narrow screens the sidebar becomes a horizontal sticky tab bar. Panels (the unified collapsible `panel()` shell, drag-reorderable) are grouped per view: overview holds summary/risk/category/disk/tools, clean holds the one-click commands + candidate table, history holds the quarantine panel + operations, settings holds the config form.
+
+The clean view's candidate list has **selection checkboxes** (manual-risk rows are disabled — that level is never auto-deleted) and a sticky bottom bar showing "已选 N 项 · X GB"; the 生成清理命令 button copies a precise `clean-safe`/`clean-aggressive` command (aggressive if any selected pick is aggressive) with one `--candidate-id <id>` per pick, so the terminal only deletes exactly what was reviewed. Selection lives in memory and is cleared when a fresh scan replaces candidate ids.
+
 The dashboard has exactly one tracked source — the template. Every scan regenerates `dashboard.html` from it:
 
 ```text
@@ -414,7 +418,7 @@ Constraints when editing the dashboard UI:
   ```bash
   python3 scripts/check_dashboard.py                     # static + syntax gate
   npm i jsdom
-  node scripts/check_dashboard_dom.mjs dashboard.html    # 35 headless assertions
+  node scripts/check_dashboard_dom.mjs dashboard.html    # 47 headless assertions
   # or: MDC_JSDOM=/path/to/jsdom/lib/api.js node scripts/check_dashboard_dom.mjs dashboard.html
   ```
 

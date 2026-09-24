@@ -49,8 +49,41 @@ body{
 a{color:var(--indigo)}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
 .tnum{font-variant-numeric:tabular-nums}
-.wrap{max-width:1080px;margin:0 auto;padding:24px 16px 48px}
+.wrap{flex:1 1 auto;min-width:0;max-width:1080px;margin:0;padding:24px 16px 48px}
 @media(min-width:640px){.wrap{padding:28px 24px 56px}}
+
+/* shell: sidebar nav + content (app-like layout) */
+.shell{display:flex;max-width:1240px;margin:0 auto;padding:0 16px;align-items:flex-start}
+@media(min-width:640px){.shell{padding:0 24px}}
+.sidenav{
+  flex:0 0 168px; position:sticky; top:80px; margin:24px 20px 48px 0;
+  display:flex; flex-direction:column; gap:4px;
+}
+.nav-item{
+  display:flex; align-items:center; gap:8px; height:36px; padding:0 12px;
+  border:1px solid transparent; background:transparent; color:var(--muted);
+  border-radius:8px; font-size:13px; font-weight:500; cursor:pointer; text-align:left;
+  transition:background .15s,color .15s; font-family:inherit;
+}
+.nav-item:hover{background:var(--row-hover); color:var(--text)}
+.nav-item.active{background:var(--panel); border-color:var(--border); color:var(--text); font-weight:600}
+.nav-item svg{width:15px;height:15px;flex:0 0 auto}
+.nav-badge{margin-left:auto;font-size:10px;font-family:ui-monospace,monospace;color:var(--indigo);background:rgba(226,62,125,.1);border-radius:999px;padding:1px 7px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.nav-badge:empty{display:none}
+@media(min-width:900px){
+  .topbar-in{max-width:1240px}
+}
+/* mobile: sidebar becomes a horizontal sticky tab bar under the topbar */
+@media(max-width:899px){
+  .shell{display:block;padding:0}
+  .sidenav{
+    position:sticky; top:56px; z-index:40; flex:none; width:auto; margin:0;
+    flex-direction:row; gap:2px; padding:6px 12px;
+    background:var(--panel); border-bottom:1px solid var(--border); overflow-x:auto;
+  }
+  .nav-item{height:32px;flex:0 0 auto;border-radius:7px}
+  .wrap{padding-top:16px}
+}
 
 /* top bar */
 .topbar{
@@ -287,14 +320,15 @@ thead th.sort-active{color:var(--text)}
 /* column resize handle */
 thead th .col-resize{position:absolute;right:-2px;top:0;bottom:0;width:5px;cursor:col-resize;z-index:6}
 thead th .col-resize:hover,thead th .col-resize.active{background:var(--indigo);opacity:.4}
-/* default column widths */
-thead th:nth-child(1){width:60px}  /* 大小 */
-thead th:nth-child(2){width:60px}  /* 风险 */
-thead th:nth-child(3){width:80px}  /* 类别 */
-thead th:nth-child(4){width:60px}  /* 动作 */
-thead th:nth-child(5){width:auto}  /* 路径 */
-thead th:nth-child(6){width:200px} /* 原因 */
-thead th:nth-child(7){width:60px}  /* 操作 */
+/* default column widths (col 1 = selection checkbox) */
+thead th:nth-child(1){width:34px}
+thead th:nth-child(2){width:60px}  /* 大小 */
+thead th:nth-child(3){width:60px}  /* 风险 */
+thead th:nth-child(4){width:80px}  /* 类别 */
+thead th:nth-child(5){width:60px}  /* 动作 */
+thead th:nth-child(6){width:auto}  /* 路径 */
+thead th:nth-child(7){width:200px} /* 原因 */
+thead th:nth-child(8){width:60px}  /* 操作 */
 td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:8px 8px}
 td.path{white-space:normal;word-break:break-all}
 td.reason{white-space:normal;word-break:break-word}
@@ -319,6 +353,22 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
 }
 .ccard{border-bottom:1px solid var(--border);padding:12px 12px;display:flex;flex-direction:column;gap:7px}
 .ccard:last-child{border-bottom:none}
+
+/* candidate selection (P2: checkbox → generate precise cleanup command) */
+td.sel,th.sel{text-align:center;vertical-align:middle}
+td.sel input[type=checkbox],.ccard-head input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;margin:0}
+td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{cursor:default;opacity:.35}
+.selbar{
+  position:sticky; bottom:12px; z-index:30; margin-top:12px;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+  padding:10px 14px; box-shadow:0 6px 24px rgba(0,0,0,.12);
+}
+.selbar.idle{opacity:.75}
+.selbar .sel-info{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.selbar .sel-info .dim{color:var(--subtle);font-weight:400;font-size:11.5px;margin-left:6px}
+.selbar .btn{height:30px;font-size:12px}
+.selbar .spacer{flex:1 1 auto}
 .ccard-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ccard-head .sz{font-family:ui-monospace,monospace;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .ccat{font-family:ui-monospace,monospace;font-size:11px;color:var(--subtle)}
@@ -580,7 +630,28 @@ td.reason{font-size:11.5px;color:var(--subtle);line-height:1.5;max-width:240px}
   </div>
 </header>
 
-<main class="wrap" id="app"></main>
+<div class="shell">
+  <nav class="sidenav" id="sidenav" aria-label="主导航">
+    <button class="nav-item active" data-nav="overview" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      概览
+    </button>
+    <button class="nav-item" data-nav="clean">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+      清理
+      <span class="nav-badge" id="nav-badge-clean"></span>
+    </button>
+    <button class="nav-item" data-nav="history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+      操作历史
+    </button>
+    <button class="nav-item" data-nav="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      设置
+    </button>
+  </nav>
+  <main class="wrap" id="app"></main>
+</div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -738,7 +809,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   var state = { search:"", risk:"all", sortKey:"size", sortDir:-1,
     apiOnline:false, scanBusy:false, saveBusy:false,
-    status:"", statusCls:"idle", cmdOut:"", showCmd:false, hasDraft:false };
+    status:"", statusCls:"idle", cmdOut:"", showCmd:false, hasDraft:false,
+    view:"overview", selected:{} };
 
   // ---- unified collapsible panels ----
   // Collapse state is remembered across sessions via localStorage.
@@ -905,26 +977,29 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
 
   // ---- Drag & Drop (Pointer Events — works on desktop + mobile) ----
+  // Panel order is remembered per view (mdc.panel.order.<view>).
   var PANEL_ORDER_KEY = "mdc.panel.order";
   var dragState = { active:false, src:null, ghost:null, startY:0, panels:[], offsets:[] };
 
-  function getPanelOrder(){
-    try{ return JSON.parse(localStorage.getItem(PANEL_ORDER_KEY)) || null; }catch(e){ return null; }
+  function getPanelOrder(view){
+    try{ return JSON.parse(localStorage.getItem(PANEL_ORDER_KEY+"."+view)) || null; }catch(e){ return null; }
   }
   function savePanelOrder(){
-    var panels = $("app").querySelectorAll(".panel[data-panel-id]");
+    var host = $("view-"+state.view);
+    if(!host) return;
+    var panels = host.querySelectorAll(".panel[data-panel-id]");
     var order = [];
     for(var i=0;i<panels.length;i++) order.push(panels[i].getAttribute("data-panel-id"));
-    try{ localStorage.setItem(PANEL_ORDER_KEY, JSON.stringify(order)); }catch(e){}
+    try{ localStorage.setItem(PANEL_ORDER_KEY+"."+state.view, JSON.stringify(order)); }catch(e){}
   }
-  function applyPanelOrder(){
-    var saved = getPanelOrder();
+  function applyViewOrder(view){
+    var host = $("view-"+view);
+    if(!host) return;
+    var saved = getPanelOrder(view);
     if(!saved || !saved.length) return;
-    var app = $("app");
-    var panels = app.querySelectorAll(".panel[data-panel-id]");
     var map = {};
-    panels.forEach(function(p){ map[p.getAttribute("data-panel-id")] = p; });
-    saved.forEach(function(id){ if(map[id]) app.appendChild(map[id]); });
+    host.querySelectorAll(".panel[data-panel-id]").forEach(function(p){ map[p.getAttribute("data-panel-id")] = p; });
+    saved.forEach(function(id){ if(map[id]) host.appendChild(map[id]); });
   }
 
   function initDrag(){
@@ -1023,6 +1098,44 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   function $(id){ return document.getElementById(id); }
 
+  // ---- view router (hash-based) ----
+  var VIEWS = ["overview","clean","history","settings"];
+  function currentView(){
+    var h = (location.hash||"#overview").slice(1);
+    return VIEWS.indexOf(h)>=0 ? h : "overview";
+  }
+  function route(){
+    var v = currentView();
+    state.view = v;
+    VIEWS.forEach(function(name){
+      var el = $("view-"+name);
+      if(el) el.style.display = name===v ? "block" : "none";
+    });
+    var nav = $("sidenav");
+    if(nav) nav.querySelectorAll(".nav-item").forEach(function(b){
+      var on = b.getAttribute("data-nav")===v;
+      b.classList.toggle("active", on);
+      if(on) b.setAttribute("aria-current","page"); else b.removeAttribute("aria-current");
+    });
+    // jsdom's scrollTo is a not-implemented stub that logs a jsdomError; skip it
+    // in headless checks so the render stays error-free.
+    if(!/jsdom/i.test(navigator.userAgent)) window.scrollTo(0,0);
+  }
+  function gotoView(v){
+    if(!DATA) return;
+    if(currentView()===v) route();
+    else location.hash = v;
+  }
+  function bindNav(){
+    var nav=$("sidenav");
+    if(!nav) return;
+    nav.addEventListener("click", function(e){
+      var b=e.target.closest(".nav-item");
+      if(!b) return;
+      gotoView(b.getAttribute("data-nav"));
+    });
+  }
+
   // ---- render shell ----
   function renderMeta(){
     if(!DATA) return;
@@ -1030,6 +1143,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     $("m-mode").textContent = MODE_ZH[DATA.mode] || DATA.mode || "—";
     if(DATA.apply) $("m-mode").classList.add("c-amber");
     $("m-cnt").textContent = (DATA.candidate_count||0) + " 项";
+    var badge=$("nav-badge-clean");
+    if(badge) badge.textContent = DATA.deletable_human || "";
   }
 
   function renderSummaryInner(){
@@ -1278,17 +1393,18 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       {key:"category", label:"类别"},
       {key:"action", label:"动作"}
     ];
-    var thHtml = sortHeaders.map(function(h, i){
+    var thHtml = '<th class="sel"><input type="checkbox" id="sel-all" title="全选当前筛选结果（不含待确认）" aria-label="全选"></th>';
+    thHtml += sortHeaders.map(function(h, i){
       var active = state.sortKey===h.key;
       var arrow = active ? (state.sortDir>0?" ↑":" ↓") : "";
       var cls = active ? " class=\"sort-active\"" : "";
-      return '<th'+cls+' data-sort="'+h.key+'" data-col-idx="'+i+'">'+esc(h.label)+arrow+
-        '<span class="col-resize" data-col-idx="'+i+'"></span></th>';
+      return '<th'+cls+' data-sort="'+h.key+'" data-col-idx="'+(i+1)+'">'+esc(h.label)+arrow+
+        '<span class="col-resize" data-col-idx="'+(i+1)+'"></span></th>';
     }).join("");
-    // static cols: 路径(4), 原因(5), 操作(6)
-    thHtml += '<th data-col-idx="4">路径<span class="col-resize" data-col-idx="4"></span></th>';
-    thHtml += '<th class="hide-sm" data-col-idx="5">原因<span class="col-resize" data-col-idx="5"></span></th>';
-    thHtml += '<th class="hide-sm" data-col-idx="6">操作<span class="col-resize" data-col-idx="6"></span></th>';
+    // static cols: 路径(5), 原因(6), 操作(7)
+    thHtml += '<th data-col-idx="5">路径<span class="col-resize" data-col-idx="5"></span></th>';
+    thHtml += '<th class="hide-sm" data-col-idx="6">原因<span class="col-resize" data-col-idx="6"></span></th>';
+    thHtml += '<th class="hide-sm" data-col-idx="7">操作<span class="col-resize" data-col-idx="7"></span></th>';
     return '<table id="cand-table"><thead><tr>'+
       thHtml+
       '</tr></thead><tbody>'+
@@ -1302,6 +1418,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
             '<button class="ra-btn" data-action="protect" data-project="'+esc(parentProject)+'" title="保护此项目" aria-label="保护">★</button>'+
           '</span>' : '';
         return '<tr>'+
+          '<td class="sel">'+selCheckbox(c)+'</td>'+
           '<td class="sz">'+esc(c.size_human)+'</td>'+
           '<td><span class="tag '+rc+'">'+esc(zh(c.risk))+'</span></td>'+
           '<td><span class="mono" style="font-size:11px;color:var(--subtle)">'+esc(zh(c.category))+'</span></td>'+
@@ -1313,6 +1430,17 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       }).join("")+'</tbody></table>';
   }
 
+  // Manual-risk candidates are never auto-deleted by any mode, so they are not
+  // selectable for command generation either.
+  function selCheckbox(c){
+    if(c.risk==="manual"){
+      return '<input type="checkbox" disabled title="待确认级别永不自动删除，请人工处理" aria-label="不可选">';
+    }
+    var on = !!state.selected[c.id];
+    return '<input type="checkbox" data-sel="'+esc(c.id)+'"'+(on?" checked":"")+
+      ' aria-label="选择 '+esc(truncatePath(c.path))+'">';
+  }
+
   function cardsRows(list){
     if(!list.length) return '<div class="empty">没有匹配项。</div>';
     return list.map(function(c){
@@ -1321,6 +1449,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var reason = c.reason ? '<div class="creason">'+esc(zhReason(c.reason))+'</div>' : '';
       return '<div class="ccard">'+
         '<div class="ccard-head">'+
+          selCheckbox(c)+
           '<span class="sz">'+esc(c.size_human)+'</span>'+
           '<span class="tag '+rc+'">'+esc(zh(c.risk))+'</span>'+
           '<span class="tag '+ac+'">'+esc(zh(c.action))+'</span>'+
@@ -1350,6 +1479,84 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '<div class="chips" id="chips">'+chipsHtml()+'</div>'+
         '<span class="count" id="count">'+list.length+' / '+total+'</span>'+
       '</div><div id="listview">'+views(list)+'</div>';
+  }
+
+  // ---- candidate selection → precise cleanup command ----
+  function selectionCount(){
+    var n=0; for(var k in state.selected) n++;
+    return n;
+  }
+  function selectionBytes(){
+    var s=0; for(var k in state.selected) s+=fmt(state.selected[k].size);
+    return s;
+  }
+  // Any aggressive pick forces clean-aggressive; otherwise clean-safe.
+  // manual picks are impossible: their checkboxes are disabled.
+  function selectionMode(){
+    for(var k in state.selected){
+      if(state.selected[k].risk==="aggressive") return "clean-aggressive";
+    }
+    return "clean-safe";
+  }
+  function buildCleanCommand(){
+    var ids=Object.keys(state.selected);
+    if(!ids.length) return "";
+    return "python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py "+
+      selectionMode()+" "+
+      ids.map(function(id){ return "--candidate-id "+id; }).join(" ")+
+      " --apply";
+  }
+  function toggleCandidate(id, on){
+    if(!id) return;
+    if(on){
+      var c=(DATA.candidates||[]).filter(function(x){return x.id===id;})[0];
+      if(c && c.risk!=="manual") state.selected[id]=c;
+    } else {
+      delete state.selected[id];
+    }
+    updateSelBar();
+  }
+  function selectAllVisible(){
+    filtered().forEach(function(c){
+      if(c.risk!=="manual") state.selected[c.id]=c;
+    });
+    refreshList(); updateSelBar();
+  }
+  function clearSelection(){
+    state.selected={};
+    refreshList(); updateSelBar();
+  }
+  function selectionBarHtml(){
+    return '<div class="selbar idle" id="selbar">'+
+      '<span class="sel-info" id="sel-info">未选择候选项</span>'+
+      '<button class="btn" id="sel-clear" hidden>清空选择</button>'+
+      '<span class="spacer"></span>'+
+      '<button class="btn primary" id="sel-cmd-btn" disabled>生成清理命令</button>'+
+    '</div>';
+  }
+  function updateSelBar(){
+    var bar=$("selbar"); if(!bar) return;
+    var n=selectionCount(), bytes=selectionBytes();
+    var info=$("sel-info");
+    if(info){
+      if(!n){ info.innerHTML='未选择候选项<span class="dim">勾选 safe / 谨慎 项后生成精确命令</span>'; }
+      else {
+        var modeZh = selectionMode()==="clean-aggressive"?"深度清理":"安全清理";
+        info.innerHTML='已选 '+n+' 项 · '+fmtSize(bytes)+
+          '<span class="dim">'+modeZh+' · 文件进废纸篓可还原</span>';
+      }
+    }
+    var clearBtn=$("sel-clear"); if(clearBtn) clearBtn.hidden = n===0;
+    var cmdBtn=$("sel-cmd-btn"); if(cmdBtn) cmdBtn.disabled = n===0;
+    bar.classList.toggle("idle", n===0);
+    // header select-all reflects whether every selectable filtered row is picked
+    var all=$("sel-all");
+    if(all){
+      var selectable=filtered().filter(function(c){return c.risk!=="manual";});
+      var picked=selectable.filter(function(c){return state.selected[c.id];}).length;
+      all.checked = selectable.length>0 && picked===selectable.length;
+      all.indeterminate = picked>0 && picked<selectable.length;
+    }
   }
 
   // ---- settings ----
@@ -1703,6 +1910,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           // Update in-place without reload, preserving user state
           Object.assign(DATA, j.state);
           if(j.state.config) Object.assign(CONFIG, j.state.config);
+          state.selected={};  // candidate ids change with a fresh scan
           loadForm();
           renderMeta();
           renderAll();
@@ -1751,18 +1959,40 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       }).catch(function(){ toast("网络错误","err"); });
   }
 
+  function renderTrashPanelInner(){
+    return '<div id="trash-panel"><div class="empty">加载中…</div></div>';
+  }
+  function renderTrashPanel(){
+    var el=$("trash-panel"); if(!el) return;
+    if(!state.apiOnline){
+      el.innerHTML='<div class="empty">需通过本地服务打开才能读取隔离区状态</div>';
+      return;
+    }
+    if(!TRASH.total_bytes){
+      el.innerHTML='<div class="empty">隔离区为空，无待还原的清理产物</div>';
+      return;
+    }
+    el.innerHTML='<div class="disk-compact">'+
+      '<div class="dc-metric"><div class="dc-val">'+fmtSize(TRASH.total_bytes)+'</div><div class="dc-lbl">占用</div></div>'+
+      '<div class="dc-metric"><div class="dc-val">'+TRASH.operations.length+'</div><div class="dc-lbl">操作目录</div></div>'+
+      '<div class="dc-bar"><span style="width:100%;background:var(--bar)"></span></div>'+
+      '<button class="btn" id="clear-trash-btn">清空废纸篓</button>'+
+    '</div>';
+    var btn=$("clear-trash-btn"); if(btn) btn.addEventListener("click",clearTrash);
+  }
+
   function renderTrash(){
     var el=$("trash-info"); if(!el) return;
     if(!state.apiOnline) return;  // Keep placeholder until API loads
     if(!TRASH.total_bytes){
       el.innerHTML='<span class="lbl">隔离区</span><span class="val c-slate" style="font-size:16px">0</span><span class="sub">无隔离文件</span>';
+      renderTrashPanel();
       return;
     }
     el.innerHTML='<span class="lbl">隔离区</span>'+
       '<span class="val c-slate" style="font-size:16px">'+fmtSize(TRASH.total_bytes)+'</span>'+
-      '<span class="sub">'+TRASH.operations.length+' 个操作目录</span>'+
-      (state.apiOnline?'<button class="btn" style="margin-top:4px;height:24px;font-size:10px" id="clear-trash-btn">清空废纸篓</button>':'');
-    var btn=$("clear-trash-btn"); if(btn) btn.addEventListener("click",clearTrash);
+      '<span class="sub">'+TRASH.operations.length+' 个操作目录</span>';
+    renderTrashPanel();
   }
 
   function renderOperationsInner(){
@@ -1831,23 +2061,35 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     }
     $("boot-error").classList.remove("show");
     // panel() is the unified collapsible shell; each renderXxx supplies its body.
-    var html =
-      panel("summary","概览",(DATA.candidate_count||0)+" 个候选", renderSummaryInner()) +
-      panel("risk","风险分布", riskNote(), renderRiskInner(), true) +
-      panel("cat","类别容量", catNote(), renderCatInner(), true) +
-      panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
-      panel("disk","磁盘空间","清理前 / 清理后", renderDiskInner(), true) +
-      panel("table","候选项","可搜索 · 可筛选 · 点击路径复制", renderTableInner(), true) +
-      panel("cleanup","快速清理","在终端执行", renderCleanupGuideInner()) +
-      panel("ops","操作历史","最近操作 · 可还原", renderOperationsInner(), true) +
-      settingsHtml();
-    app.innerHTML = html;
-    applyPanelOrder();
+    // Panels are grouped into four app-like views reached via the sidebar.
+    app.innerHTML =
+      '<div class="view" id="view-overview">'+
+        panel("summary","概览",(DATA.candidate_count||0)+" 个候选", renderSummaryInner()) +
+        panel("risk","风险分布", riskNote(), renderRiskInner(), true) +
+        panel("cat","类别容量", catNote(), renderCatInner(), true) +
+        panel("disk","磁盘空间","清理前 / 清理后", renderDiskInner(), true) +
+        panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
+      '</div>'+
+      '<div class="view" id="view-clean" style="display:none">'+
+        panel("cleanup","一键清理","整体模式 · 复制到终端执行", renderCleanupGuideInner()) +
+        panel("table","候选项","勾选后生成精确清理命令 · 点击路径复制", renderTableInner(), true) +
+        selectionBarHtml() +
+      '</div>'+
+      '<div class="view" id="view-history" style="display:none">'+
+        panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
+        panel("ops","操作历史","最近操作 · 可还原", renderOperationsInner(), true) +
+      '</div>'+
+      '<div class="view" id="view-settings" style="display:none">'+
+        settingsHtml() +
+      '</div>';
+    ["overview","clean","history","settings"].forEach(applyViewOrder);
     bindTable();
     bindSettings();
     renderTrash();
     renderOperations();
     renderLastCleanup();
+    updateSelBar();
+    route();
   }
 
   // Only the result list is swapped. Rebuilding the whole card (as the previous
@@ -1862,6 +2104,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(count) count.textContent = list.length + " / " + ((DATA.candidates||[]).length);
     var chips = $("chips");
     if(chips) chips.innerHTML = chipsHtml();
+    updateSelBar();
   }
 
   function bindTable(){
@@ -1872,8 +2115,15 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var b=e.target.closest("[data-risk]"); if(!b) return;
       state.risk=b.getAttribute("data-risk"); refreshList();
     });
+    // Candidate selection checkboxes (table + mobile cards)
     var holder = $("listview");
     if(holder) holder.addEventListener("click", function(e){
+      var box = e.target.closest("input[data-sel]");
+      if(box){
+        toggleCandidate(box.getAttribute("data-sel"), box.checked);
+        updateSelBar();
+        return;
+      }
       // Sort header click
       var th = e.target.closest("[data-sort]");
       if(th && !e.target.closest(".col-resize")){
@@ -1897,6 +2147,27 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var el = e.target.closest("[data-copy]"); if(!el) return;
       copyText(el.getAttribute("data-copy"), "路径已复制");
     });
+    var selAll = $("sel-all");
+    if(selAll) selAll.addEventListener("click", function(e){
+      // click fires before checked flips for toggle semantics; handle manually
+      e.preventDefault();
+      var selectable=filtered().filter(function(c){return c.risk!=="manual";});
+      var allPicked = selectable.length>0 && selectable.every(function(c){return state.selected[c.id];});
+      if(allPicked){
+        selectable.forEach(function(c){ delete state.selected[c.id]; });
+      } else {
+        selectable.forEach(function(c){ state.selected[c.id]=c; });
+      }
+      refreshList(); updateSelBar();
+    });
+    var cmdBtn=$("sel-cmd-btn");
+    if(cmdBtn) cmdBtn.addEventListener("click", function(){
+      var cmd=buildCleanCommand();
+      if(!cmd){ toast("尚未勾选任何候选项","err"); return; }
+      copyText(cmd, "清理命令已复制，粘贴到终端执行");
+    });
+    var clearBtn=$("sel-clear");
+    if(clearBtn) clearBtn.addEventListener("click", clearSelection);
 
     // --- Column resize ---
     initColResize();
@@ -1904,22 +2175,24 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     // --- Search box resize ---
     initSearchResize();
 
-    // Risk distribution panel → filter
-    var riskRows = document.querySelectorAll(".risk-row.clickable");
+    // Risk distribution panel → filter + jump to 清理 view
+    var riskRows = document.querySelectorAll(".risk-row.clickable, .cr-item[data-risk]");
     for(var i=0;i<riskRows.length;i++){
       riskRows[i].addEventListener("click", function(){
         state.risk = this.getAttribute("data-risk") || "all";
+        gotoView("clean");
         refreshList();
       });
     }
-    // Category panel → search
-    var catRows = document.querySelectorAll(".cat-row.clickable");
+    // Category panel → search + jump to 清理 view
+    var catRows = document.querySelectorAll(".cat-row.clickable, .cr-item[data-cat]");
     for(var i=0;i<catRows.length;i++){
       catRows[i].addEventListener("click", function(){
         var cat = this.getAttribute("data-cat");
         state.search = cat || "";
         var si = $("search-input");
         if(si) si.value = state.search;
+        gotoView("clean");
         refreshList();
       });
     }
@@ -1976,6 +2249,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   function boot(){
     bindPanels();  // event delegation — must be called once, before any render
+    bindNav();
+    window.addEventListener("hashchange", route);
     if(!DATA){ renderAll(); return; }
     loadForm();
     renderMeta();
