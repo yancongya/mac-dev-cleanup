@@ -124,6 +124,7 @@ a{color:var(--indigo)}
 .ov-row .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
 .ov-row .s{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600;flex:0 0 auto}
 .ov-selbar{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-top:12px;font-size:12px;color:var(--muted)}
+.cmd-out{background:var(--panel);border:1px dashed var(--border);border-radius:var(--radius);padding:10px 14px;margin-top:8px;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:var(--text);user-select:all}
 
 /* top bar */
 .topbar{
@@ -812,11 +813,35 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(function(){ el.className = "toast" + (kind ? " " + kind : ""); }, 2600);
   }
-  function copyText(text, okMsg){
-    if(!navigator.clipboard){ toast("当前环境不支持剪贴板", "err"); return; }
-    navigator.clipboard.writeText(text).then(function(){
-      toast(okMsg || "已复制到剪贴板", "ok");
-    }).catch(function(){ toast("复制失败", "err"); });
+  function copyText(text, okMsg, fallbackSel){
+    var done=function(){ toast(okMsg || "已复制到剪贴板", "ok"); };
+    var fail=function(){
+      // Last resort: reveal the text in-page so it can be copied manually.
+      if(fallbackSel){
+        var el=$(fallbackSel.replace(/^#/,""));
+        if(el){ el.textContent=text; el.hidden=false; toast("剪贴板不可用，命令已显示在下方，请手动复制","err"); return; }
+      }
+      toast("复制失败","err");
+    };
+    // Legacy path works inside sandboxed iframes where the async Clipboard API
+    // is rejected (document must be focused — it is, this runs on click).
+    var legacy=function(){
+      try{
+        var ta=document.createElement("textarea");
+        ta.value=text;
+        ta.setAttribute("readonly","");
+        ta.style.cssText="position:fixed;top:-999px;left:-999px;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        var ok=document.execCommand("copy");
+        document.body.removeChild(ta);
+        (ok?done:fail)();
+      }catch(e){ fail(); }
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(legacy);
+    } else legacy();
   }
   function esc(s){
     return String(s==null?"":s).replace(/[&<>"']/g, function(c){
@@ -1575,7 +1600,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<button class="btn" id="sel-clear" hidden>清空选择</button>'+
       '<span class="spacer"></span>'+
       '<button class="btn primary" id="sel-cmd-btn" disabled>生成清理命令</button>'+
-    '</div>';
+    '</div>'+
+    '<pre class="cmd-out" id="sel-cmd-out" hidden></pre>';
   }
   function updateSelBar(){
     var bar=$("selbar"); if(!bar) return;
@@ -1597,6 +1623,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(ovInfo) ovInfo.innerHTML = n ? ('已选 '+n+' 项 · '+fmtSize(bytes)) : '未选择候选项';
     var ovCmd=$("ov-cmd-btn"); if(ovCmd) ovCmd.disabled = n===0;
     var ovBar=$("ov-selbar"); if(ovBar) ovBar.classList.toggle("idle", n===0);
+    // a revealed command belongs to the previous selection — hide when empty
+    if(n===0){ var o1=$("ov-cmd-out"); if(o1) o1.hidden=true; var s1=$("sel-cmd-out"); if(s1) s1.hidden=true; }
     // header select-all reflects whether every selectable filtered row is picked
     var all=$("sel-all");
     if(all){
@@ -2154,7 +2182,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<div class="ov-selbar" id="ov-selbar">'+
         '<span id="ov-info">未选择候选项</span><span class="spacer"></span>'+
         '<button type="button" class="btn primary" id="ov-cmd-btn" disabled>生成清理命令</button>'+
-      '</div>';
+      '</div>'+
+      '<pre class="cmd-out" id="ov-cmd-out" hidden></pre>';
     return hero + riskCardsHtml() + preview;
   }
   function bindOverview(){
@@ -2184,7 +2213,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(ob) ob.addEventListener("click", function(){
       var cmd = buildCleanCommand();
       if(!cmd){ toast("尚未勾选任何候选项","err"); return; }
-      copyText(cmd, "清理命令已复制，粘贴到终端执行");
+      copyText(cmd, "清理命令已复制，粘贴到终端执行", "ov-cmd-out");
     });
   }
   // Re-sync overview preview checkboxes with shared selection state
@@ -2309,7 +2338,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(cmdBtn) cmdBtn.addEventListener("click", function(){
       var cmd=buildCleanCommand();
       if(!cmd){ toast("尚未勾选任何候选项","err"); return; }
-      copyText(cmd, "清理命令已复制，粘贴到终端执行");
+      copyText(cmd, "清理命令已复制，粘贴到终端执行", "sel-cmd-out");
     });
     var clearBtn=$("sel-clear");
     if(clearBtn) clearBtn.addEventListener("click", clearSelection);
