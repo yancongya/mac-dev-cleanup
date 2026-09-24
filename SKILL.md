@@ -370,7 +370,9 @@ The same dead mount defeats *any* recursive walk of `/tmp`, not just this Skill'
 
 ## Dashboard and state
 
-The page is an **app-like console with a sidebar and four hash-routed views** (`#overview` / `#clean` / `#history` / `#settings`); on narrow screens the sidebar becomes a horizontal sticky tab bar. Panels (the unified collapsible `panel()` shell, drag-reorderable) are grouped per view: overview holds summary/risk/category/disk/tools, clean holds the one-click commands + candidate table, history holds the quarantine panel + operations, settings holds the config form.
+The page is an **app-like console with a sidebar and four hash-routed views** (`#overview` / `#clean` / `#history` / `#settings`); on narrow screens the sidebar becomes a horizontal sticky tab bar. The **overview is an app landing, not a panel stack**: a hero section (disk-usage donut + 可清理空间 headline + scan timestamp + 开始清理/重新扫描) above three tinted risk cards (安全清理 / 深度清理 / 人工确认 — clicking one jumps to the clean view pre-filtered to that risk), then a 深度清理候选 preview (top aggressive candidates by size, checkbox-selectable, sharing the same selection state as the clean view) with its own mini selection bar. Collapsible panels below hold category/disk/tools details.
+
+Panels (the unified collapsible `panel()` shell, drag-reorderable) are grouped per view: overview holds hero + risk cards + preview + category/disk/tools, clean holds the one-click commands + candidate table, history holds the quarantine panel + operations, settings holds the config form.
 
 The clean view's candidate list has **selection checkboxes** (manual-risk rows are disabled — that level is never auto-deleted) and a sticky bottom bar showing "已选 N 项 · X GB"; the 生成清理命令 button copies a precise `clean-safe`/`clean-aggressive` command (aggressive if any selected pick is aggressive) with one `--candidate-id <id>` per pick, so the terminal only deletes exactly what was reviewed. Selection lives in memory and is cleared when a fresh scan replaces candidate ids.
 
@@ -418,7 +420,7 @@ Constraints when editing the dashboard UI:
   ```bash
   python3 scripts/check_dashboard.py                     # static + syntax gate
   npm i jsdom
-  node scripts/check_dashboard_dom.mjs dashboard.html    # 47 headless assertions
+  node scripts/check_dashboard_dom.mjs dashboard.html    # 50 headless assertions
   # or: MDC_JSDOM=/path/to/jsdom/lib/api.js node scripts/check_dashboard_dom.mjs dashboard.html
   ```
 

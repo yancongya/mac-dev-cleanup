@@ -86,8 +86,11 @@ ok("侧边栏四个导航项", doc.querySelectorAll(".nav-item").length === 4, d
 ok("清理导航徽标有值", ($("#nav-badge-clean")?.textContent || "").length > 0, $("#nav-badge-clean")?.textContent);
 ok("四个视图容器", doc.querySelectorAll(".view").length === 4);
 ok("默认显示概览视图", visible("#view-overview") && !visible("#view-clean"));
-ok("摘要六宫格", doc.querySelectorAll(".sum-cell").length === 6, doc.querySelectorAll(".sum-cell").length);
-ok("风险分布三行", doc.querySelectorAll(".cr-item[data-risk]").length === 3);
+ok("英雄区环形图", !!$("#view-overview .donut circle.val"));
+ok("英雄区可清理大数字", ($("#view-overview .hero-big")?.textContent || "").length > 0, $("#view-overview .hero-big")?.textContent);
+ok("三张风险卡片", doc.querySelectorAll("#view-overview .rcard").length === 3, doc.querySelectorAll("#view-overview .rcard").length);
+ok("深度清理候选预览行", doc.querySelectorAll("#ov-rows .ov-row input[data-sel]").length > 0, doc.querySelectorAll("#ov-rows .ov-row").length);
+ok("概览吸底选择栏", !!$("#ov-selbar") && !!$("#ov-cmd-btn"));
 ok("工具自检格子", doc.querySelectorAll(".tool-cell").length > 0);
 ok("面板系统已渲染", doc.querySelectorAll(".panel").length >= 8, doc.querySelectorAll(".panel").length);
 ok("toast 容器存在", !!$("#toast"));

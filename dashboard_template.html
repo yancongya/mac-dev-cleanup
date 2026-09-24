@@ -85,6 +85,46 @@ a{color:var(--indigo)}
   .wrap{padding-top:16px}
 }
 
+/* overview hero: donut + headline numbers + risk cards (app landing) */
+.hero{display:flex;gap:24px;align-items:center;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-top:16px;flex-wrap:wrap}
+@media(min-width:640px){.hero{margin-top:24px;padding:24px}}
+.donut{width:128px;height:128px;flex:0 0 auto}
+.donut .track{fill:none;stroke:var(--track);stroke-width:5}
+.donut .val{fill:none;stroke:var(--accent);stroke-width:5;stroke-linecap:round}
+.donut text{fill:var(--text)}
+.donut .d-big{font-size:9px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.donut .d-sub{font-size:3.1px;fill:var(--muted)}
+.hero-main{flex:1 1 260px;min-width:220px}
+.hero-title{font-size:12px;color:var(--muted)}
+.hero-big{font-size:34px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+.hero-sub{font-size:12px;color:var(--subtle);margin-top:4px}
+.hero-actions{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}
+.risk-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
+@media(max-width:720px){.risk-cards{grid-template-columns:1fr}}
+.rcard{display:block;width:100%;border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;cursor:pointer;transition:transform .15s, box-shadow .15s;font-family:inherit;text-align:left}
+.rcard:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,.08)}
+.rcard .rc-name{display:block;font-size:12px;font-weight:600;color:var(--muted)}
+.rcard .rc-val{display:block;font-size:24px;font-weight:700;margin:5px 0 3px;font-variant-numeric:tabular-nums}
+.rcard .rc-desc{display:block;font-size:11px;color:var(--muted);line-height:1.5}
+.rcard.rc-safe{background:color-mix(in srgb, var(--emerald) 9%, var(--panel));border-color:color-mix(in srgb, var(--emerald) 35%, var(--border))}
+.rcard.rc-safe .rc-val{color:var(--emerald)}
+.rcard.rc-aggr{background:color-mix(in srgb, var(--amber) 10%, var(--panel));border-color:color-mix(in srgb, var(--amber) 35%, var(--border))}
+.rcard.rc-aggr .rc-val{color:var(--amber)}
+.rcard.rc-manual{background:color-mix(in srgb, var(--rose) 8%, var(--panel));border-color:color-mix(in srgb, var(--rose) 35%, var(--border))}
+.rcard.rc-manual .rc-val{color:var(--rose)}
+.ov-head{display:flex;align-items:center;margin:24px 0 10px}
+.ov-head h2{font-size:13px;font-weight:700;margin:0}
+.ov-head .lnk{margin-left:auto;font-size:12px;color:var(--indigo);cursor:pointer;background:none;border:none;font-family:inherit;padding:0}
+.ov-head .lnk:hover{text-decoration:underline}
+.ov-rows{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.ov-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer}
+.ov-row:last-child{border-bottom:none}
+.ov-row:hover{background:var(--row-hover)}
+.ov-row input{accent-color:var(--accent);flex:0 0 auto}
+.ov-row .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.ov-row .s{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600;flex:0 0 auto}
+.ov-selbar{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-top:12px;font-size:12px;color:var(--muted)}
+
 /* top bar */
 .topbar{
   position:sticky; top:0; z-index:50;
@@ -1117,6 +1157,9 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       b.classList.toggle("active", on);
       if(on) b.setAttribute("aria-current","page"); else b.removeAttribute("aria-current");
     });
+    // Keep views that mirror shared state fresh when (re)entering them.
+    if(v==="clean") refreshList();
+    if(v==="overview") syncOverviewSel();
     // jsdom's scrollTo is a not-implemented stub that logs a jsdomError; skip it
     // in headless checks so the render stays error-free.
     if(!/jsdom/i.test(navigator.userAgent)) window.scrollTo(0,0);
@@ -1549,6 +1592,11 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     var clearBtn=$("sel-clear"); if(clearBtn) clearBtn.hidden = n===0;
     var cmdBtn=$("sel-cmd-btn"); if(cmdBtn) cmdBtn.disabled = n===0;
     bar.classList.toggle("idle", n===0);
+    // overview mini selection bar mirrors the same shared selection state
+    var ovInfo=$("ov-info");
+    if(ovInfo) ovInfo.innerHTML = n ? ('已选 '+n+' 项 · '+fmtSize(bytes)) : '未选择候选项';
+    var ovCmd=$("ov-cmd-btn"); if(ovCmd) ovCmd.disabled = n===0;
+    var ovBar=$("ov-selbar"); if(ovBar) ovBar.classList.toggle("idle", n===0);
     // header select-all reflects whether every selectable filtered row is picked
     var all=$("sel-all");
     if(all){
@@ -2051,6 +2099,103 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<span class="sub">'+esc(t)+' · '+esc(last.entry_count)+' 项</span>';
   }
 
+  // ---- overview hero (app landing) ----
+  function donutSvg(pct, big, sub){
+    var p = Math.max(0, Math.min(100, pct||0));
+    return '<svg class="donut" viewBox="0 0 42 42" role="img" aria-label="磁盘使用率 '+p+'%">'+
+      '<circle class="track" cx="21" cy="21" r="15.9155"/>'+
+      '<circle class="val" cx="21" cy="21" r="15.9155" stroke-dasharray="'+p+' '+(100-p)+'" stroke-dashoffset="25"/>'+
+      '<text class="d-big" x="21" y="20.5" text-anchor="middle">'+esc(big)+'</text>'+
+      '<text class="d-sub" x="21" y="26.5" text-anchor="middle">'+esc(sub)+'</text>'+
+    '</svg>';
+  }
+  function riskCardsHtml(){
+    var rc = riskCounts();
+    var defs = [
+      {k:"safe", cls:"rc-safe", name:"安全清理", v:DATA.safe_human||"0B", d:"缓存 · 日志 · 临时文件<br>clean-safe 已自动化"},
+      {k:"aggressive", cls:"rc-aggr", name:"深度清理", v:DATA.aggressive_human||"0B", d:"构建产物 · 依赖目录<br>勾选后生成清理命令"},
+      {k:"manual", cls:"rc-manual", name:"人工确认", v:DATA.manual_human||"0B", d:"大文件 · 模型 · 截图<br>永不自动删除"}
+    ];
+    return '<div class="risk-cards">'+defs.map(function(d){
+      return '<button type="button" class="rcard '+d.cls+'" data-risk="'+d.k+'" aria-label="查看'+d.name+'候选">'+
+        '<span class="rc-name">'+esc(d.name)+' · '+rc[d.k]+' 项</span>'+
+        '<span class="rc-val">'+esc(d.v)+'</span>'+
+        '<span class="rc-desc">'+d.d+'</span></button>';
+    }).join("")+'</div>';
+  }
+  function renderOverview(){
+    var before = parseDf(DATA.disk_before);
+    var hero =
+      '<div class="hero">'+
+        (before ? donutSvg(before.pct, before.avail, "可用空间") : '')+
+        '<div class="hero-main">'+
+          '<div class="hero-title">可清理空间</div>'+
+          '<div class="hero-big">'+esc(DATA.deletable_human||"0B")+'</div>'+
+          '<div class="hero-sub">'+(DATA.candidate_count||0)+' 个候选 · 上次扫描 '+esc((DATA.timestamp||"").replace("T"," ").slice(0,16))+'</div>'+
+          '<div class="hero-actions">'+
+            '<button type="button" class="btn primary" data-goto="clean">开始清理</button>'+
+            '<button type="button" class="btn" id="ov-scan-btn">重新扫描</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    var aggr = (DATA.candidates||[]).filter(function(c){ return c.risk==="aggressive"; })
+      .sort(function(a,b){ return (b.size||0)-(a.size||0); });
+    var top = aggr.slice(0,6);
+    var rows = top.length ? top.map(function(c){
+      return '<label class="ov-row">'+
+        '<input type="checkbox" data-sel="'+esc(c.id)+'"'+(state.selected[c.id]?" checked":"")+'>'+
+        '<span class="p" title="'+esc(c.path)+'">'+esc(truncatePath(c.path))+'</span>'+
+        '<span class="s">'+esc(c.size_human)+'</span></label>';
+    }).join("") : '<div class="ov-row"><span class="p">没有谨慎级别的候选项</span></div>';
+    var preview =
+      '<div class="ov-head"><h2>深度清理候选</h2>'+
+      '<button type="button" class="lnk" data-goto="clean" data-risk="aggressive">查看全部 '+aggr.length+' 项 →</button></div>'+
+      '<div class="ov-rows" id="ov-rows">'+rows+'</div>'+
+      '<div class="ov-selbar" id="ov-selbar">'+
+        '<span id="ov-info">未选择候选项</span><span class="spacer"></span>'+
+        '<button type="button" class="btn primary" id="ov-cmd-btn" disabled>生成清理命令</button>'+
+      '</div>';
+    return hero + riskCardsHtml() + preview;
+  }
+  function bindOverview(){
+    var view = $("view-overview"); if(!view) return;
+    view.addEventListener("change", function(e){
+      var box = e.target.closest("input[data-sel]");
+      if(box) toggleCandidate(box.getAttribute("data-sel"), box.checked);
+    });
+    view.addEventListener("click", function(e){
+      var card = e.target.closest(".rcard");
+      if(card){
+        state.risk = card.getAttribute("data-risk")||"all";
+        refreshList(); gotoView("clean"); return;
+      }
+      var g = e.target.closest("[data-goto]");
+      if(g){
+        if(g.getAttribute("data-risk")) state.risk = g.getAttribute("data-risk");
+        refreshList(); gotoView(g.getAttribute("data-goto")); return;
+      }
+      if(e.target.id==="ov-scan-btn"){
+        var sb = $("scan-btn");
+        if(sb && !sb.disabled) sb.click();
+        else toast("静态页面无法扫描——请通过本地服务打开","err");
+      }
+    });
+    var ob = $("ov-cmd-btn");
+    if(ob) ob.addEventListener("click", function(){
+      var cmd = buildCleanCommand();
+      if(!cmd){ toast("尚未勾选任何候选项","err"); return; }
+      copyText(cmd, "清理命令已复制，粘贴到终端执行");
+    });
+  }
+  // Re-sync overview preview checkboxes with shared selection state
+  // (selections may have changed in the clean view since last render).
+  function syncOverviewSel(){
+    var holder = $("ov-rows"); if(!holder) return;
+    holder.querySelectorAll("input[data-sel]").forEach(function(b){
+      b.checked = !!state.selected[b.getAttribute("data-sel")];
+    });
+  }
+
   // ---- render orchestration ----
   function renderAll(){
     var app = $("app");
@@ -2064,8 +2209,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     // Panels are grouped into four app-like views reached via the sidebar.
     app.innerHTML =
       '<div class="view" id="view-overview">'+
-        panel("summary","概览",(DATA.candidate_count||0)+" 个候选", renderSummaryInner()) +
-        panel("risk","风险分布", riskNote(), renderRiskInner(), true) +
+        renderOverview() +
         panel("cat","类别容量", catNote(), renderCatInner(), true) +
         panel("disk","磁盘空间","清理前 / 清理后", renderDiskInner(), true) +
         panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
@@ -2084,6 +2228,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '</div>';
     ["overview","clean","history","settings"].forEach(applyViewOrder);
     bindTable();
+    bindOverview();
     bindSettings();
     renderTrash();
     renderOperations();
