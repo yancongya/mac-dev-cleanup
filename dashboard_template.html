@@ -118,6 +118,15 @@ a{color:var(--indigo)}
 .ov-head .lnk:hover{text-decoration:underline}
 .ov-head-note{margin-left:auto;font-size:11px;color:var(--subtle);font-variant-numeric:tabular-nums}
 .exec-log{max-height:280px;overflow:auto}
+/* execution records panel (history view) */
+.eh-item{border-bottom:1px solid var(--border)}
+.eh-item:last-child{border-bottom:none}
+.eh-row{display:flex;align-items:center;gap:10px;padding:9px 12px;font-size:12px}
+.eh-when{color:var(--muted);font-variant-numeric:tabular-nums}
+.eh-meta{color:var(--fg);opacity:.85;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.eh-toggle{margin-left:auto;flex:0 0 auto;font-size:11px;color:var(--indigo);background:none;border:none;cursor:pointer;font-family:inherit;padding:2px 4px}
+.eh-toggle:hover{text-decoration:underline}
+.eh-log{max-height:240px;overflow:auto;margin:0 12px 10px;font-size:11px}
 .ov-rows{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .ov-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer}
 .ov-row:last-child{border-bottom:none}
@@ -2276,6 +2285,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '<pre class="cmd-out exec-log" id="exec-log" hidden></pre>'+
       '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
+        panel("exechist","执行记录","实时运行的清理 · 含过程日志", '<div id="exec-hist"><div class="empty">加载中…</div></div>') +
         panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
         panel("ops","操作历史","最近操作 · 可还原", renderOperationsInner(), true) +
       '</div>'+
@@ -2288,9 +2298,16 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     bindSettings();
     renderTrash();
     renderOperations();
+    renderExecHistoryIfReady();
     renderLastCleanup();
     updateSelBar();
     route();
+  }
+
+  // renderAll rebuilds #exec-hist; if history data is already in memory just
+  // repaint, otherwise fetch once the API comes online.
+  function renderExecHistoryIfReady(){
+    if(EH.data) renderExecHistory();
   }
 
   // Only the result list is swapped. Rebuilding the whole card (as the previous
@@ -2346,11 +2363,70 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         if(s.exit_code===0){
           toast("清理完成，文件已隔离可还原","ok");
           refreshAfterClean();
+          loadExecHistory();
         } else if(s.exit_code!=null){
           toast("执行失败 (exit "+s.exit_code+")","err");
+          loadExecHistory();
         }
       })
       .catch(function(){ setTimeout(pollExec, 2000); });
+  }
+  // ---- execution records: live run + persisted past runs (执行记录 panel) ----
+  var EH = { data:null, timer:null };
+  function fmtClock(sec){
+    if(sec<60) return Math.round(sec)+"s";
+    var m=Math.floor(sec/60), s=Math.round(sec%60);
+    return m+"m"+(s<10?"0":"")+s+"s";
+  }
+  function fmtWhen(t){
+    var d=new Date(t*1000);
+    function p(n){ return (n<10?"0":"")+n; }
+    return (d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes());
+  }
+  function loadExecHistory(){
+    if(!state.apiOnline) return;
+    fetch("api/clean/history",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(j){
+        EH.data=j;
+        renderExecHistory();
+        clearTimeout(EH.timer);
+        if(j.running) EH.timer=setTimeout(loadExecHistory, 2000);  // live: re-poll
+      }).catch(function(){});
+  }
+  function renderExecHistory(){
+    var el=$("exec-hist"); if(!el||!EH.data) return;
+    function row(rec, key, live){
+      var badge = live ? '<span class="tag tag-manual">运行中</span>'
+        : rec.exit_code===0 ? '<span class="tag tag-safe">成功</span>'
+        : '<span class="tag tag-aggressive">exit '+rec.exit_code+'</span>';
+      var dur = rec.finished ? fmtClock(rec.finished-rec.started) : fmtClock(Date.now()/1000-rec.started);
+      return '<div class="eh-item">'+
+        '<div class="eh-row" data-eh="'+key+'">'+
+          badge+
+          '<span class="eh-when">'+fmtWhen(rec.started)+'</span>'+
+          '<span class="eh-meta">'+esc(MODE_ZH[rec.mode]||rec.mode)+' · '+rec.ids+' 项 · '+dur+
+            (rec.operation_id?(' · '+esc(rec.operation_id)):'')+'</span>'+
+          '<button type="button" class="eh-toggle">展开日志</button>'+
+        '</div>'+
+        '<pre class="cmd-out eh-log" hidden></pre>'+
+      '</div>';
+    }
+    var items=[];
+    if(EH.data.running) items.push(row(EH.data.running, "live", true));
+    (EH.data.past||[]).forEach(function(rec, i){ items.push(row(rec, String(i), false)); });
+    el.innerHTML = items.length ? items.join("")
+      : '<div class="empty">还没有执行记录 — 在清理视图勾选候选项后点「执行清理」。</div>';
+    el.onclick = function(e){
+      var btn=e.target.closest(".eh-toggle"); if(!btn) return;
+      var r=btn.closest(".eh-row");
+      var pre=r.parentElement.querySelector(".eh-log");
+      if(!pre) return;
+      if(!pre.hidden){ pre.hidden=true; btn.textContent="展开日志"; return; }
+      var rec = r.getAttribute("data-eh")==="live" ? EH.data.running : (EH.data.past||[])[+r.getAttribute("data-eh")];
+      if(rec) pre.textContent=(rec.lines||[]).join("\n") || "（无输出）";
+      pre.hidden=false; btn.textContent="收起";
+      pre.scrollTop=pre.scrollHeight;
+    };
   }
   function refreshAfterClean(){
     // cleanup rewrote state.json — refresh in place, candidate ids are new
@@ -2567,6 +2643,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var t=$("api-text"); if(t) t.textContent="接口已连接";
       var sb=$("scan-btn"); if(sb){ sb.disabled=false; sb.title="重新执行只读扫描"; }
       syncSaveBtn(); syncRunBtns();
+      loadExecHistory();
       // resume the log panel if an execution is already in flight (reload mid-run)
       fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
         .then(function(s){

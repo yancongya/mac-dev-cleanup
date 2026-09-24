@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "mac_dev_cleanup.py"
 STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "state.json"
 OPERATIONS_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "operations"
+EXEC_LOG_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "exec-logs"
 QUARANTINE_DIR = Path.home() / ".Trash" / "mac-dev-cleanup"
 MAX_BODY = 256 * 1024
 SCAN_LOCK = threading.Lock()
@@ -50,6 +51,42 @@ CAND_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
 EXEC_MUX = threading.Lock()
 EXEC_STATE = {"running": False, "mode": "", "ids": 0, "started": 0.0,
               "lines": [], "operation_id": None, "exit_code": None}
+
+# Past executions (most recent first, cap 20), mirrored to EXEC_LOG_DIR as
+# JSON so records survive server restarts. Loaded lazily on first history GET.
+EXEC_HISTORY: list[dict] = []
+EXEC_HISTORY_LOADED = False
+EXEC_HISTORY_CAP = 20
+
+
+def _record_filename(started: float) -> str:
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime(started)) + ".json"
+
+
+def _persist_exec_record(rec: dict) -> None:
+    try:
+        EXEC_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        (EXEC_LOG_DIR / _record_filename(rec["started"])).write_text(
+            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # history is best-effort; cleanup itself must not fail on it
+
+
+def _load_exec_history() -> list[dict]:
+    """Load persisted execution records, newest first."""
+    try:
+        files = sorted(EXEC_LOG_DIR.glob("*.json"), reverse=True)[:EXEC_HISTORY_CAP]
+        out = []
+        for f in files:
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                if isinstance(rec, dict) and rec.get("started"):
+                    out.append(rec)
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+        return out
+    except OSError:
+        return []
 
 sys.path.insert(0, str(SCRIPT.parent))
 import mac_dev_cleanup as cleanup  # noqa: E402
@@ -117,6 +154,22 @@ class Handler(SimpleHTTPRequestHandler):
             with EXEC_MUX:
                 snap = {k: (list(v) if isinstance(v, list) else v) for k, v in EXEC_STATE.items()}
             self.send_json(200, snap)
+            return
+        if path == "/api/clean/history":
+            global EXEC_HISTORY, EXEC_HISTORY_LOADED
+            running = None
+            with EXEC_MUX:
+                if EXEC_STATE["running"]:
+                    running = {"mode": EXEC_STATE["mode"], "ids": EXEC_STATE["ids"],
+                               "apply": True, "started": EXEC_STATE["started"],
+                               "finished": None, "exit_code": None, "operation_id": None,
+                               "lines": list(EXEC_STATE["lines"])}
+            if not EXEC_HISTORY_LOADED:
+                EXEC_HISTORY = _load_exec_history()
+                EXEC_HISTORY_LOADED = True
+            with EXEC_MUX:
+                past = [dict(r, lines=list(r["lines"])) for r in EXEC_HISTORY]
+            self.send_json(200, {"running": running, "past": past})
             return
         if path == "/api/operations":
             self._handle_operations_get()
@@ -268,6 +321,14 @@ class Handler(SimpleHTTPRequestHandler):
                     EXEC_STATE["exit_code"] = code
                     EXEC_STATE["operation_id"] = m.group(1) if m else None
                     EXEC_STATE["running"] = False
+                    rec = {"mode": EXEC_STATE["mode"], "ids": EXEC_STATE["ids"],
+                           "apply": True, "started": EXEC_STATE["started"],
+                           "finished": time.time(), "exit_code": code,
+                           "operation_id": EXEC_STATE["operation_id"],
+                           "lines": list(EXEC_STATE["lines"])}
+                    EXEC_HISTORY.insert(0, rec)
+                    del EXEC_HISTORY[EXEC_HISTORY_CAP:]
+                _persist_exec_record(rec)
             except Exception as exc:  # noqa: BLE001 — background thread, report anything
                 with EXEC_MUX:
                     EXEC_STATE["exit_code"] = -1
