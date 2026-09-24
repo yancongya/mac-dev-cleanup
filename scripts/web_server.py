@@ -248,7 +248,11 @@ class Handler(SimpleHTTPRequestHandler):
 
         def worker() -> None:
             try:
-                proc = subprocess.Popen(argv, cwd=ROOT, text=True,
+                # PYTHONUNBUFFERED: the child's stdout is a pipe, so CPython
+                # would block-buffer it (4-8 KiB) and the live log would sit
+                # empty for a long time — the exact "button did nothing" bug.
+                child_env = dict(os.environ, PYTHONUNBUFFERED="1")
+                proc = subprocess.Popen(argv, cwd=ROOT, text=True, env=child_env,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         bufsize=1)
                 assert proc.stdout is not None

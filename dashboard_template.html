@@ -2039,14 +2039,22 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
   function clearTrash(){
     if(!confirm("确定要清空废纸篓中的所有隔离文件？\n清空后无法通过操作历史还原。")) return;
+    var btn=$("clear-trash-btn");
+    if(btn){ btn.disabled=true; btn.textContent="清空中…"; }
     fetch("api/trash/clear",{method:"POST",headers:postHeaders(),body:"{}"})
       .then(function(r){return r.json();})
       .then(function(j){
         if(j.ok){
           toast("已清空 "+j.deleted+" 个操作目录，释放 "+fmtSize(j.freed_bytes),"ok");
           loadTrash();
-        } else { toast("清空失败："+(j.error||""),"err"); }
-      }).catch(function(){ toast("网络错误","err"); });
+        } else {
+          toast("清空失败："+(j.error||""),"err");
+          if(btn){ btn.disabled=false; btn.textContent="清空废纸篓"; }
+        }
+      }).catch(function(){
+        toast("网络错误","err");
+        if(btn){ btn.disabled=false; btn.textContent="清空废纸篓"; }
+      });
   }
 
   function renderTrashPanelInner(){
@@ -2309,7 +2317,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var b=$(id); if(!b) return;
       b.hidden = !state.apiOnline;
       b.disabled = n===0 || state.busyRun;
-      if(!state.armed){ b.textContent="执行清理"; b.removeAttribute("data-armed"); }
+      if(state.busyRun){ b.textContent="执行中…"; b.removeAttribute("data-armed"); }
+      else if(!state.armed){ b.textContent="执行清理"; b.removeAttribute("data-armed"); }
     });
   }
 
@@ -2370,10 +2379,12 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(!ids.length){ toast("尚未勾选任何候选项","err"); return; }
     var btn=$(btnId); if(!btn) return;
     if(btn.getAttribute("data-armed")!=="1"){
+      state.armed=true;
       btn.setAttribute("data-armed","1");
       btn.textContent="确认执行？再次点击";
       setTimeout(function(){
         if(btn.getAttribute("data-armed")==="1"){
+          state.armed=false;
           btn.setAttribute("data-armed","0");
           btn.textContent="执行清理";
         }
@@ -2383,11 +2394,14 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     var mode=selectionMode();
     state.armed=false; state.busyRun=true;
     btn.setAttribute("data-armed","0");
-    btn.disabled=true; btn.textContent="执行中…";
-    var otherId = btnId==="ov-run-btn" ? "sel-run-btn" : "ov-run-btn";
-    var other=$(otherId); if(other) other.disabled=true;
-    // jump to the clean view so the 执行日志 panel is visible
-    var log=$("exec-log"); if(log){ log.hidden=true; log.textContent=""; }
+    syncRunBtns(ids.length);   // both buttons → "执行中…", disabled
+    // show the log panel immediately with a placeholder — the CLI's first
+    // output line can still be seconds away, and silence reads as "stuck"
+    var log=$("exec-log");
+    if(log){
+      log.hidden=false;
+      log.textContent="正在启动清理…\nCLI 将先执行全盘扫描（通常需要几分钟），过程输出会实时显示在这里。";
+    }
     var st=$("exec-status"); if(st) st.textContent="启动中…";
     gotoView("clean");
     fetch("api/clean",{method:"POST",headers:postHeaders(),
@@ -2397,11 +2411,15 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         if(res.ok && res.j.started){ pollExec(); }
         else {
           state.busyRun=false; syncRunBtns(Object.keys(state.selected).length);
+          var failLog=$("exec-log");
+          if(failLog) failLog.textContent="启动失败："+(res.j.error || "");
           toast("启动失败："+(res.j.error || ""), "err");
         }
       })
       .catch(function(){
         state.busyRun=false; syncRunBtns(Object.keys(state.selected).length);
+        var failLog=$("exec-log");
+        if(failLog) failLog.textContent="启动失败：网络错误";
         toast("网络错误","err");
       });
   }
