@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -35,13 +36,20 @@ OPERATIONS_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "operatio
 QUARANTINE_DIR = Path.home() / ".Trash" / "mac-dev-cleanup"
 MAX_BODY = 256 * 1024
 SCAN_LOCK = threading.Lock()
-EXEC_LOCK = threading.Lock()
 
 # Regenerated per server start; the page reads it from /api/health (same-origin
 # only) and echoes it back on every POST. See the module docstring for why a
 # cross-origin page cannot obtain or use it.
 API_TOKEN = secrets.token_hex(16)
 CAND_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+
+# Live state of the at-most-one background cleanup. The CLI first does a full
+# scan before cleaning, which can take minutes — that is why execution is
+# async: POST /api/clean only starts it, GET /api/clean/status returns the
+# captured output so the dashboard can stream progress.
+EXEC_MUX = threading.Lock()
+EXEC_STATE = {"running": False, "mode": "", "ids": 0, "started": 0.0,
+              "lines": [], "operation_id": None, "exit_code": None}
 
 sys.path.insert(0, str(SCRIPT.parent))
 import mac_dev_cleanup as cleanup  # noqa: E402
@@ -104,6 +112,11 @@ class Handler(SimpleHTTPRequestHandler):
                 "ok": True, "service": "mac-dev-cleanup",
                 "destructive_http_actions": True, "token": API_TOKEN,
             })
+            return
+        if path == "/api/clean/status":
+            with EXEC_MUX:
+                snap = {k: (list(v) if isinstance(v, list) else v) for k, v in EXEC_STATE.items()}
+            self.send_json(200, snap)
             return
         if path == "/api/operations":
             self._handle_operations_get()
@@ -201,12 +214,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_json(404, {"ok": False, "error": "unknown API endpoint"})
 
     def _handle_clean(self, payload: dict) -> None:
-        """Execute per-candidate cleanup through the CLI (quarantine, restorable).
+        """Start per-candidate cleanup through the CLI (quarantine, restorable).
 
         Accepts only validated candidate ids and one of the two clean modes; the
         CLI's own safety rules (WeChat running, require_quit apps, path guards)
         apply unchanged because execution is a plain subprocess of the same
-        binary the terminal uses.
+        binary the terminal uses. Runs async — progress streams via
+        GET /api/clean/status.
         """
         mode = payload.get("mode")
         if mode not in ("clean-safe", "clean-aggressive"):
@@ -220,28 +234,44 @@ class Handler(SimpleHTTPRequestHandler):
         apply = payload.get("apply", True)
         if not isinstance(apply, bool):
             apply = True
-        if not EXEC_LOCK.acquire(blocking=False):
-            self.send_json(409, {"ok": False, "error": "another operation is running"})
-            return
-        try:
-            argv = [sys.executable, str(SCRIPT), mode]
-            for cid in ids:
-                argv += ["--candidate-id", cid]
-            if apply:
-                argv.append("--apply")
-            proc = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=900)
-            out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
-            m = re.search(r"^operation_id:\s*(\S+)", out, re.M)
-            self.send_json(200 if proc.returncode == 0 else 500, {
-                "ok": proc.returncode == 0,
-                "exit_code": proc.returncode,
-                "operation_id": m.group(1) if m else None,
-                "output": out[-4000:],
-            })
-        except subprocess.TimeoutExpired:
-            self.send_json(504, {"ok": False, "error": "cleanup timed out"})
-        finally:
-            EXEC_LOCK.release()
+        with EXEC_MUX:
+            if EXEC_STATE["running"]:
+                self.send_json(409, {"ok": False, "error": "another operation is running"})
+                return
+            EXEC_STATE.update(running=True, mode=mode, ids=len(ids), started=time.time(),
+                              lines=[], operation_id=None, exit_code=None)
+        argv = [sys.executable, str(SCRIPT), mode]
+        for cid in ids:
+            argv += ["--candidate-id", cid]
+        if apply:
+            argv.append("--apply")
+
+        def worker() -> None:
+            try:
+                proc = subprocess.Popen(argv, cwd=ROOT, text=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        bufsize=1)
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    with EXEC_MUX:
+                        EXEC_STATE["lines"].append(line.rstrip("\n"))
+                        if len(EXEC_STATE["lines"]) > 800:
+                            del EXEC_STATE["lines"][:200]
+                code = proc.wait(timeout=600)
+                joined = "\n".join(EXEC_STATE["lines"])
+                m = re.search(r"^operation_id:\s*(\S+)", joined, re.M)
+                with EXEC_MUX:
+                    EXEC_STATE["exit_code"] = code
+                    EXEC_STATE["operation_id"] = m.group(1) if m else None
+                    EXEC_STATE["running"] = False
+            except Exception as exc:  # noqa: BLE001 — background thread, report anything
+                with EXEC_MUX:
+                    EXEC_STATE["exit_code"] = -1
+                    EXEC_STATE["lines"].append(f"[server error] {exc}")
+                    EXEC_STATE["running"] = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.send_json(200, {"ok": True, "started": True, "mode": mode, "count": len(ids), "apply": apply})
 
     def _handle_trash_clear(self) -> None:
         """Delete all quarantine directories under ~/.Trash/mac-dev-cleanup/."""

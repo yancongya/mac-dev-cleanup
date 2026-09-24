@@ -116,6 +116,8 @@ a{color:var(--indigo)}
 .ov-head h2{font-size:13px;font-weight:700;margin:0}
 .ov-head .lnk{margin-left:auto;font-size:12px;color:var(--indigo);cursor:pointer;background:none;border:none;font-family:inherit;padding:0}
 .ov-head .lnk:hover{text-decoration:underline}
+.ov-head-note{margin-left:auto;font-size:11px;color:var(--subtle);font-variant-numeric:tabular-nums}
+.exec-log{max-height:280px;overflow:auto}
 .ov-rows{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .ov-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer}
 .ov-row:last-child{border-bottom:none}
@@ -2262,6 +2264,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         panel("cleanup","一键清理","整体模式 · 复制到终端执行", renderCleanupGuideInner()) +
         panel("table","候选项","勾选后生成精确清理命令 · 点击路径复制", renderTableInner(), true) +
         selectionBarHtml() +
+        '<div class="ov-head"><h2>执行日志</h2><span class="ov-head-note" id="exec-status"></span></div>'+
+        '<pre class="cmd-out exec-log" id="exec-log" hidden></pre>'+
       '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
         panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
@@ -2309,8 +2313,57 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     });
   }
 
-  // Two-click arming then POST /api/clean. The server quarantines only, so
-  // every execution is restorable from the operations panel.
+  // Two-click arming then POST /api/clean (async on the server). Progress
+  // streams from GET /api/clean/status into the 执行日志 panel; the CLI's
+  // pre-clean scan can take minutes, which is exactly what the log shows.
+  function pollExec(){
+    fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(s){
+        var log=$("exec-log");
+        if(log && s.lines && s.lines.length){
+          var stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+          log.textContent=s.lines.join("\n"); log.hidden=false;
+          if(stick) log.scrollTop=log.scrollHeight;
+        }
+        var st=$("exec-status");
+        if(st){
+          if(s.running) st.textContent="执行中 · 已 "+Math.max(0,Math.round(Date.now()/1000-s.started))+"s";
+          else if(s.exit_code===0) st.textContent="已完成"+(s.operation_id?(" · "+s.operation_id):"");
+          else if(s.exit_code!=null) st.textContent="已结束 (exit "+s.exit_code+")";
+        }
+        if(s.running){ setTimeout(pollExec, 1000); return; }
+        state.busyRun=false;
+        syncRunBtns(Object.keys(state.selected).length);
+        if(s.exit_code===0){
+          toast("清理完成，文件已隔离可还原","ok");
+          refreshAfterClean();
+        } else if(s.exit_code!=null){
+          toast("执行失败 (exit "+s.exit_code+")","err");
+        }
+      })
+      .catch(function(){ setTimeout(pollExec, 2000); });
+  }
+  function refreshAfterClean(){
+    // cleanup rewrote state.json — refresh in place, candidate ids are new
+    fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(s){
+        state.selected={};
+        Object.assign(DATA, s);
+        if(s.config) Object.assign(CONFIG, s.config);
+        renderMeta(); renderAll(); loadOperations(); loadTrash();
+        // renderAll rebuilt the view — restore the finished log into it
+        fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
+          .then(function(x){
+            var log=$("exec-log");
+            if(log && x.lines && x.lines.length){ log.textContent=x.lines.join("\n"); log.hidden=false; log.scrollTop=log.scrollHeight; }
+            var st=$("exec-status");
+            if(st){
+              if(x.exit_code===0) st.textContent="已完成"+(x.operation_id?(" · "+x.operation_id):"");
+              else if(x.exit_code!=null) st.textContent="已结束 (exit "+x.exit_code+")";
+            }
+          }).catch(function(){});
+      }).catch(function(){ location.reload(); });
+  }
   function runSelection(btnId){
     if(!state.apiOnline){ toast("需要通过本地服务打开才能执行","err"); return; }
     var ids=Object.keys(state.selected);
@@ -2328,35 +2381,23 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       return;
     }
     var mode=selectionMode();
-    var total=selectionBytes();
     state.armed=false; state.busyRun=true;
     btn.setAttribute("data-armed","0");
     btn.disabled=true; btn.textContent="执行中…";
-    var outId = btnId==="ov-run-btn" ? "ov-cmd-out" : "sel-cmd-out";
     var otherId = btnId==="ov-run-btn" ? "sel-run-btn" : "ov-run-btn";
     var other=$(otherId); if(other) other.disabled=true;
+    // jump to the clean view so the 执行日志 panel is visible
+    var log=$("exec-log"); if(log){ log.hidden=true; log.textContent=""; }
+    var st=$("exec-status"); if(st) st.textContent="启动中…";
+    gotoView("clean");
     fetch("api/clean",{method:"POST",headers:postHeaders(),
       body:JSON.stringify({mode:mode, candidate_ids:ids, apply:true})})
       .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
       .then(function(res){
-        state.busyRun=false;
-        syncRunBtns(Object.keys(state.selected).length);
-        var out=$(outId);
-        if(out && (res.j.output||"").trim()){
-          out.textContent=res.j.output.trim(); out.hidden=false;
-        }
-        if(res.ok){
-          toast("清理完成，文件已隔离可还原","ok");
-          // cleanup rewrote state.json — refresh in place, ids are new
-          fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
-            .then(function(s){
-              state.selected={};
-              Object.assign(DATA, s);
-              if(s.config) Object.assign(CONFIG, s.config);
-              renderMeta(); renderAll(); loadOperations(); loadTrash();
-            }).catch(function(){ location.reload(); });
-        } else {
-          toast("执行失败："+(res.j.error || ("exit "+res.j.exit_code)), "err");
+        if(res.ok && res.j.started){ pollExec(); }
+        else {
+          state.busyRun=false; syncRunBtns(Object.keys(state.selected).length);
+          toast("启动失败："+(res.j.error || ""), "err");
         }
       })
       .catch(function(){
@@ -2508,6 +2549,15 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var t=$("api-text"); if(t) t.textContent="接口已连接";
       var sb=$("scan-btn"); if(sb){ sb.disabled=false; sb.title="重新执行只读扫描"; }
       syncSaveBtn(); syncRunBtns();
+      // resume the log panel if an execution is already in flight (reload mid-run)
+      fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
+        .then(function(s){
+          if(!s || (!s.running && !s.lines || s.lines && !s.lines.length)) return;
+          var log=$("exec-log");
+          if(log && s.lines && s.lines.length){ log.textContent=s.lines.join("\n"); log.hidden=false; log.scrollTop=log.scrollHeight; }
+          gotoView("clean");
+          if(s.running) pollExec();
+        }).catch(function(){});
     }).catch(function(){ /* offline: static view */ });
   }
 
