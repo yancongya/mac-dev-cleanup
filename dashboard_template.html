@@ -158,6 +158,9 @@ a{color:var(--indigo)}
 .btn:disabled{opacity:.5;cursor:default}
 .btn.primary{background:var(--accent);color:var(--accent-inv);border-color:var(--accent)}
 .btn.primary:hover{opacity:.9}
+.btn.danger{color:var(--rose);border-color:var(--rose)}
+.btn.danger:hover{background:rgba(244,63,94,.1)}
+.btn.danger[data-armed="1"]{background:var(--rose);color:#fff}
 .btn.busy{opacity:.7;cursor:default}
 .theme-toggle{width:auto;padding:0 8px;gap:6px;display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:var(--brand);border-color:var(--brand)}
 .theme-toggle:hover{background:rgba(249,92,147,.12)}
@@ -875,7 +878,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   var state = { search:"", risk:"all", sortKey:"size", sortDir:-1,
     apiOnline:false, scanBusy:false, saveBusy:false,
     status:"", statusCls:"idle", cmdOut:"", showCmd:false, hasDraft:false,
-    view:"overview", selected:{} };
+    view:"overview", selected:{}, execToken:"", armed:false, busyRun:false };
 
   // ---- unified collapsible panels ----
   // Collapse state is remembered across sessions via localStorage.
@@ -1162,6 +1165,13 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
 
   function $(id){ return document.getElementById(id); }
+
+  // Every POST must echo the per-session token from /api/health (web_server.py
+  // rejects otherwise). Cross-origin pages cannot read that response, which is
+  // what makes the header a CSRF guard.
+  function postHeaders(){
+    return {"Content-Type":"application/json","X-MDC-Token":state.execToken||""};
+  }
 
   // ---- view router (hash-based) ----
   var VIEWS = ["overview","clean","history","settings"];
@@ -1599,6 +1609,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<span class="sel-info" id="sel-info">未选择候选项</span>'+
       '<button class="btn" id="sel-clear" hidden>清空选择</button>'+
       '<span class="spacer"></span>'+
+      '<button class="btn danger" id="sel-run-btn" hidden>执行清理</button>'+
       '<button class="btn primary" id="sel-cmd-btn" disabled>生成清理命令</button>'+
     '</div>'+
     '<pre class="cmd-out" id="sel-cmd-out" hidden></pre>';
@@ -1618,6 +1629,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     var clearBtn=$("sel-clear"); if(clearBtn) clearBtn.hidden = n===0;
     var cmdBtn=$("sel-cmd-btn"); if(cmdBtn) cmdBtn.disabled = n===0;
     bar.classList.toggle("idle", n===0);
+    syncRunBtns(n);
     // overview mini selection bar mirrors the same shared selection state
     var ovInfo=$("ov-info");
     if(ovInfo) ovInfo.innerHTML = n ? ('已选 '+n+' 项 · '+fmtSize(bytes)) : '未选择候选项';
@@ -1826,7 +1838,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(!c.exclude_paths) c.exclude_paths = [];
     if(c.exclude_paths.indexOf(path)>=0){ toast("路径已在排除列表中"); return; }
     c.exclude_paths.push(path);
-    fetch("api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(c)})
+    fetch("api/config",{method:"POST",headers:postHeaders(),body:JSON.stringify(c)})
       .then(function(r){return r.json();})
       .then(function(j){
         if(j.ok){
@@ -1845,7 +1857,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(!c.protected_projects) c.protected_projects = [];
     if(c.protected_projects.indexOf(project)>=0){ toast("项目已在保护列表中"); return; }
     c.protected_projects.push(project);
-    fetch("api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(c)})
+    fetch("api/config",{method:"POST",headers:postHeaders(),body:JSON.stringify(c)})
       .then(function(r){return r.json();})
       .then(function(j){
         if(j.ok){
@@ -1878,7 +1890,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     var f = collectForm();
     if(state.apiOnline){
       state.saveBusy=true; syncSaveBtn();
-      fetch("api/config", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(f)})
+      fetch("api/config", {method:"POST", headers:postHeaders(), body:JSON.stringify(f)})
         .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
         .then(function(res){
           state.saveBusy=false; syncSaveBtn();
@@ -1977,7 +1989,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   function runScan(){
     if(!state.apiOnline || state.scanBusy) return;
     state.scanBusy=true; var b=$("scan-btn"); if(b){ b.disabled=true; b.textContent="扫描中…"; }
-    fetch("api/scan", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({mode:"scan"})})
+    fetch("api/scan", {method:"POST", headers:postHeaders(), body:JSON.stringify({mode:"scan"})})
       .then(function(r){ return r.json(); })
       .then(function(j){
         state.scanBusy=false;
@@ -2025,7 +2037,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
   function clearTrash(){
     if(!confirm("确定要清空废纸篓中的所有隔离文件？\n清空后无法通过操作历史还原。")) return;
-    fetch("api/trash/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})
+    fetch("api/trash/clear",{method:"POST",headers:postHeaders(),body:"{}"})
       .then(function(r){return r.json();})
       .then(function(j){
         if(j.ok){
@@ -2181,6 +2193,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<div class="ov-rows" id="ov-rows">'+rows+'</div>'+
       '<div class="ov-selbar" id="ov-selbar">'+
         '<span id="ov-info">未选择候选项</span><span class="spacer"></span>'+
+        '<button type="button" class="btn danger" id="ov-run-btn" hidden>执行清理</button>'+
         '<button type="button" class="btn primary" id="ov-cmd-btn" disabled>生成清理命令</button>'+
       '</div>'+
       '<pre class="cmd-out" id="ov-cmd-out" hidden></pre>';
@@ -2215,6 +2228,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       if(!cmd){ toast("尚未勾选任何候选项","err"); return; }
       copyText(cmd, "清理命令已复制，粘贴到终端执行", "ov-cmd-out");
     });
+    var orun = $("ov-run-btn");
+    if(orun) orun.addEventListener("click", function(){ runSelection("ov-run-btn"); });
   }
   // Re-sync overview preview checkboxes with shared selection state
   // (selections may have changed in the clean view since last render).
@@ -2281,6 +2296,75 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     updateSelBar();
   }
 
+  // Show the in-page 执行清理 buttons only when the API is online; a fresh
+  // render happens before detectApi resolves, so syncRunBtns is called from
+  // both updateSelBar (selection changes) and detectApi (connection).
+  function syncRunBtns(n){
+    if(n==null) n=selectionCount();
+    ["sel-run-btn","ov-run-btn"].forEach(function(id){
+      var b=$(id); if(!b) return;
+      b.hidden = !state.apiOnline;
+      b.disabled = n===0 || state.busyRun;
+      if(!state.armed){ b.textContent="执行清理"; b.removeAttribute("data-armed"); }
+    });
+  }
+
+  // Two-click arming then POST /api/clean. The server quarantines only, so
+  // every execution is restorable from the operations panel.
+  function runSelection(btnId){
+    if(!state.apiOnline){ toast("需要通过本地服务打开才能执行","err"); return; }
+    var ids=Object.keys(state.selected);
+    if(!ids.length){ toast("尚未勾选任何候选项","err"); return; }
+    var btn=$(btnId); if(!btn) return;
+    if(btn.getAttribute("data-armed")!=="1"){
+      btn.setAttribute("data-armed","1");
+      btn.textContent="确认执行？再次点击";
+      setTimeout(function(){
+        if(btn.getAttribute("data-armed")==="1"){
+          btn.setAttribute("data-armed","0");
+          btn.textContent="执行清理";
+        }
+      }, 5000);
+      return;
+    }
+    var mode=selectionMode();
+    var total=selectionBytes();
+    state.armed=false; state.busyRun=true;
+    btn.setAttribute("data-armed","0");
+    btn.disabled=true; btn.textContent="执行中…";
+    var outId = btnId==="ov-run-btn" ? "ov-cmd-out" : "sel-cmd-out";
+    var otherId = btnId==="ov-run-btn" ? "sel-run-btn" : "ov-run-btn";
+    var other=$(otherId); if(other) other.disabled=true;
+    fetch("api/clean",{method:"POST",headers:postHeaders(),
+      body:JSON.stringify({mode:mode, candidate_ids:ids, apply:true})})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+      .then(function(res){
+        state.busyRun=false;
+        syncRunBtns(Object.keys(state.selected).length);
+        var out=$(outId);
+        if(out && (res.j.output||"").trim()){
+          out.textContent=res.j.output.trim(); out.hidden=false;
+        }
+        if(res.ok){
+          toast("清理完成，文件已隔离可还原","ok");
+          // cleanup rewrote state.json — refresh in place, ids are new
+          fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
+            .then(function(s){
+              state.selected={};
+              Object.assign(DATA, s);
+              if(s.config) Object.assign(CONFIG, s.config);
+              renderMeta(); renderAll(); loadOperations(); loadTrash();
+            }).catch(function(){ location.reload(); });
+        } else {
+          toast("执行失败："+(res.j.error || ("exit "+res.j.exit_code)), "err");
+        }
+      })
+      .catch(function(){
+        state.busyRun=false; syncRunBtns(Object.keys(state.selected).length);
+        toast("网络错误","err");
+      });
+  }
+
   function bindTable(){
     var si = $("search-input");
     if(si) si.addEventListener("input", function(e){ state.search=e.target.value; refreshList(); });
@@ -2340,6 +2424,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       if(!cmd){ toast("尚未勾选任何候选项","err"); return; }
       copyText(cmd, "清理命令已复制，粘贴到终端执行", "sel-cmd-out");
     });
+    var runBtn=$("sel-run-btn");
+    if(runBtn) runBtn.addEventListener("click", function(){ runSelection("sel-run-btn"); });
     var clearBtn=$("sel-clear");
     if(clearBtn) clearBtn.addEventListener("click", clearSelection);
 
@@ -2412,12 +2498,16 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       probe = fetch("api/health", {cache:"no-store"});
     }catch(e){ return; }
     probe.then(function(r){
-      if(!r.ok) return;
+      if(!r.ok) return null;
+      return r.json();
+    }).then(function(h){
+      if(!h || !h.ok) return;
       state.apiOnline=true;
+      state.execToken=h.token||"";   // required on every POST; see web_server.py
       var d=$("api-dot"); if(d) d.classList.add("on");
       var t=$("api-text"); if(t) t.textContent="接口已连接";
       var sb=$("scan-btn"); if(sb){ sb.disabled=false; sb.title="重新执行只读扫描"; }
-      syncSaveBtn();
+      syncSaveBtn(); syncRunBtns();
     }).catch(function(){ /* offline: static view */ });
   }
 

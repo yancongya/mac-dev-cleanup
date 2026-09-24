@@ -2,8 +2,14 @@
 """Local control plane for mac-dev-cleanup.
 
 Binds to loopback only. The dashboard may read state/config, atomically update the
-validated config, trigger a read-only scan, view operation history, and clear the
-quarantine trash. Destructive per-candidate cleanup is intentionally CLI-only.
+validated config, trigger a read-only scan, view operation history, clear the
+quarantine trash, and execute per-candidate cleanup (quarantine only, restorable).
+
+All POST endpoints require an X-MDC-Token header whose value is a random token
+regenerated at every server start and served via GET /api/health. Cross-origin
+pages can neither read that response (no CORS headers are ever sent) nor attach
+the custom header without passing a preflight this server never answers, so a
+malicious website cannot drive the API from a victim's browser.
 """
 
 from __future__ import annotations
@@ -12,6 +18,8 @@ import argparse
 import glob
 import json
 import os
+import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -27,6 +35,13 @@ OPERATIONS_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "operatio
 QUARANTINE_DIR = Path.home() / ".Trash" / "mac-dev-cleanup"
 MAX_BODY = 256 * 1024
 SCAN_LOCK = threading.Lock()
+EXEC_LOCK = threading.Lock()
+
+# Regenerated per server start; the page reads it from /api/health (same-origin
+# only) and echoes it back on every POST. See the module docstring for why a
+# cross-origin page cannot obtain or use it.
+API_TOKEN = secrets.token_hex(16)
+CAND_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
 
 sys.path.insert(0, str(SCRIPT.parent))
 import mac_dev_cleanup as cleanup  # noqa: E402
@@ -85,7 +100,10 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(200 if state else 404, state or {"error": "state unavailable; run a scan first"})
             return
         if path == "/api/health":
-            self.send_json(200, {"ok": True, "service": "mac-dev-cleanup", "destructive_http_actions": False})
+            self.send_json(200, {
+                "ok": True, "service": "mac-dev-cleanup",
+                "destructive_http_actions": True, "token": API_TOKEN,
+            })
             return
         if path == "/api/operations":
             self._handle_operations_get()
@@ -128,8 +146,16 @@ class Handler(SimpleHTTPRequestHandler):
                     total_bytes += dir_bytes
         self.send_json(200, {"total_bytes": total_bytes, "operations": op_dirs})
 
+    def _authorized(self) -> bool:
+        if self.headers.get("X-MDC-Token") != API_TOKEN:
+            self.send_json(403, {"ok": False, "error": "missing or invalid token"})
+            return False
+        return True
+
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if not self._authorized():
+            return
         try:
             payload = self.read_body()
         except ValueError as exc:
@@ -169,7 +195,53 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/trash/clear":
             self._handle_trash_clear()
             return
+        if path == "/api/clean":
+            self._handle_clean(payload if isinstance(payload, dict) else {})
+            return
         self.send_json(404, {"ok": False, "error": "unknown API endpoint"})
+
+    def _handle_clean(self, payload: dict) -> None:
+        """Execute per-candidate cleanup through the CLI (quarantine, restorable).
+
+        Accepts only validated candidate ids and one of the two clean modes; the
+        CLI's own safety rules (WeChat running, require_quit apps, path guards)
+        apply unchanged because execution is a plain subprocess of the same
+        binary the terminal uses.
+        """
+        mode = payload.get("mode")
+        if mode not in ("clean-safe", "clean-aggressive"):
+            self.send_json(400, {"ok": False, "error": "mode must be clean-safe or clean-aggressive"})
+            return
+        ids = payload.get("candidate_ids")
+        if (not isinstance(ids, list) or not ids or len(ids) > 500
+                or not all(isinstance(i, str) and CAND_ID_RE.match(i) for i in ids)):
+            self.send_json(400, {"ok": False, "error": "candidate_ids must be a non-empty list of valid candidate ids"})
+            return
+        apply = payload.get("apply", True)
+        if not isinstance(apply, bool):
+            apply = True
+        if not EXEC_LOCK.acquire(blocking=False):
+            self.send_json(409, {"ok": False, "error": "another operation is running"})
+            return
+        try:
+            argv = [sys.executable, str(SCRIPT), mode]
+            for cid in ids:
+                argv += ["--candidate-id", cid]
+            if apply:
+                argv.append("--apply")
+            proc = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True, timeout=900)
+            out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+            m = re.search(r"^operation_id:\s*(\S+)", out, re.M)
+            self.send_json(200 if proc.returncode == 0 else 500, {
+                "ok": proc.returncode == 0,
+                "exit_code": proc.returncode,
+                "operation_id": m.group(1) if m else None,
+                "output": out[-4000:],
+            })
+        except subprocess.TimeoutExpired:
+            self.send_json(504, {"ok": False, "error": "cleanup timed out"})
+        finally:
+            EXEC_LOCK.release()
 
     def _handle_trash_clear(self) -> None:
         """Delete all quarantine directories under ~/.Trash/mac-dev-cleanup/."""
@@ -219,7 +291,7 @@ def main() -> int:
     port = resolve_port(args.port)
     server = LoopbackServer(("127.0.0.1", port), Handler)
     print(f"mac-dev-cleanup dashboard: http://127.0.0.1:{port}/dashboard.html")
-    print("HTTP actions: read state/config, update validated config, read-only scan. Cleanup remains CLI-only.")
+    print("HTTP actions: read state/config, update validated config, read-only scan, per-candidate cleanup (quarantine only, token-guarded).")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

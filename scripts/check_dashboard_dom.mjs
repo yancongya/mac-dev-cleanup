@@ -129,6 +129,7 @@ if (selectable) {
   click(selectable);
   await sleep(30);
   ok("吸底操作栏显示已选", (text("#sel-info") || "").includes("已选"), text("#sel-info"));
+  ok("执行按钮离线隐藏", $("#sel-run-btn")?.hidden === true && $("#ov-run-btn")?.hidden === true);
   ok("生成命令按钮已启用", $("#sel-cmd-btn") && !$("#sel-cmd-btn").disabled);
   click($("#sel-cmd-btn"));
   await sleep(30);
