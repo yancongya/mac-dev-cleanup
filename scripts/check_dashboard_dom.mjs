@@ -82,9 +82,9 @@ const ok = (name, cond, extra = "") =>
 // --- structure: sidebar + four views ---
 ok("app 容器已渲染", $("#app").children.length > 0);
 ok("boot-error 未触发", !$("#boot-error").classList.contains("show"));
-ok("侧边栏五个导航项", doc.querySelectorAll(".nav-item").length === 5, doc.querySelectorAll(".nav-item").length);
+ok("侧边栏六个导航项", doc.querySelectorAll(".nav-item").length === 6, doc.querySelectorAll(".nav-item").length);
 ok("清理导航徽标有值", ($("#nav-badge-clean")?.textContent || "").length > 0, $("#nav-badge-clean")?.textContent);
-ok("五个视图容器", doc.querySelectorAll(".view").length === 5);
+ok("六个视图容器", doc.querySelectorAll(".view").length === 6);
 ok("默认显示概览视图", visible("#view-overview") && !visible("#view-clean"));
 ok("英雄区环形图", !!$("#view-overview .donut circle.val"));
 ok("英雄区可清理大数字", ($("#view-overview .hero-big")?.textContent || "").length > 0, $("#view-overview .hero-big")?.textContent);
@@ -128,6 +128,22 @@ ok("清理隔离区区块存在", !!$("#trash-quarantine"));
 ok("系统废纸篓区块存在", !!$("#sys-trash-section"));
 ok("清空系统废纸篓按钮存在", !!$("#empty-system-trash-btn"));
 ok("强确认层默认隐藏", !!$("#sys-trash-confirm") && $("#sys-trash-confirm").hidden === true);
+
+// --- reports view: launch items / TM snapshots / duplicate files ---
+window.location.hash = "reports";
+await sleep(80);
+ok("路由切换到报告视图", visible("#view-reports") && !visible("#view-history"));
+ok("报告视图导航高亮", $(".nav-item.active")?.getAttribute("data-nav") === "reports", $(".nav-item.active")?.getAttribute("data-nav"));
+ok("启动项面板存在", !!$("#panel-launch") && !!$("#pbody-launch"));
+ok("启动项面板含只读说明", ($("#pbody-launch")?.textContent || "").includes("仅报告"));
+ok("启动项面板无删除/禁用按钮", !$("#pbody-launch").querySelector("button"));
+ok("快照面板存在", !!$("#panel-snapshots") && !!$("#pbody-snapshots"));
+ok("快照强确认层默认隐藏", !!$("#snapshot-confirm") && $("#snapshot-confirm").hidden === true);
+ok("快照面板含 df 不实时说明", ($("#pbody-snapshots")?.textContent || "").includes("df 可能不实时反映"));
+ok("快照确认层含 tmutil 警示", ($("#snapshot-confirm")?.textContent || "").includes("tmutil deletelocalsnapshots"));
+ok("重复文件面板存在", !!$("#panel-dupes") && !!$("#pbody-dupes"));
+ok("重复文件浪费总量节点存在", !!$("#dupes-wasted"));
+ok("重复文件刷新按钮存在", !!$("#dupes-refresh"));
 
 // --- i18n (candidate table lives in the clean view) ---
 const reasonCells = [...doc.querySelectorAll("td.reason")].map((e) => e.textContent);

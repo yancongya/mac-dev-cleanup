@@ -2019,6 +2019,184 @@ def app_record(bundle: Path) -> dict[str, object]:
     }
 
 
+# --- P2 reports: launch items / TM snapshots / duplicate files --------------
+
+# Launch items (read-only, third-party only — com.apple.* services are out of
+# scope and meaningless to surface). Deletion is deliberately NOT wired up:
+# disabling/removing a live agent needs launchd unload semantics that belong
+# to a dedicated review, the report is the deliverable.
+LAUNCH_DIRS: tuple[tuple[str, Path], ...] = (
+    ("user", HOME / "Library/LaunchAgents"),
+    ("local-agents", Path("/Library/LaunchAgents")),
+    ("local-daemons", Path("/Library/LaunchDaemons")),
+)
+
+
+def launch_items() -> list[dict[str, object]]:
+    """Parse every third-party .plist under the launch directories."""
+    items: list[dict[str, object]] = []
+    for scope, root in LAUNCH_DIRS:
+        if not root.is_dir():
+            continue
+        try:
+            plists = sorted(root.glob("*.plist"))
+        except OSError:
+            continue
+        for plist_path in plists:
+            try:
+                with plist_path.open("rb") as fh:
+                    raw = plistlib.load(fh)
+            except Exception:  # noqa: BLE001 — corrupt plist: skip, never die
+                continue
+            if not isinstance(raw, dict):
+                continue
+            label = raw.get("Label") or plist_path.stem
+            if isinstance(label, str) and label.startswith("com.apple."):
+                continue
+            prog = raw.get("Program")
+            if not isinstance(prog, str) or not prog:
+                args = raw.get("ProgramArguments")
+                prog = args[0] if isinstance(args, list) and args and isinstance(args[0], str) else ""
+            items.append({
+                "scope": scope,
+                "path": str(plist_path),
+                "label": label,
+                "program": prog,
+                "run_at_load": raw.get("RunAtLoad") is True,
+                "keep_alive": bool(raw.get("KeepAlive")),
+                "disabled": raw.get("Disabled") is True,
+            })
+    return items
+
+
+# Time Machine local snapshots. Read-only listing; deletion is gated twice in
+# the web layer (token + literal confirm) and structurally restricted to
+# date-named snapshots — `com.apple.os.update-*` rollback points never match
+# the date pattern and are refused by code, matching the policy that only a
+# reboot installing the update may reclaim them.
+TM_SNAPSHOT_VOLUME = "/System/Volumes/Data"
+SNAPSHOT_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{6}$")
+
+
+def tmutil_snapshots() -> dict[str, object]:
+    code, out = run(["tmutil", "listlocalsnapshots", TM_SNAPSHOT_VOLUME])
+    if code != 0:
+        return {"ok": False, "error": out or "tmutil failed", "snapshots": []}
+    # Keep only lines that are actually snapshot names: date-formatted entries
+    # or com.apple.* (os-update rollback points). tmutil prints a localized
+    # "Snapshots for disk …:" header line that must not be mistaken for one.
+    names = [line.strip() for line in out.splitlines()
+             if SNAPSHOT_NAME_RE.match(line.strip()) or line.strip().startswith("com.apple.")]
+    snapshots = [{"name": n, "deletable": bool(SNAPSHOT_NAME_RE.match(n))}
+                 for n in names]
+    return {"ok": True, "volume": TM_SNAPSHOT_VOLUME, "snapshots": snapshots,
+            "update_protected": [n for n in names if not SNAPSHOT_NAME_RE.match(n)]}
+
+
+DUPES_STATE_PATH = LOG_DIR / "dupes.json"
+DUPES_MIN_SIZE_DEFAULT = 10 * 1024 * 1024  # 10 MB: dupes below this aren't worth a report
+DUPES_HEAD_BYTES = 64 * 1024
+DUPES_MAX_GROUPS = 200
+
+
+def find_duplicates(roots: list[Path], min_size: int = DUPES_MIN_SIZE_DEFAULT,
+                    max_groups: int = DUPES_MAX_GROUPS) -> dict[str, object]:
+    """Progressive duplicate detection: group by exact size, prune by the
+    64 KB head SHA-256, confirm with a full-file SHA-256. Hard links (same
+    device+inode) are one file, never a duplicate pair. .git is skipped:
+    packfiles are content-addressed churn, not actionable duplicates."""
+    by_size: dict[int, list[Path]] = {}
+    seen_inodes: set[tuple[int, int]] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for current, dirs, files in safe_walk(root):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            base = Path(current)
+            for name in files:
+                path = base / name
+                try:
+                    if path.is_symlink():
+                        continue
+                    st = path.stat()
+                    if st.st_size < min_size:
+                        continue
+                    inode_key = (st.st_dev, st.st_ino)
+                    if inode_key in seen_inodes:
+                        continue
+                    seen_inodes.add(inode_key)
+                except OSError:
+                    continue
+                by_size.setdefault(st.st_size, []).append(path)
+
+    def file_hash(path: Path, full: bool) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            if not full:
+                digest.update(fh.read(DUPES_HEAD_BYTES))
+                return digest.hexdigest()
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    groups: list[dict[str, object]] = []
+    # pass 1: size -> head hash
+    for size, paths in by_size.items():
+        if len(paths) < 2:
+            continue
+        head_buckets: dict[str, list[Path]] = {}
+        for path in paths:
+            try:
+                head_buckets.setdefault(file_hash(path, full=False), []).append(path)
+            except OSError:
+                continue
+        # pass 2: head ties -> full hash
+        for tied in head_buckets.values():
+            if len(tied) < 2:
+                continue
+            full_buckets: dict[str, list[Path]] = {}
+            for path in tied:
+                try:
+                    full_buckets.setdefault(file_hash(path, full=True), []).append(path)
+                except OSError:
+                    continue
+            for paths_same in full_buckets.values():
+                if len(paths_same) < 2:
+                    continue
+                groups.append({
+                    "size": size,
+                    "wasted": size * (len(paths_same) - 1),
+                    "files": sorted(str(p) for p in paths_same),
+                })
+    groups.sort(key=lambda g: g["wasted"], reverse=True)
+    truncated = len(groups) > max_groups
+    kept = groups[:max_groups]
+    return {
+        "roots": [str(r) for r in roots],
+        "min_size": min_size,
+        "groups": kept,
+        "truncated": truncated,
+        "wasted_bytes": sum(int(g["wasted"]) for g in kept),
+        "generated": dt.datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def cmd_dupes(min_size: int, roots: list[Path] | None) -> int:
+    scan_roots = roots if roots else list(PROJECT_ROOTS)
+    result = find_duplicates(scan_roots, min_size=min_size)
+    try:
+        DUPES_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DUPES_STATE_PATH.write_text(json.dumps(result, ensure_ascii=False),
+                                    encoding="utf-8")
+    except OSError as exc:
+        print(f"warning: could not persist {DUPES_STATE_PATH}: {exc}")
+    print(f"groups: {len(result['groups'])}  wasted: {fmt_size(int(result['wasted_bytes']))}"
+          f"  report: {DUPES_STATE_PATH}")
+    for group in result["groups"][:20]:
+        print(f"  {fmt_size(int(group['size']))} x{len(group['files'])}  {group['files'][0]}")
+    return 0
+
+
 def cmd_apps() -> int:
     """Build apps.json (consumed by the dashboard's 应用 view)."""
     records: list[dict[str, object]] = []
@@ -2259,8 +2437,12 @@ def _render_dashboard_html(state: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan and clean macOS developer-generated files.")
-    parser.add_argument("mode", nargs="?", choices=["scan", "clean-safe", "clean-aggressive", "apps", "uninstall"],
+    parser.add_argument("mode", nargs="?", choices=["scan", "clean-safe", "clean-aggressive", "apps", "uninstall", "dupes"],
                         help="Operation mode. Omit when using --show-config / --set-config.")
+    parser.add_argument("--min-size", type=int, default=None,
+                        help="dupes: minimum file size in bytes (default 10 MB).")
+    parser.add_argument("--roots", action="append", default=[],
+                        help="dupes: additional scan root (repeatable; default: scan_roots).")
     parser.add_argument("--app-name", metavar="NAME.app",
                         help="App bundle name for the uninstall mode (exact match under /Applications or ~/Applications).")
     parser.add_argument("--apply", action="store_true", help="Actually delete candidates for the selected mode.")
@@ -2323,6 +2505,9 @@ def main() -> int:
         if not args.app_name:
             parser.error("--app-name is required for uninstall (e.g. --app-name 'Foo.app')")
         return cmd_uninstall(args.app_name, args.apply)
+    if args.mode == "dupes":
+        roots = [Path(r).expanduser() for r in args.roots] or None
+        return cmd_dupes(args.min_size if args.min_size else DUPES_MIN_SIZE_DEFAULT, roots)
 
     if not args.mode:
         parser.error("mode is required (scan / clean-safe / clean-aggressive) unless using --show-config / --set-config")

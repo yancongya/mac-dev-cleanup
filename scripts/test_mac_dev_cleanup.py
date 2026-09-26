@@ -5,6 +5,7 @@ import datetime as dt  # noqa: F401  (kept for parity with production imports)
 import importlib.util
 import json
 import os
+import plistlib
 import sys
 import shutil
 import tempfile
@@ -934,6 +935,81 @@ class P1Batch2Tests(unittest.TestCase):
         locked.chmod(0o000)
         with patch.object(cleanup, "IOS_BACKUP_ROOT", locked):
             self.assertEqual(cleanup.scan_ios_backups(), {})
+
+
+class P2ReportTests(unittest.TestCase):
+    # -- launch items ---------------------------------------------------------
+    def test_launch_items_parse_and_filter_apple(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-launch-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        good = {"Label": "com.foo.helper", "Program": "/usr/local/bin/foo",
+                "RunAtLoad": True, "KeepAlive": True}
+        apple = {"Label": "com.apple.thing", "Program": "/usr/bin/x"}
+        bad = b"not a plist at all"
+        plistlib.dump(good, (base / "com.foo.helper.plist").open("wb"))
+        plistlib.dump(apple, (base / "com.apple.thing.plist").open("wb"))
+        (base / "broken.plist").write_bytes(bad)
+        (base / "readme.txt").write_text("ignored")
+        with patch.object(cleanup, "LAUNCH_DIRS", (("test", base),)):
+            items = cleanup.launch_items()
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["label"], "com.foo.helper")
+        self.assertEqual(item["program"], "/usr/local/bin/foo")
+        self.assertTrue(item["run_at_load"] and item["keep_alive"])
+
+    # -- TM snapshots ---------------------------------------------------------
+    def test_tmutil_snapshots_flags_update_rollback_points(self) -> None:
+        fake_out = ("Snapshots for disk /System/Volumes/Data:\n"
+                    "com.apple.os.update-ABC123\n"
+                    "2026-09-01-120000\n"
+                    "2026-09-20-033000\n")
+        with patch.object(cleanup, "run", return_value=(0, fake_out)):
+            result = cleanup.tmutil_snapshots()
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["snapshots"]), 3)
+        self.assertEqual([s["name"] for s in result["snapshots"] if s["deletable"]],
+                         ["2026-09-01-120000", "2026-09-20-033000"])
+        self.assertEqual(result["update_protected"], ["com.apple.os.update-ABC123"])
+
+    def test_tmutil_snapshots_failure_is_reported(self) -> None:
+        with patch.object(cleanup, "run", return_value=(1, "tmutil: error")):
+            result = cleanup.tmutil_snapshots()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["snapshots"], [])
+
+    # -- duplicates -----------------------------------------------------------
+    def test_find_duplicates_progressive_and_hardlink_aware(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="mdc-dupes-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        payload = b"X" * 4096
+        (root / "a.bin").write_bytes(payload)
+        (root / "b.bin").write_bytes(payload)              # duplicate of a.bin
+        (root / "c.bin").write_bytes(b"Y" * 4096)          # same size, different content
+        os.symlink(root / "a.bin", root / "a-link.bin")    # symlink: never counted
+        os.link(root / "a.bin", root / "a-hard.bin")       # hard link: same inode
+        git_dir = root / ".git"
+        git_dir.mkdir()
+        (git_dir / "same.bin").write_bytes(payload)        # .git: skipped
+        (root / "tiny-a.bin").write_bytes(b"Z" * 8)        # below min_size
+        (root / "tiny-b.bin").write_bytes(b"Z" * 8)
+        result = cleanup.find_duplicates([root], min_size=1024)
+        self.assertEqual(len(result["groups"]), 1)
+        group = result["groups"][0]
+        self.assertEqual(group["wasted"], 4096)            # 2 files, 1 wasted copy
+        names = [Path(f).name for f in group["files"]]
+        self.assertEqual(names, ["a.bin", "b.bin"])
+
+    def test_find_duplicates_head_hash_prunes_before_full_hash(self) -> None:
+        # Same size, same 64KB head, different tail: only the full-hash pass
+        # separates them — must NOT be reported as duplicates.
+        root = Path(tempfile.mkdtemp(prefix="mdc-dupes-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        head = b"H" * 4096
+        (root / "x.bin").write_bytes(head + b"1" * 1024)
+        (root / "y.bin").write_bytes(head + b"2" * 1024)
+        result = cleanup.find_duplicates([root], min_size=1024)
+        self.assertEqual(result["groups"], [])
 
 
 if __name__ == "__main__":

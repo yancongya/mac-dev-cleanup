@@ -757,6 +757,10 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
       操作历史
     </button>
+    <button class="nav-item" data-nav="reports">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+      报告
+    </button>
     <button class="nav-item" data-nav="settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       设置
@@ -971,7 +975,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // ---- unified collapsible panels ----
   // Collapse state is remembered across sessions via localStorage.
   var PANEL_DEFAULTS = { summary:true, risk:true, cat:true, treemap:true, tools:true,
-    disk:true, table:true, cleanup:true, exechist:true, ops:true, settings:true };
+    disk:true, table:true, cleanup:true, exechist:true, ops:true, settings:true,
+    launch:true, snapshots:true, dupes:true };
   var PANELS = Object.assign({}, PANEL_DEFAULTS);
   // .v2: 2026-09-24 — all panels default expanded; bumping the key discards
   // previously saved collapsed states so the new defaults actually apply.
@@ -1265,7 +1270,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
 
   // ---- view router (hash-based) ----
-  var VIEWS = ["overview","clean","apps","history","settings"];
+  var VIEWS = ["overview","clean","apps","history","reports","settings"];
   function currentView(){
     var h = (location.hash||"#overview").slice(1);
     return VIEWS.indexOf(h)>=0 ? h : "overview";
@@ -1286,6 +1291,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     // Keep views that mirror shared state fresh when (re)entering them.
     if(v==="clean") refreshList();
     if(v==="overview") syncOverviewSel();
+    if(v==="reports") loadReports();
     // jsdom's scrollTo is a not-implemented stub that logs a jsdomError; skip it
     // in headless checks so the render stays error-free.
     if(!/jsdom/i.test(navigator.userAgent)) window.scrollTo(0,0);
@@ -2193,6 +2199,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           renderAll();
           loadOperations();
           loadTrash();
+          loadReports();
           toast("扫描完成，共 " + (DATA.candidate_count||0) + " 个候选", "ok");
         } else if(j.ok){
           location.reload();
@@ -2594,14 +2601,20 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
         panel("ops","操作历史","最近操作 · 可还原", renderOperationsInner(), true) +
       '</div>'+
+      '<div class="view" id="view-reports" style="display:none">'+
+        panel("launch","启动项",'<span id="launch-count"></span>第三方 LaunchAgents/Daemons · 只读', renderLaunchInner(), true) +
+        panel("snapshots","TM 快照","本地快照 · 删除需强确认", renderSnapshotsInner(), true) +
+        panel("dupes","重复文件","四级渐进哈希 · 已排除硬链接与 .git", renderDupesInner(), true) +
+      '</div>'+
       '<div class="view" id="view-settings" style="display:none">'+
         settingsHtml() +
       '</div>';
-    ["overview","clean","apps","history","settings"].forEach(applyViewOrder);
+    ["overview","clean","apps","history","reports","settings"].forEach(applyViewOrder);
     bindTable();
     bindOverview();
     bindSettings();
     bindApps();
+    bindReports();
     if(APPS.data) renderApps();
     renderTrash();
     bindTrashConfirm();
@@ -2890,6 +2903,255 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     }
   }
 
+  // ---- reports view (启动项 / TM 快照 / 重复文件) ----
+  // Read-only reports; the only mutating actions are snapshot delete (strong
+  // confirm) and dupes rebuild. Mirrors the trash panel's loadXxx/renderXxx split.
+  var REPORTS = { launch:null, snapshots:null, dupes:null, dupesTimer:null };
+  var PENDING_SNAPSHOT = null;
+  var SCOPE_ZH = { "user":"用户", "local-agents":"本地代理", "local-daemons":"本地守护" };
+
+  function loadReports(){
+    if(!state.apiOnline) return;
+    loadLaunch();
+    loadSnapshots();
+    loadDupes();
+  }
+  function loadLaunch(){
+    fetch("api/launch",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(j){ if(j.ok){ REPORTS.launch=j.items||[]; renderLaunch(); } })
+      .catch(function(){});
+  }
+  function loadSnapshots(){
+    fetch("api/snapshots",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(j){ if(j.ok){ REPORTS.snapshots=j; renderSnapshots(); } })
+      .catch(function(){});
+  }
+  function loadDupes(){
+    fetch("api/dupes",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(j){
+        if(!j.ok) return;
+        clearTimeout(REPORTS.dupesTimer);
+        if(j.building || !j.report){
+          REPORTS.dupes=null;
+          renderDupesBuilding();
+          REPORTS.dupesTimer=setTimeout(loadDupes, 5000);  // full-hash rebuild takes minutes
+          return;
+        }
+        REPORTS.dupes=j.report;
+        renderDupes();
+      }).catch(function(){});
+  }
+  function refreshDupes(){
+    if(!state.apiOnline) return;
+    var b=$("dupes-refresh");
+    if(b){ b.disabled=true; b.textContent="请求中…"; }
+    fetch("api/dupes/refresh",{method:"POST",headers:postHeaders(),body:"{}"})
+      .then(function(r){ return r.json().then(function(j){ return {status:r.status, j:j}; }); })
+      .then(function(res){
+        if(res.status===409){  // already building — just resume polling
+          toast("报告正在构建中");
+          REPORTS.dupes=null; renderDupesBuilding(); loadDupes();
+          return;
+        }
+        if(res.j && res.j.ok){
+          toast("已开始重建重复文件报告","ok");
+          REPORTS.dupes=null; renderDupesBuilding(); loadDupes();
+        } else {
+          toast("刷新失败："+((res.j && res.j.error)||"未知错误"),"err");
+          var b2=$("dupes-refresh"); if(b2){ b2.disabled=false; b2.textContent="重建报告"; }
+        }
+      })
+      .catch(function(){
+        toast("网络错误","err");
+        var b2=$("dupes-refresh"); if(b2){ b2.disabled=false; b2.textContent="重建报告"; }
+      });
+  }
+
+  function renderLaunchInner(){
+    return '<div id="launch-list"><div class="empty">加载中…</div></div>'+
+      '<p class="ov-sub" style="padding:0 16px 12px">仅报告；启用/卸载请在 launchctl 或应用内操作。</p>';
+  }
+  function renderLaunch(){
+    var el=$("launch-list"); if(!el) return;
+    var badge=$("launch-count");
+    if(!state.apiOnline){
+      el.innerHTML='<div class="empty">需通过本地服务打开才能读取启动项</div>';
+      if(badge) badge.textContent="";
+      return;
+    }
+    var items=REPORTS.launch||[];
+    if(badge) badge.textContent = items.length?("共 "+items.length+" 项 · "):"";
+    if(!items.length){
+      el.innerHTML='<div class="empty">未发现第三方启动项（com.apple.* 已由后端过滤）</div>';
+      return;
+    }
+    var scopes=["user","local-agents","local-daemons"];
+    var html="";
+    scopes.forEach(function(sc){
+      var list=items.filter(function(it){ return (it.scope||"user")===sc; });
+      if(!list.length) return;
+      html+='<div class="trash-sub-head" style="padding:12px 16px 2px">'+esc(SCOPE_ZH[sc]||sc)+
+        '<span class="note">'+list.length+' 项</span></div>';
+      html+='<div class="sys-list">'+list.map(function(it){
+        var tags='';
+        if(it.run_at_load) tags+='<span class="tag tag-scanonly">RunAtLoad</span>';
+        if(it.keep_alive) tags+='<span class="tag tag-would">KeepAlive</span>';
+        if(it.disabled) tags+='<span class="tag tag-manual">Disabled</span>';
+        return '<div class="sys-item">'+
+          '<span class="si-name" title="'+esc(it.label||"")+'">'+esc(it.label||"")+'</span>'+
+          '<span class="si-time" style="max-width:45%" title="'+esc(it.program||"")+'">'+esc(truncatePath(it.program||""))+'</span>'+
+          tags+
+        '</div>';
+      }).join("")+'</div>';
+    });
+    el.innerHTML=html;
+  }
+
+  function renderSnapshotsInner(){
+    return '<p class="ov-sub" style="padding:12px 16px 0">TM 本地快照占用的空间 df 可能不实时反映；重启装完系统更新后才真正释放。</p>'+
+      '<div id="snapshots-list"><div class="empty">加载中…</div></div>'+
+      // strong-confirm layer — opened by per-item 删除, request only fires on 确认删除
+      '<div class="modal-mask" id="snapshot-confirm" hidden>'+
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="确认删除本地快照">'+
+          '<h3>确认删除本地快照？</h3>'+
+          '<p id="snapshot-confirm-text"></p>'+
+          '<p class="modal-note">将执行 tmutil deletelocalsnapshots，删除后该时间点不可回滚。</p>'+
+          '<div class="modal-actions">'+
+            '<button type="button" class="btn" id="snapshot-cancel-btn">取消</button>'+
+            '<button type="button" class="btn danger" id="snapshot-confirm-btn">确认删除</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+  }
+  function renderSnapshots(){
+    var el=$("snapshots-list"); if(!el) return;
+    if(!state.apiOnline){
+      el.innerHTML='<div class="empty">需通过本地服务打开才能读取本地快照</div>';
+      return;
+    }
+    var items=(REPORTS.snapshots && REPORTS.snapshots.snapshots)||[];
+    if(!items.length){
+      el.innerHTML='<div class="empty">当前没有本地快照</div>';
+      return;
+    }
+    el.innerHTML='<div class="sys-list">'+items.map(function(s){
+      var prot=!s.deletable;
+      return '<div class="sys-item">'+
+        '<span class="si-name" title="'+esc(s.name||"")+'">'+esc(s.name||"")+'</span>'+
+        (prot
+          ?'<span class="tag tag-scanonly" title="系统更新回滚点，代码级禁止删除，重启装完更新即释放">受保护（更新回滚点）</span>'
+          :'<span class="tag tag-safe">可删</span>')+
+        (prot?'':'<button type="button" class="btn danger snap-del-btn" data-name="'+esc(s.name)+'" style="height:24px;font-size:11px">删除</button>')+
+      '</div>';
+    }).join("")+'</div>';
+  }
+  function openSnapshotConfirm(name){
+    if(!name || !state.apiOnline) return;
+    PENDING_SNAPSHOT=name;
+    var t=$("snapshot-confirm-text");
+    if(t) t.textContent='即将删除本地快照 '+name+'，删除后该时间点不可回滚。';
+    var mask=$("snapshot-confirm"); if(mask) mask.hidden=false;
+  }
+  function hideSnapshotConfirm(){
+    var mask=$("snapshot-confirm"); if(mask) mask.hidden=true;
+    PENDING_SNAPSHOT=null;
+  }
+  function bindSnapshotConfirm(){
+    var mask=$("snapshot-confirm"); if(!mask) return;
+    var cancel=$("snapshot-cancel-btn");
+    if(cancel) cancel.addEventListener("click", hideSnapshotConfirm);
+    mask.addEventListener("click", function(e){ if(e.target===mask) hideSnapshotConfirm(); });
+    var confirm=$("snapshot-confirm-btn");
+    if(confirm) confirm.addEventListener("click", deleteSnapshot);
+  }
+  // POST /api/snapshot/delete — backend requires the literal confirm string and
+  // a date-formatted name (anything else is rejected with 400/422).
+  function deleteSnapshot(){
+    if(!PENDING_SNAPSHOT) return;
+    var btn=$("snapshot-confirm-btn");
+    if(btn){ btn.disabled=true; btn.textContent="删除中…"; }
+    fetch("api/snapshot/delete",{method:"POST",headers:postHeaders(),
+        body:JSON.stringify({confirm:"DELETE SNAPSHOT", name:PENDING_SNAPSHOT})})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        hideSnapshotConfirm();
+        if(btn){ btn.disabled=false; btn.textContent="确认删除"; }
+        if(j.ok){
+          toast("快照已删除："+(j.name||""),"ok");
+          loadSnapshots();
+        } else {
+          toast("删除失败："+(j.error||"未知错误"),"err");
+        }
+      })
+      .catch(function(){
+        hideSnapshotConfirm();
+        if(btn){ btn.disabled=false; btn.textContent="确认删除"; }
+        toast("网络错误","err");
+      });
+  }
+  // Snap delete buttons use delegation on the panel body so re-renders keep working.
+  function bindReports(){
+    var body=$("pbody-snapshots");
+    if(body && !body.dataset.bound){
+      body.dataset.bound="1";
+      body.addEventListener("click", function(e){
+        var btn=e.target.closest(".snap-del-btn");
+        if(btn) openSnapshotConfirm(btn.getAttribute("data-name"));
+      });
+    }
+    var rb=$("dupes-refresh");
+    if(rb && !rb.dataset.bound){
+      rb.dataset.bound="1";
+      rb.addEventListener("click", refreshDupes);
+    }
+    bindSnapshotConfirm();
+  }
+
+  function renderDupesInner(){
+    return '<div class="disk-compact">'+
+        '<div class="dc-metric"><div class="dc-val" id="dupes-wasted">—</div><div class="dc-lbl">浪费空间</div></div>'+
+        '<div class="dc-metric"><div class="dc-val" id="dupes-groups">—</div><div class="dc-lbl">重复组</div></div>'+
+        '<div class="dc-metric"><div class="dc-val" id="dupes-roots" style="font-size:12px">—</div><div class="dc-lbl">扫描根</div></div>'+
+        '<span class="dc-est" id="dupes-generated" style="color:var(--subtle)"></span>'+
+        '<button type="button" class="btn" id="dupes-refresh" style="margin-left:auto">重建报告</button>'+
+      '</div>'+
+      '<div id="dupes-list"><div class="empty">加载中…</div></div>'+
+      '<p class="ov-sub" style="padding:0 16px 12px">报告仅供参考——删除前请自行确认哪一份是多余的。</p>';
+  }
+  function renderDupesBuilding(){
+    var el=$("dupes-list");
+    if(el) el.innerHTML='<div class="empty">正在全量哈希，可能需要几分钟…（每 5 秒自动刷新）</div>';
+    var b=$("dupes-refresh");
+    if(b){ b.disabled=true; b.textContent="构建中…"; }
+  }
+  function renderDupes(){
+    var el=$("dupes-list"); if(!el) return;
+    var r=REPORTS.dupes;
+    var b=$("dupes-refresh"); if(b){ b.disabled=!state.apiOnline; b.textContent="重建报告"; }
+    var w=$("dupes-wasted"); if(w) w.textContent=fmtSize(r.wasted_bytes);
+    var g=$("dupes-groups"); if(g) g.textContent=(r.groups||[]).length;
+    var roots=r.roots||[];
+    var rt=$("dupes-roots"); if(rt){ rt.textContent=roots.length+" 个"; rt.title=roots.join("\n"); }
+    var gen=$("dupes-generated");
+    if(gen) gen.textContent=r.generated?("生成于 "+String(r.generated).replace("T"," ").slice(0,16)):"";
+    var groups=r.groups||[];
+    if(!groups.length){
+      el.innerHTML='<div class="empty">未发现重复文件（阈值 10MB，已排除硬链接与 .git）</div>';
+      return;
+    }
+    el.innerHTML=(r.truncated?'<div class="empty" style="padding:8px 16px;text-align:left">仅显示前 200 组</div>':'')+
+      '<div class="sys-list">'+groups.map(function(gp){
+        var files=gp.files||[];
+        return '<div class="sys-item" style="align-items:flex-start;flex-wrap:wrap">'+
+          '<span class="si-size" style="flex:0 0 auto">'+fmtSize(gp.size)+' ×'+files.length+' 份</span>'+
+          '<span class="si-time" style="color:var(--amber)">浪费 '+fmtSize(gp.wasted)+'</span>'+
+          '<div style="flex:1 1 100%;min-width:0">'+files.map(function(f){
+            return '<div class="mono" style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(f)+'">'+esc(truncatePath(f))+'</div>';
+          }).join("")+'</div>'+
+        '</div>';
+      }).join("")+'</div>';
+  }
+
   function refreshAfterClean(){
     // cleanup rewrote state.json — refresh in place, candidate ids are new
     fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
@@ -3107,6 +3369,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       syncSaveBtn(); syncRunBtns();
       loadExecHistory();
       loadApps(false);
+      loadReports();
       // resume the log panel if an execution is already in flight (reload mid-run)
       fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
         .then(function(s){

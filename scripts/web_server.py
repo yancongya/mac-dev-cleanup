@@ -107,6 +107,12 @@ import mac_dev_cleanup as cleanup  # noqa: E402
 # rebuilds the Skill directory cannot reset the panel's policy.
 CONFIG_PATH = cleanup.CONFIG_PATH
 
+# Duplicate-file report state (path owned by the CLI module) and the
+# at-most-one background build, mirroring the apps-listing pattern.
+DUPES_STATE_PATH = cleanup.DUPES_STATE_PATH
+DUPES_MUX = threading.Lock()
+DUPES_BUILDING = False
+
 
 def _app_icon_png(rec: dict) -> Path | None:
     """Extract an app bundle's icns to a cached PNG via sips.
@@ -291,6 +297,15 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/trash":
             self._handle_trash_get()
             return
+        if path == "/api/launch":
+            self.send_json(200, {"ok": True, "items": cleanup.launch_items()})
+            return
+        if path == "/api/snapshots":
+            self.send_json(200, cleanup.tmutil_snapshots())
+            return
+        if path == "/api/dupes":
+            self._handle_dupes_get()
+            return
         super().do_GET()
 
     def _handle_apps_get(self) -> None:
@@ -430,6 +445,12 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/apps/refresh":
             self._handle_apps_refresh()
             return
+        if path == "/api/dupes/refresh":
+            self._handle_dupes_refresh()
+            return
+        if path == "/api/snapshot/delete":
+            self._handle_snapshot_delete(payload if isinstance(payload, dict) else {})
+            return
         if path == "/api/uninstall":
             self._handle_uninstall(payload if isinstance(payload, dict) else {})
             return
@@ -457,6 +478,76 @@ class Handler(SimpleHTTPRequestHandler):
 
         threading.Thread(target=worker, daemon=True).start()
         self.send_json(200, {"ok": True, "building": True})
+
+    def _handle_dupes_get(self) -> None:
+        """Serve the duplicate-file report, building it in the background on
+        first access (full hashing of big trees takes minutes)."""
+        global DUPES_BUILDING
+        data = read_json(DUPES_STATE_PATH, None)
+        if isinstance(data, dict) and isinstance(data.get("groups"), list):
+            self.send_json(200, {"ok": True, "building": False, "report": data})
+            return
+        self._start_dupes_build()
+        self.send_json(200, {"ok": True, "building": True, "report": None})
+
+    def _start_dupes_build(self) -> None:
+        global DUPES_BUILDING
+        with DUPES_MUX:
+            if DUPES_BUILDING:
+                return
+            DUPES_BUILDING = True
+
+        def worker() -> None:
+            global DUPES_BUILDING
+            try:
+                subprocess.run([sys.executable, str(SCRIPT), "dupes"], cwd=ROOT,
+                               text=True, capture_output=True, timeout=3600)
+            except Exception:  # noqa: BLE001 — background job
+                pass
+            finally:
+                with DUPES_MUX:
+                    DUPES_BUILDING = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_dupes_refresh(self) -> None:
+        global DUPES_BUILDING
+        with DUPES_MUX:
+            if DUPES_BUILDING:
+                self.send_json(409, {"ok": False, "error": "duplicate scan already running"})
+                return
+        self._start_dupes_build()
+        self.send_json(200, {"ok": True, "building": True})
+
+    def _handle_snapshot_delete(self, payload: dict) -> None:
+        """Delete ONE Time Machine local snapshot by exact date name.
+
+        The name must match the strict date pattern — `com.apple.os.update-*`
+        rollback points never do and are refused by code, not by convention.
+        Deletion is single-snapshot, confirm-gated, and the API is read-only
+        about everything else.
+        """
+        name = payload.get("name")
+        if not isinstance(name, str) or not cleanup.SNAPSHOT_NAME_RE.match(name):
+            self.send_json(400, {"ok": False,
+                                 "error": "name must be a snapshot date like 2026-09-27-030000 "
+                                          "(update rollback points are never deletable here)"})
+            return
+        if payload.get("confirm") != "DELETE SNAPSHOT":
+            self.send_json(400, {"ok": False,
+                                 "error": "confirm must be the exact string 'DELETE SNAPSHOT'"})
+            return
+        try:
+            proc = subprocess.run(["/usr/bin/tmutil", "deletelocalsnapshots", name],
+                                  capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.send_json(500, {"ok": False, "error": str(exc)})
+            return
+        ok = proc.returncode == 0
+        self.send_json(200 if ok else 422, {
+            "ok": ok, "name": name,
+            "output": ((proc.stdout or "") + (proc.stderr or "")).strip()[-2000:],
+        })
 
     def _handle_uninstall(self, payload: dict) -> None:
         """Uninstall one app via the CLI: quarantine the bundle and its related

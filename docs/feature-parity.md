@@ -114,9 +114,9 @@
 ### P2（按需排期）
 | # | 功能 | 来源 | 说明 |
 |---|---|---|---|
-| 12 | 重复文件查找 | Mac Clean 四级渐进哈希 + PureMac SHA-256 | 工程量最大；硬链接不算重复 |
-| 13 | 启动项/登录项管理 | Pearcleaner 只读查看器 | 先只读清单（LaunchAgents/LaunchDaemons 过滤 com.apple.*），删除另议 |
-| 14 | TM 本地快照 thinning | Mole tmutil thinlocalsnapshots | 高风险，须排除 com.apple.os.update-* 回滚点 |
+| 12 | 重复文件查找 ✅ | Mac Clean 四级渐进哈希 + PureMac SHA-256 | `dupes` 子命令：大小 → 64KB 头哈希 → 全量 SHA-256；硬链接不算重复（dev+ino 去重）；.git 排除；阈值默认 10MB；报告性质（选哪份保留是人决策），dupes.json + 看板报告面板；首次真实运行 25 组 / 2.1G | 完成 |
+| 13 | 启动项/登录项管理 ✅（只读报告） | Pearcleaner 只读查看器 | `launch_items()` + `GET /api/launch` + 看板面板：第三方 LaunchAgents/LaunchDaemons 解析（Label/Program/RunAtLoad/KeepAlive），com.apple.* 过滤；刻意不做删除/禁用（归 launchctl） | 完成 |
+| 14 | TM 本地快照 thinning ✅（单条删除） | Mole tmutil thinlocalsnapshots | 列表 + 单条删除（`deletelocalsnapshots`），比 thinning 更可控：仅接受日期格式名 + 逐字 confirm，`com.apple.os.update-*` 回滚点代码级拒绝；看板注明 df 不实时、重启装更新才释放 | 完成 |
 | 15 | Mail 附件缓存 | Mole/PureMac/CleanMyMac | 小众，低优先 |
 | 16 | 维护任务集 | Mole optimize 20 项 / OnyX | DNS/Spotlight 重建等，超出"清理"定位，暂缓 |
 
