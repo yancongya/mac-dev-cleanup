@@ -113,6 +113,8 @@ ok("应用视图导航高亮", $(".nav-item.active")?.getAttribute("data-nav") =
 ok("应用搜索框存在", !!$("#apps-search"));
 ok("应用列表容器存在", !!$("#apps-list"));
 ok("应用重扫按钮存在", !!$("#apps-rescan"));
+ok("应用统计条存在", !!$("#apps-stats"));
+ok("应用排序控件存在", !!$("#apps-sort"));
 
 // --- i18n (candidate table lives in the clean view) ---
 const reasonCells = [...doc.querySelectorAll("td.reason")].map((e) => e.textContent);

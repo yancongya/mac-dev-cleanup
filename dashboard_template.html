@@ -129,15 +129,26 @@ a{color:var(--indigo)}
 .eh-log{max-height:240px;overflow:auto;margin:0 12px 10px;font-size:11px}
 /* apps view (应用卸载) */
 .ov-sub{font-size:12px;color:var(--muted);margin:4px 0 10px}
-.apps-tools{margin-bottom:8px}
-.apps-tools input{width:100%;max-width:320px;height:30px;padding:0 10px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--fg);font-size:12px}
-.app-item{border-bottom:1px solid var(--border)}
-.app-item:last-child{border-bottom:none}
-.app-row{display:flex;align-items:center;gap:10px;padding:9px 12px;font-size:12px}
-.app-name{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.app-size{color:var(--muted);font-variant-numeric:tabular-nums;flex:0 0 auto}
+.apps-stats{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.app-stat{flex:1;min-width:110px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
+.app-stat .n{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+.app-stat .l{font-size:11px;color:var(--muted);margin-top:2px}
+.apps-tools{display:flex;gap:8px;margin-bottom:8px}
+.apps-tools input{flex:1;height:32px;padding:0 10px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--fg);font-size:12px}
+.apps-tools select{height:32px;padding:0 8px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--fg);font-size:12px;flex:0 0 auto}
+.app-list-shell{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.app-item-wrap{border-bottom:1px solid var(--border)}
+.app-item-wrap:last-child{border-bottom:none}
+.app-item{display:flex;align-items:center;gap:12px;padding:9px 14px;font-size:12px}
+.app-item:hover{background:var(--row-hover)}
+.app-iconwrap{position:relative;width:36px;height:36px;flex:0 0 auto;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:15px;overflow:hidden}
+.app-iconwrap img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.app-main{flex:1;min-width:0}
+.app-name{font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app-bundle{display:block;font-size:10px;color:var(--muted);font-family:var(--mono,monospace);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app-size{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600;flex:0 0 auto}
 .app-relcount{color:var(--muted);font-size:11px;flex:0 0 auto}
-.app-rel{padding:0 12px 9px 12px}
+.app-rel{padding:2px 14px 9px 62px}
 .app-rel-row{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--muted);padding:2px 0;font-family:var(--mono,monospace)}
 .app-rel-row span{flex:0 0 auto}
 .ov-rows{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
@@ -2310,8 +2321,16 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           '<button type="button" class="btn" id="apps-rescan" style="height:26px;font-size:11px" title="重新扫描已安装应用">重新扫描</button>'+
         '</div>'+
         '<p class="ov-sub">卸载 = 应用包和它的残留配置一起移入废纸篓隔离，可随时还原；正在运行的应用会被拒绝。</p>'+
-        '<div class="apps-tools"><input id="apps-search" type="search" placeholder="搜索应用名…" aria-label="搜索应用"></div>'+
-        '<div id="apps-list"><div class="empty">加载中…</div></div>'+
+        '<div class="apps-stats" id="apps-stats"></div>'+
+        '<div class="apps-tools">'+
+          '<input id="apps-search" type="search" placeholder="搜索应用名或 Bundle ID…" aria-label="搜索应用">'+
+          '<select id="apps-sort" aria-label="排序方式">'+
+            '<option value="size">按占用空间</option>'+
+            '<option value="name">按名称</option>'+
+            '<option value="res">残留优先</option>'+
+          '</select>'+
+        '</div>'+
+        '<div class="app-list-shell"><div id="apps-list"><div class="empty">加载中…</div></div></div>'+
         '<pre class="cmd-out" id="apps-out" hidden></pre>'+
       '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
@@ -2461,7 +2480,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     };
   }
   // ---- apps view (应用卸载) ----
-  var APPS = { data:null, filter:"", timer:null };
+  var APPS = { data:null, filter:"", sort:"size", timer:null };
 
   function loadApps(force){
     if(!state.apiOnline) return;
@@ -2493,26 +2512,62 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       return a.name.toLowerCase().indexOf(q)>=0 || (a.bundle_id||"").toLowerCase().indexOf(q)>=0;
     });
   }
+  function appsSorted(list){
+    var s=APPS.sort||"size", arr=list.slice();
+    if(s==="name") arr.sort(function(a,b){ return a.name.localeCompare(b.name); });
+    else if(s==="res") arr.sort(function(a,b){
+      return (b.related||[]).length-(a.related||[]).length || (b.total_size||0)-(a.total_size||0);
+    });
+    else arr.sort(function(a,b){ return (b.total_size||0)-(a.total_size||0); });
+    return arr;
+  }
+  function appsStatsHtml(all){
+    var total=all.length, bytes=0, relN=0, runN=0;
+    all.forEach(function(a){
+      bytes+=a.total_size||0;
+      if((a.related||[]).length) relN++;
+      if(a.running) runN++;
+    });
+    return '<div class="app-stat"><div class="n">'+total+'</div><div class="l">已安装应用</div></div>'+
+      '<div class="app-stat"><div class="n">'+fmtSize(bytes)+'</div><div class="l">总占用空间</div></div>'+
+      '<div class="app-stat"><div class="n">'+relN+'</div><div class="l">含残留文件</div></div>'+
+      '<div class="app-stat"><div class="n">'+runN+'</div><div class="l">正在运行</div></div>';
+  }
+  // Deterministic hue from the app name for the letter-avatar fallback shown
+  // while the real icon loads or when the bundle has no extractable icns.
+  function appHue(name){
+    var h=0;
+    for(var i=0;i<name.length;i++){ h=(h*31+name.charCodeAt(i))>>>0; }
+    return h%360;
+  }
   function renderApps(){
     var el=$("apps-list"); if(!el) return;
     var all=(APPS.data&&APPS.data.apps)||[];
-    var list=appsFiltered();
+    var stats=$("apps-stats"); if(stats) stats.innerHTML=all.length?appsStatsHtml(all):"";
     var meta=$("apps-meta");
     if(meta) meta.textContent=all.length?("共 "+all.length+" 个应用"):"";
+    var list=appsSorted(appsFiltered());
     if(!all.length){ el.innerHTML='<div class="empty">还没有应用数据。</div>'; return; }
     if(!list.length){ el.innerHTML='<div class="empty">没有匹配的应用。</div>'; return; }
-    el.innerHTML=list.map(function(a,i){
+    el.innerHTML=list.map(function(a){
+      var disp=a.name.replace(/\.app$/,"");
       var relN=(a.related||[]).length;
       var relHtml=relN?'<div class="app-rel" hidden>'+a.related.map(function(r){
           return '<div class="app-rel-row">'+esc(r.path)+'<span>'+fmtSize(r.size)+'</span></div>';
         }).join("")+'</div>':'';
-      return '<div class="app-item">'+
-        '<div class="app-row">'+
+      return '<div class="app-item-wrap">'+
+        '<div class="app-item">'+
+          '<span class="app-iconwrap" style="background:hsl('+appHue(disp)+',45%,52%)" aria-hidden="true">'+
+            esc(disp.charAt(0).toUpperCase())+
+            '<img alt="" loading="lazy" src="api/app/icon?name='+encodeURIComponent(a.name)+'" onerror="this.hidden=true">'+
+          '</span>'+
+          '<span class="app-main">'+
+            '<span class="app-name" title="'+esc(a.path)+'">'+esc(disp)+'</span>'+
+            (a.bundle_id?'<span class="app-bundle">'+esc(a.bundle_id)+'</span>':'')+
+          '</span>'+
           (a.running?'<span class="tag tag-manual">运行中</span>':'')+
-          '<span class="app-name" title="'+esc(a.path)+'">'+esc(a.name.replace(/\.app$/,""))+'</span>'+
-          '<span class="app-size">'+fmtSize(a.total_size)+'</span>'+
           (relN?'<span class="app-relcount">残留 '+relN+' 项</span>':'')+
-          '<span class="spacer"></span>'+
+          '<span class="app-size">'+fmtSize(a.total_size)+'</span>'+
           (relN?'<button type="button" class="btn app-rel-btn" style="height:24px;font-size:10px">残留</button>':'')+
           '<button type="button" class="btn danger app-un-btn" data-app="'+esc(a.name)+'"'+
             (a.running?' disabled title="正在运行，退出后才能卸载"':'')+'>卸载</button>'+
@@ -2522,7 +2577,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     el.onclick=function(e){
       var relBtn=e.target.closest(".app-rel-btn");
       if(relBtn){
-        var rel=relBtn.closest(".app-item").querySelector(".app-rel");
+        var rel=relBtn.closest(".app-item-wrap").querySelector(".app-rel");
         if(rel){ rel.hidden=!rel.hidden; relBtn.textContent=rel.hidden?"残留":"收起"; }
         return;
       }
@@ -2564,6 +2619,12 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(si && !si.dataset.bound){
       si.dataset.bound="1";
       si.addEventListener("input",function(e){ APPS.filter=e.target.value.trim(); renderApps(); });
+    }
+    var so=$("apps-sort");
+    if(so && !so.dataset.bound){
+      so.dataset.bound="1";
+      so.value=APPS.sort;
+      so.addEventListener("change",function(e){ APPS.sort=e.target.value; renderApps(); });
     }
     var rs=$("apps-rescan");
     if(rs && !rs.dataset.bound){

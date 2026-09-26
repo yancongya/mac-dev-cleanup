@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
+import plistlib
 import re
 import secrets
 import shutil
@@ -27,7 +29,7 @@ import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "mac_dev_cleanup.py"
@@ -64,6 +66,7 @@ EXEC_HISTORY_CAP = 20
 APPS_STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "apps.json"
 APPS_MUX = threading.Lock()
 APPS_BUILDING = False
+ICON_CACHE_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "icon-cache"
 
 
 def _record_filename(started: float) -> str:
@@ -102,6 +105,46 @@ import mac_dev_cleanup as cleanup  # noqa: E402
 # LOG_DIR/config.json (outside the Skill directory), so a `skilldo update` that
 # rebuilds the Skill directory cannot reset the panel's policy.
 CONFIG_PATH = cleanup.CONFIG_PATH
+
+
+def _app_icon_png(rec: dict) -> Path | None:
+    """Extract an app bundle's icns to a cached PNG via sips.
+
+    Returns the cache path, or None when the bundle/plist/icon is unavailable
+    (the dashboard then falls back to a letter avatar). The cache key is a hash
+    of the bundle path so same-named apps in /Applications and ~/Applications
+    don't collide; the cache refreshes when the icns is newer.
+    """
+    bundle = Path(str(rec.get("path", "")))
+    if not bundle.is_dir():
+        return None
+    try:
+        with (bundle / "Contents" / "Info.plist").open("rb") as fh:
+            info = plistlib.load(fh)
+    except Exception:  # noqa: BLE001 — corrupt plist: fall back to the letter avatar
+        return None
+    if not isinstance(info, dict):
+        return None
+    icon = info.get("CFBundleIconFile") or info.get("CFBundleIconName")
+    if not isinstance(icon, str) or not icon:
+        return None
+    if not icon.endswith(".icns"):
+        icon += ".icns"
+    icns = bundle / "Contents" / "Resources" / icon
+    if not icns.is_file():
+        return None  # asset-catalog-only icons have no standalone icns
+    key = hashlib.md5(str(bundle).encode("utf-8")).hexdigest()
+    try:
+        ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        out = ICON_CACHE_DIR / (key + ".png")
+        if not out.is_file() or out.stat().st_mtime < icns.stat().st_mtime:
+            r = subprocess.run(["/usr/bin/sips", "-s", "format", "png", str(icns),
+                                "--out", str(out)], capture_output=True, timeout=30)
+            if r.returncode != 0 or not out.is_file():
+                return None
+        return out
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def read_json(path: Path, fallback: object) -> object:
@@ -184,6 +227,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/apps":
             self._handle_apps_get()
             return
+        if path == "/api/app/icon":
+            self._handle_app_icon()
+            return
         if path == "/api/trash":
             self._handle_trash_get()
             return
@@ -216,6 +262,32 @@ class Handler(SimpleHTTPRequestHandler):
 
                 threading.Thread(target=worker, daemon=True).start()
         self.send_json(200, {"ok": True, "building": True, "apps": [], "timestamp": ""})
+
+    def _handle_app_icon(self) -> None:
+        """Serve a PNG icon extracted from an installed app bundle.
+
+        The lookup key is the exact app name from apps.json — the bundle path
+        always comes from the scan state, never from the request, so there is
+        no path traversal surface. 404 makes the dashboard use its fallback.
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        name = (qs.get("name") or [""])[0]
+        data = read_json(APPS_STATE_PATH, None)
+        apps = data.get("apps", []) if isinstance(data, dict) else []
+        rec = next((a for a in apps
+                    if isinstance(a, dict) and a.get("name") == name), None)
+        png = _app_icon_png(rec) if rec else None
+        if png is None:
+            self.send_json(404, {"ok": False, "error": "icon unavailable"})
+            return
+        body = png.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_operations_get(self) -> None:
         """Return operation history from the operations directory."""
