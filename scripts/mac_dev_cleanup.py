@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1481,6 +1482,162 @@ def scan_ai_caches() -> dict[Path, Candidate]:
     return candidates
 
 
+# --- Browser profile caches (P1 #9, Mole-parity) ----------------------------
+# ~/Library/Caches/<Browser> is already covered generically by app-cache, but
+# ~/Library/Application Support is pruned wholesale — so the Chromium profile
+# caches living there are invisible without this dedicated pass. Only the
+# exact subdirectories listed below are ever proposed; Service Worker
+# CacheStorage/ScriptCache, Sessions, cookies and everything else are site
+# data and stay untouched. A browser that is running skips its whole group.
+BROWSER_PROFILE_CACHES = ("Application Cache", "Code Cache", "GPUCache",
+                          "DawnCache", "GrShaderCache", "GraphiteDawnCache")
+BROWSER_ROOT_CACHES = ("ShaderCache", "GrShaderCache", "GraphiteDawnCache",
+                       "component_crx_cache", "extensions_crx_cache")
+BROWSER_MODEL_STORES = ("OptGuideOnDeviceModel", "OptGuideOnDeviceClassifierModel",
+                        "optimization_guide_model_store")
+
+BROWSERS: tuple[tuple[str, Path, tuple[str, ...]], ...] = (
+    ("Google Chrome", HOME / "Library/Application Support/Google/Chrome",
+     ("Google Chrome", "Google Chrome Helper")),
+    ("Microsoft Edge", HOME / "Library/Application Support/Microsoft/Edge",
+     ("Microsoft Edge",)),
+    ("Brave", HOME / "Library/Application Support/BraveSoftware/Brave-Browser",
+     ("Brave Browser",)),
+    ("Vivaldi", HOME / "Library/Application Support/Vivaldi", ("Vivaldi",)),
+    ("Arc", HOME / "Library/Application Support/Arc", ("Arc",)),
+)
+FIREFOX_PROFILES_ROOT = HOME / "Library/Application Support/Firefox/Profiles"
+
+
+def _flag_browser_cache_dir(candidates: dict[Path, Candidate], base: Path) -> None:
+    """Flag cache subdirs under one Chromium base dir (root or User Data)."""
+    for sub in BROWSER_ROOT_CACHES:
+        add_path(candidates, base / sub, "browser-cache", "safe",
+                 "browser-profile-cache", skip_prune=True)
+    for sub in BROWSER_MODEL_STORES:
+        add_path(candidates, base / sub, "browser-cache", "aggressive",
+                 "browser-model-store", skip_prune=True)
+    if not base.is_dir():
+        return
+    for profile in base.iterdir():
+        if not profile.is_dir() or profile.is_symlink():
+            continue
+        for sub in BROWSER_PROFILE_CACHES:
+            add_path(candidates, profile / sub, "browser-cache", "safe",
+                     "browser-profile-cache", skip_prune=True)
+        add_path(candidates, profile / "Crashpad" / "completed", "browser-cache",
+                 "safe", "browser-profile-cache", skip_prune=True)
+
+
+def scan_browser_caches() -> dict[Path, Candidate]:
+    """Chromium/Firefox profile caches under Application Support. Safe-tier
+    entries rebuild during normal browsing; on-device model stores may
+    re-download gigabytes, so they are aggressive. Whole browser skipped
+    while its process is running."""
+    candidates: dict[Path, Candidate] = {}
+    for _label, root, processes in BROWSERS:
+        if not root.is_dir():
+            continue
+        if any(process_running_exact(p) for p in processes):
+            continue
+        for base in (root, root / "User Data"):
+            _flag_browser_cache_dir(candidates, base)
+    if not (process_running_exact("firefox") or process_running_exact("Firefox")):
+        if FIREFOX_PROFILES_ROOT.is_dir():
+            for profile in FIREFOX_PROFILES_ROOT.iterdir():
+                add_path(candidates, profile / "cache2", "browser-cache", "safe",
+                         "browser-profile-cache", skip_prune=True)
+    return candidates
+
+
+# --- Installer sweep (P1 #10, Mole installer parity, scoped) ----------------
+# Mole also walks Desktop/Documents/Public/Shared/iCloud; this tool stays in
+# Downloads (the natural install-packet graveyard) to keep the personal-file
+# surface minimal. Depth 2 catches "Downloads/子目录/x.dmg". Always manual.
+INSTALLER_SCAN_ROOT = HOME / "Downloads"
+INSTALLER_EXTS = (".dmg", ".pkg", ".mpkg", ".iso", ".xip")
+INSTALLER_MAX_DEPTH = 2
+INSTALLER_ZIP_MAX_ENTRIES = 50
+INSTALLER_MAX_ITEMS = 100
+
+
+def _zip_has_installer_payload(path: Path) -> bool:
+    """True when the first N zip entries contain an .app/.pkg/.dmg/.xip
+    payload — the Mole installer heuristic, without spawning a subprocess."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()[:INSTALLER_ZIP_MAX_ENTRIES]
+    except (OSError, zipfile.BadZipFile, RuntimeError):
+        return False
+    return any(re.search(r"\.(app|pkg|dmg|xip)(/|$)", name) for name in names)
+
+
+def scan_installers() -> dict[Path, Candidate]:
+    """Leftover installer files in Downloads: .dmg/.pkg/.mpkg/.iso/.xip plus
+    ZIPs whose payload is an app package. Manual risk — these sit in the
+    user's personal folder and are never auto-selected."""
+    if not INSTALLER_SCAN_ROOT.is_dir():
+        return {}
+    hits: list[tuple[int, Path, str]] = []
+    for current, dirs, files in safe_walk(INSTALLER_SCAN_ROOT):
+        depth = len(Path(current).relative_to(INSTALLER_SCAN_ROOT).parts)
+        if depth >= INSTALLER_MAX_DEPTH:
+            dirs[:] = []  # find -maxdepth semantics: stop descending AND stop listing
+            continue
+        base = Path(current)
+        for name in files:
+            path = base / name
+            if path.is_symlink():
+                continue
+            lower = name.lower()
+            if lower.endswith(INSTALLER_EXTS):
+                reason = "installer-package"
+            elif lower.endswith(".zip"):
+                if not _zip_has_installer_payload(path):
+                    continue
+                reason = "installer-zip"
+            else:
+                continue
+            if excluded(path, "installer"):
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            hits.append((size, path, reason))
+    hits.sort(key=lambda item: item[0], reverse=True)
+    candidates: dict[Path, Candidate] = {}
+    for size, path, reason in hits[:INSTALLER_MAX_ITEMS]:
+        candidates[path.resolve()] = Candidate(path.resolve(), size, "installer",
+                                               "manual", reason)
+    return candidates
+
+
+# --- iOS device backup report (P1 #11) ---------------------------------------
+# ~/Library/Application Support/MobileSync/Backup/<UDID> — a full restore
+# point (photos, messages, health data). Read-only inventory: manual risk,
+# quarantine-then-restore is the only removal path, exactly like other
+# "review before touching" categories.
+IOS_BACKUP_ROOT = HOME / "Library/Application Support/MobileSync/Backup"
+
+
+def scan_ios_backups() -> dict[Path, Candidate]:
+    """Read-only inventory of device backups. MobileSync is TCC-protected:
+    without permission the listing raises, and the category degrades to
+    absent instead of aborting the whole scan."""
+    candidates: dict[Path, Candidate] = {}
+    if not IOS_BACKUP_ROOT.is_dir():
+        return candidates
+    try:
+        entries = list(IOS_BACKUP_ROOT.iterdir())
+    except OSError:
+        return candidates
+    for entry in entries:
+        add_path(candidates, entry, "ios-backup", "manual",
+                 "ios-backup", skip_prune=True)
+    return candidates
+
+
 def _norm_token(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
@@ -1648,6 +1805,9 @@ def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
     candidates.update(scan_xcode())
     candidates.update(scan_dev_global())
     candidates.update(scan_ai_caches())
+    candidates.update(scan_browser_caches())
+    candidates.update(scan_installers())
+    candidates.update(scan_ios_backups())
     candidates.update(scan_orphans())
     # large-files runs after the specific passes and skips anything already
     # covered, so big files inside DerivedData/dev caches keep their precise

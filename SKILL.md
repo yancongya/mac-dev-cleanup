@@ -129,15 +129,15 @@ The lesson: the same machine can present a stuck counter in one session and a he
 
 | risk | behavior | examples |
 |---|---|---|
-| `safe` | deleted by `clean-safe` and `clean-aggressive` (with `--apply`) | `__pycache__`, pip/npm/uv cache, playwright temp, project logs, coverage, `app-support-cache`, Xcode/swiftpm caches, Homebrew downloads, pnpm/go stores |
-| `aggressive` | deleted only by `clean-aggressive` (with `--apply`) | `node_modules`, `.venv`, `build`, `dist`, Codex/Trae caches, large app caches/logs, `stale-deps`, `wechat-cache`, `wechat-media`, Xcode DerivedData/DeviceSupport, go mod, conda pkgs, superseded Claude Code versions |
-| `manual` | never auto-deleted; shown in report as "needs review" | screenshots, large dirs, archives, dumps, large personal files, `stale-model`, `app-support-manual`, Xcode Archives & simulator Devices, ollama models, `orphan`, `large-files` |
+| `safe` | deleted by `clean-safe` and `clean-aggressive` (with `--apply`) | `__pycache__`, pip/npm/uv cache, playwright temp, project logs, coverage, `app-support-cache`, Xcode/swiftpm caches, Homebrew downloads, pnpm/go stores, browser profile caches (Code Cache/GPUCache/shader caches, browser not running) |
+| `aggressive` | deleted only by `clean-aggressive` (with `--apply`) | `node_modules`, `.venv`, `build`, `dist`, Codex/Trae caches, large app caches/logs, `stale-deps`, `wechat-cache`, `wechat-media`, Xcode DerivedData/DeviceSupport, go mod, conda pkgs, superseded Claude Code versions, browser on-device AI model stores |
+| `manual` | never auto-deleted; shown in report as "needs review" | screenshots, large dirs, archives, dumps, large personal files, `stale-model`, `app-support-manual`, Xcode Archives & simulator Devices, ollama models, `orphan`, `large-files`, `installer`, `ios-backup` |
 
 Cleaning `aggressive` is not automatically worth it: **updater/runtime caches are deleted and re-downloaded the same day**, so a pass over them costs bandwidth and changes nothing. Field-observed 2026-09-22: an aggressive run removed `~/.cache/codex-runtimes` (1.6G), `hanako-updater` (437M) and `com.google.antigravity` (352M), and all three were back within hours. Spend aggressive effort on build output (`target`, `build`, `dist`, `.venv`, `node_modules`) instead, and leave self-updating runtime caches alone unless space is genuinely critical.
 
 ## Categories recognized
 
-`global-cache`, `app-cache`, `app-log`, `app-support-cache`, `app-support-manual`, `project-generated`, `log-file`, `temp-browser`, `temp-file`, `test-artifact`, `screenshot`, `large-dir`, `large-file`, `large-files`, `stale-deps`, `stale-model`, `wechat-cache`, `wechat-media`, `xcode`, `dev-cache`, `ai-cache`, `orphan`
+`global-cache`, `app-cache`, `app-log`, `app-support-cache`, `app-support-manual`, `project-generated`, `log-file`, `temp-browser`, `temp-file`, `test-artifact`, `screenshot`, `large-dir`, `large-file`, `large-files`, `stale-deps`, `stale-model`, `wechat-cache`, `wechat-media`, `xcode`, `dev-cache`, `ai-cache`, `orphan`, `browser-cache`, `installer`, `ios-backup`
 
 ## P0 expansion (2026-09-27): Xcode / dev caches / AI caches / orphans
 
@@ -152,6 +152,12 @@ Cleaning `aggressive` is not automatically worth it: **updater/runtime caches ar
 - **`large-files`** (read-only inventory, OmniDiskSweeper-style): individual files inside the configured scan roots that are **> 100 MB at any age** (`large-file`) or **> 10 MB untouched for > 12 months** (`old-large-file`). Always `manual` — no clean mode ever auto-selects them; removal happens only via an explicit dashboard checkbox and lands in the restorable quarantine. Files already covered by an earlier pass (inside DerivedData, a dev cache, …) keep the more specific label and are not double-reported; symlinks are never flagged; capped at the 200 largest. Verified first real run: 10 files / 2.1 GB, all genuine targets (`.git` packfiles, `node_modules` binaries, an old font).
 - **System trash management**: `GET /api/trash` now returns `quarantine` + `system` blocks (legacy top-level keys kept). `system` lists `~/.Trash` contents (name/size/mtime, top 100 by size) **excluding** the quarantine dir, which stays restorable. `POST /api/trash/empty-system` requires the literal body `{"confirm": "EMPTY TRASH"}`; by default the quarantine area is preserved (`include_quarantine: true` overrides). This is a real deletion, not quarantine — Trash contents are already discarded data. `~/.Trash` is TCC-protected: when the serving context lacks permission the endpoint degrades to `"available": false` instead of erroring, and the dashboard explains the fix (grant Full Disk Access to the serving context).
 - **Dashboard treemap**: overview gained a squarified treemap of category totals (top 12 + "other"), pure SVG, no new dependencies, theme-aware.
+
+## P1 batch 2 (2026-09-27): browser caches / installer sweep / iOS backups
+
+- **`browser-cache`** (Mole browser parity): Chromium/Firefox profile caches under `~/Library/Application Support` — the one place the wholesale App Support prune made them invisible (`~/Library/Caches/<Browser>` is already covered by `app-cache`). Only exact subdir names are ever proposed: profile-level `Application Cache`/`Code Cache`/`GPUCache`/`DawnCache`/`GrShaderCache`/`GraphiteDawnCache`/`Crashpad/completed`, root-level `ShaderCache`/`component_crx_cache`/`extensions_crx_cache` (safe); Chrome `OptGuideOnDeviceModel`/`OptGuideOnDeviceClassifierModel`/`optimization_guide_model_store` are **aggressive** (may re-download gigabytes). **Service Worker CacheStorage/ScriptCache is never touched** — that is site data, not cache. A browser that is running skips its whole group (`pgrep -x`). Chrome/Edge/Brave/Vivaldi/Arc covered; Edge/Vivaldi share the Chromium layout.
+- **`installer`** (Mole installer parity, scoped): leftover `.dmg/.pkg/.mpkg/.iso/.xip` in `~/Downloads` (depth 2, `find -maxdepth` semantics) plus ZIPs whose first 50 entries contain an `.app/.pkg/.dmg/.xip` payload (pure-Python `zipfile` check, no subprocess). Mole also walks Desktop/Documents/Public/Shared/iCloud — deliberately scoped out to keep the personal-file surface minimal. Always `manual`.
+- **`ios-backup`**: read-only inventory of `~/Library/Application Support/MobileSync/Backup/<UDID>` — a full device restore point, always `manual`. MobileSync is TCC-protected: when the listing raises, the category degrades to absent instead of aborting the scan (same degradation as the web panel's trash API).
 
 ## Tauri / Vite build by-products (config-driven)
 

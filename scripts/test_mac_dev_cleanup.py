@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -827,6 +828,112 @@ class WebTrashStatusTests(unittest.TestCase):
         # literal confirm contract cannot silently drift.
         src = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
         self.assertIn('payload.get("confirm") != "EMPTY TRASH"', src)
+
+
+class P1Batch2Tests(unittest.TestCase):
+    """Browser profile caches / installer sweep / iOS backup report."""
+
+    # -- browser caches -------------------------------------------------------
+    def test_browser_caches_flag_profile_dirs_skip_running_browser(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-browsers-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        chrome = base / "Chrome"
+        (chrome / "Default" / "Code Cache").mkdir(parents=True)
+        (chrome / "Default" / "Service Worker" / "CacheStorage").mkdir(parents=True)
+        (chrome / "OptGuideOnDeviceModel").mkdir()
+        (chrome / "ShaderCache").mkdir()
+        edge = base / "Edge"
+        (edge / "Default" / "GPUCache").mkdir(parents=True)
+        ff = base / "FirefoxProfiles"
+        (ff / "abc123.default" / "cache2").mkdir(parents=True)
+
+        def running(name: str) -> bool:
+            return name == "Google Chrome"  # Chrome is up: skip it entirely
+
+        browsers = (
+            ("Google Chrome", chrome, ("Google Chrome",)),
+            ("Microsoft Edge", edge, ("Microsoft Edge",)),
+        )
+        with patch.object(cleanup, "BROWSERS", browsers), \
+             patch.object(cleanup, "FIREFOX_PROFILES_ROOT", ff), \
+             patch.object(cleanup, "process_running_exact", running):
+            result = cleanup.scan_browser_caches()
+        texts = [str(c.path) for c in result.values()]
+        self.assertFalse(any("Chrome" in t for t in texts))       # running -> skipped
+        self.assertFalse(any("Service Worker" in t for t in texts))  # site data: never
+        self.assertFalse(any("OptGuideOnDeviceModel" in t for t in texts))
+        self.assertIn("safe", {c.risk for c in result.values()})
+        edge_code = next(c for c in result.values() if c.path.name == "GPUCache")
+        self.assertEqual((edge_code.risk, edge_code.reason), ("safe", "browser-profile-cache"))
+        self.assertTrue(any(c.path.name == "cache2" for c in result.values()))  # firefox
+        # model store under a non-running browser is aggressive
+        with patch.object(cleanup, "BROWSERS",
+                          (("Google Chrome", chrome, ("Google Chrome",)),)), \
+             patch.object(cleanup, "FIREFOX_PROFILES_ROOT", ff), \
+             patch.object(cleanup, "process_running_exact", lambda n: False):
+            chrome_result = cleanup.scan_browser_caches()
+        model = next(c for c in chrome_result.values()
+                     if c.path.name == "OptGuideOnDeviceModel")
+        self.assertEqual(model.risk, "aggressive")
+
+    # -- installer sweep ------------------------------------------------------
+    def _make_zip(self, path: Path, names: list[str]) -> None:
+        with zipfile.ZipFile(path, "w") as zf:
+            for n in names:
+                zf.writestr(n, b"x")
+
+    def test_installers_flag_packages_and_payload_zips(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="mdc-inst-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "App.dmg").write_bytes(b"\0" * 2048)
+        (root / "Tool.pkg").write_bytes(b"\0" * 512)
+        (root / "readme.txt").write_bytes(b"hi")
+        self._make_zip(root / "plain.zip", ["docs/readme.txt"])
+        self._make_zip(root / "bundle.zip", ["Foo.app/Contents/MacOS/Foo"])
+        (root / "nested").mkdir()
+        (root / "nested" / "Inner.xip").write_bytes(b"\0" * 128)
+        (root / "deep").mkdir()
+        (root / "deep" / "too-far.dmg").write_bytes(b"\0" * 128)      # depth 2: allowed
+        (root / "deep" / "deeper").mkdir()
+        (root / "deep" / "deeper" / "way-down.dmg").write_bytes(b"\0" * 128)  # depth 3: excluded
+        os.symlink(root / "App.dmg", root / "link.dmg")
+        with patch.object(cleanup, "INSTALLER_SCAN_ROOT", root):
+            result = cleanup.scan_installers()
+        by_name = {c.path.name: c for c in result.values()}
+        self.assertEqual(by_name["App.dmg"].reason, "installer-package")
+        self.assertEqual(by_name["App.dmg"].risk, "manual")
+        self.assertEqual(by_name["bundle.zip"].reason, "installer-zip")
+        self.assertEqual(by_name["Inner.xip"].reason, "installer-package")
+        self.assertIn("too-far.dmg", by_name)  # depth 2 = allowed by find -maxdepth 2
+        for absent in ("way-down.dmg", "plain.zip", "readme.txt", "link.dmg"):
+            self.assertNotIn(absent, by_name)
+
+    # -- iOS backup report ----------------------------------------------------
+    def test_ios_backups_reported_manual(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-ios-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        backup_root = base / "Backup"
+        (backup_root / "udid-aaaa").mkdir(parents=True)
+        (backup_root / "udid-bbbb").mkdir()
+        (backup_root / "udid-aaaa" / "Manifest.db").write_bytes(b"\0" * 256)
+        with patch.object(cleanup, "IOS_BACKUP_ROOT", backup_root):
+            result = cleanup.scan_ios_backups()
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(c.risk == "manual" and c.category == "ios-backup"
+                            for c in result.values()))
+
+    def test_ios_backups_absent_when_no_directory(self) -> None:
+        with patch.object(cleanup, "IOS_BACKUP_ROOT",
+                          Path(tempfile.gettempdir()) / "mdc-no-such-backup"):
+            self.assertEqual(cleanup.scan_ios_backups(), {})
+
+    def test_ios_backups_tcc_denial_degrades_to_empty(self) -> None:
+        # MobileSync is TCC-protected; EACCES on iterdir must not abort a scan.
+        locked = Path(tempfile.mkdtemp(prefix="mdc-ios-locked-"))
+        self.addCleanup(shutil.rmtree, locked, ignore_errors=True)
+        locked.chmod(0o000)
+        with patch.object(cleanup, "IOS_BACKUP_ROOT", locked):
+            self.assertEqual(cleanup.scan_ios_backups(), {})
 
 
 if __name__ == "__main__":

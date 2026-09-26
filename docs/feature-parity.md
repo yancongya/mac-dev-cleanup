@@ -107,9 +107,9 @@
 | 6 | 大文件/旧文件视图 ✅ | OmniDiskSweeper + BuhoCleaner + PureMac | `large-files` 类别已接入：扫 scan_roots，>100MB（`large-file`）或 >12月&>10MB（`old-large-file`），全部 manual 永不自动勾选；跳过已被前序 pass 覆盖的路径与符号链接，上限 200 条按大小排序 | 完成 |
 | 7 | 整个废纸篓管理 ✅ | Mole/PureMac Trash Bins | `GET /api/trash` 返回 quarantine + system 两块（旧字段保留）；system 列 ~/.Trash 顶层项（大小/mtime，top 100）且默认**保留隔离区**；`POST /api/trash/empty-system` 需逐字 `confirm:"EMPTY TRASH"` + token；TCC 无权限时降级 available:false | 完成 |
 | 8 | 磁盘树图 ✅ | DaisyDisk + Mole analyze + Mac Clean Space Lens | overview 加 squarified treemap（纯 SVG，top 12 + 其他），明暗主题适配，无新依赖 | 完成 |
-| 9 | 浏览器缓存补全 | Mole 浏览器 8 款 | 仅部分（Edge 已验证可用） | 对照 Mole 路径清单补 Chrome/Arc/Brave/Vivaldi/Firefox profile 缓存；SW ScriptCache 保留 |
-| 10 | 安装包清扫 | Mole installer | 无 | Downloads 扫 .dmg/.pkg/.iso/.xip + zip 载荷校验 |
-| 11 | iOS 设备备份报告 | Mole/CleanMyMac MobileSync | 无 | ~/Library/Application Support/MobileSync/Backup 只读报告（删除须强确认） |
+| 9 | 浏览器缓存补全 ✅ | Mole 浏览器 8 款 | `browser-cache` 类别已接入：Chrome/Edge/Brave/Vivaldi/Arc profile 缓存（App Support 下的盲区）+ Firefox cache2；仅白名单子目录（Code Cache/GPUCache/着色器缓存等）= safe，Chrome 内置 AI 模型仓 = aggressive；**SW CacheStorage/ScriptCache 永不碰**；浏览器运行中整组跳过 | 完成 |
+| 10 | 安装包清扫 ✅ | Mole installer | `installer` 类别：Downloads 扫 .dmg/.pkg/.mpkg/.iso/.xip（depth 2，find -maxdepth 语义）+ ZIP 载荷校验（纯 Python zipfile，前 50 条目含 .app/.pkg/.dmg/.xip）；Mole 的 Desktop/Documents/Public/iCloud 刻意不碰，全 manual | 完成 |
+| 11 | iOS 设备备份报告 ✅ | Mole/CleanMyMac MobileSync | `ios-backup` 类别：MobileSync/Backup/<UDID> 只读清单，全 manual（整机还原点）；MobileSync 是 TCC 保护目录，无权限时类别降级缺席不中断 scan | 完成 |
 
 ### P2（按需排期）
 | # | 功能 | 来源 | 说明 |
