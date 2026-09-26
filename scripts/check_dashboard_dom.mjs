@@ -89,6 +89,10 @@ ok("默认显示概览视图", visible("#view-overview") && !visible("#view-clea
 ok("英雄区环形图", !!$("#view-overview .donut circle.val"));
 ok("英雄区可清理大数字", ($("#view-overview .hero-big")?.textContent || "").length > 0, $("#view-overview .hero-big")?.textContent);
 ok("三张风险卡片", doc.querySelectorAll("#view-overview .rcard").length === 3, doc.querySelectorAll("#view-overview .rcard").length);
+// --- overview treemap (disk usage by category) ---
+ok("treemap 区块已渲染", !!$("#panel-treemap") && !!$("#pbody-treemap"));
+ok("treemap 至少绘制一个方块", doc.querySelectorAll("#pbody-treemap svg rect.cell").length > 0, doc.querySelectorAll("#pbody-treemap svg rect.cell").length);
+ok("treemap 方块带悬停提示", doc.querySelectorAll("#pbody-treemap svg title").length > 0);
 ok("深度清理候选预览行", doc.querySelectorAll("#ov-rows .ov-row input[data-sel]").length > 0, doc.querySelectorAll("#ov-rows .ov-row").length);
 ok("概览吸底选择栏", !!$("#ov-selbar") && !!$("#ov-cmd-btn"));
 ok("工具自检格子", doc.querySelectorAll(".tool-cell").length > 0);
@@ -115,6 +119,15 @@ ok("应用列表容器存在", !!$("#apps-list"));
 ok("应用重扫按钮存在", !!$("#apps-rescan"));
 ok("应用统计条存在", !!$("#apps-stats"));
 ok("应用排序控件存在", !!$("#apps-sort"));
+
+// --- history view: trash panel (quarantine + system trash sub-sections) ---
+window.location.hash = "history";
+await sleep(80);
+ok("路由切换到历史视图", visible("#view-history") && !visible("#view-apps"));
+ok("清理隔离区区块存在", !!$("#trash-quarantine"));
+ok("系统废纸篓区块存在", !!$("#sys-trash-section"));
+ok("清空系统废纸篓按钮存在", !!$("#empty-system-trash-btn"));
+ok("强确认层默认隐藏", !!$("#sys-trash-confirm") && $("#sys-trash-confirm").hidden === true);
 
 // --- i18n (candidate table lives in the clean view) ---
 const reasonCells = [...doc.querySelectorAll("td.reason")].map((e) => e.textContent);

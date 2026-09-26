@@ -1574,6 +1574,67 @@ def scan_orphans() -> dict[Path, Candidate]:
     return candidates
 
 
+# --- Large/old files (OmniDiskSweeper-style read-only inventory) -----------
+# Individual files inside the configured scan roots that are either big or
+# big-for-their-age. Always manual risk: no clean mode ever auto-selects
+# them, removal happens only through an explicit dashboard checkbox and
+# lands in the quarantine (restorable) like everything else.
+LARGE_FILE_MIN_BYTES = 100 * 1024 * 1024  # >100 MB, any age
+LARGE_FILE_OLD_BYTES = 10 * 1024 * 1024  # >10 MB ...
+LARGE_FILE_OLD_DAYS = 365  # ... untouched for over 12 months
+LARGE_FILE_MAX_ITEMS = 200
+
+
+def scan_large_files(covered: dict[Path, Candidate] | None = None) -> dict[Path, Candidate]:
+    """Flag big or stale files across the scan roots.
+
+    `covered` holds candidates from earlier collect() passes: a file that
+    lives inside (or equals) one of those paths keeps the more specific
+    label (xcode/dev-cache/...) and is not double-reported here.
+    """
+    covered_prefixes = sorted((p.as_posix() for p in covered), reverse=True) if covered else []
+    now = time.time()
+    hits: list[tuple[int, Path, str]] = []
+    for root in PROJECT_ROOTS:
+        if not root.is_dir():
+            continue
+        for current, _dirs, files in safe_walk(root):
+            base = Path(current)
+            for name in files:
+                if name in {".DS_Store", ".localized"}:
+                    continue
+                path = base / name
+                try:
+                    if path.is_symlink():
+                        continue
+                    st = path.lstat()
+                except OSError:
+                    continue
+                size = st.st_size
+                if size > LARGE_FILE_MIN_BYTES:
+                    reason = "large-file"
+                elif (size > LARGE_FILE_OLD_BYTES
+                      and now - st.st_mtime > LARGE_FILE_OLD_DAYS * 86400):
+                    reason = "old-large-file"
+                else:
+                    continue
+                # Covered paths come from earlier passes and are resolved
+                # (dict keys everywhere in this module); /var vs /private/var
+                # on macOS means the raw walk text would never match.
+                text = path.resolve().as_posix()
+                if any(text == c or text.startswith(c + "/") for c in covered_prefixes):
+                    continue
+                if excluded(path, "large-files") or pruned(path, "large-files"):
+                    continue
+                hits.append((size, path, reason))
+    hits.sort(key=lambda item: item[0], reverse=True)
+    candidates: dict[Path, Candidate] = {}
+    for size, path, reason in hits[:LARGE_FILE_MAX_ITEMS]:
+        candidates[path.resolve()] = Candidate(
+            path.resolve(), size, "large-files", "manual", reason)
+    return candidates
+
+
 def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
     candidates: dict[Path, Candidate] = {}
     candidates.update(discover_global())
@@ -1588,6 +1649,10 @@ def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
     candidates.update(scan_dev_global())
     candidates.update(scan_ai_caches())
     candidates.update(scan_orphans())
+    # large-files runs after the specific passes and skips anything already
+    # covered, so big files inside DerivedData/dev caches keep their precise
+    # label. stale still runs last and can only win on uncovered paths.
+    candidates.update(scan_large_files(covered=candidates))
     # stale-project pass runs last so stale-deps/stale-model labels win over
     # generic project-generated/large-file for the same paths (dict.update
     # would otherwise let later passes overwrite the more specific stale tag).

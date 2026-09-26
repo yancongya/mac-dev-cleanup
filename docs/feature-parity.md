@@ -104,9 +104,9 @@
 ### P1（第二批）
 | # | 功能 | 来源 | 现状 | 动作 |
 |---|---|---|---|---|
-| 6 | 大文件/旧文件视图 | OmniDiskSweeper + BuhoCleaner + PureMac | 无 | >100MB 或 >12月&>10MB，只读清单+勾选隔离，永不自动勾选 |
-| 7 | 整个废纸篓管理 | Mole/PureMac Trash Bins | 仅自家隔离区 | 全废纸篓体积展示 + 一键清空（强确认） |
-| 8 | 磁盘树图 | DaisyDisk + Mole analyze + Mac Clean Space Lens | overview 只有分类条 | dashboard 加 treemap（现有分类数据可支撑） |
+| 6 | 大文件/旧文件视图 ✅ | OmniDiskSweeper + BuhoCleaner + PureMac | `large-files` 类别已接入：扫 scan_roots，>100MB（`large-file`）或 >12月&>10MB（`old-large-file`），全部 manual 永不自动勾选；跳过已被前序 pass 覆盖的路径与符号链接，上限 200 条按大小排序 | 完成 |
+| 7 | 整个废纸篓管理 ✅ | Mole/PureMac Trash Bins | `GET /api/trash` 返回 quarantine + system 两块（旧字段保留）；system 列 ~/.Trash 顶层项（大小/mtime，top 100）且默认**保留隔离区**；`POST /api/trash/empty-system` 需逐字 `confirm:"EMPTY TRASH"` + token；TCC 无权限时降级 available:false | 完成 |
+| 8 | 磁盘树图 ✅ | DaisyDisk + Mole analyze + Mac Clean Space Lens | overview 加 squarified treemap（纯 SVG，top 12 + 其他），明暗主题适配，无新依赖 | 完成 |
 | 9 | 浏览器缓存补全 | Mole 浏览器 8 款 | 仅部分（Edge 已验证可用） | 对照 Mole 路径清单补 Chrome/Arc/Brave/Vivaldi/Firefox profile 缓存；SW ScriptCache 保留 |
 | 10 | 安装包清扫 | Mole installer | 无 | Downloads 扫 .dmg/.pkg/.iso/.xip + zip 载荷校验 |
 | 11 | iOS 设备备份报告 | Mole/CleanMyMac MobileSync | 无 | ~/Library/Application Support/MobileSync/Backup 只读报告（删除须强确认） |

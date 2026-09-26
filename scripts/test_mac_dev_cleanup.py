@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import mac_dev_cleanup as cleanup
+import web_server
 
 
 class ConfigTests(unittest.TestCase):
@@ -711,6 +712,121 @@ class P0CategoryScanTests(unittest.TestCase):
         flagged = sorted(c.path.name for c in result.values())
         self.assertEqual(flagged, ["1.0.10", "1.0.9"])  # lexicographic; 1.1.0 (newest) kept
         self.assertTrue(all(c.risk == "aggressive" for c in result.values()))
+
+
+class P1LargeFileTests(unittest.TestCase):
+    def _make_file(self, root: Path, name: str, size: int, age_days: float = 0) -> Path:
+        path = root / name
+        path.write_bytes(b"\0" * size)
+        if age_days:
+            stamp = time.time() - age_days * 86400
+            os.utime(path, (stamp, stamp))
+        return path
+
+    def _scan(self, root: Path, **overrides: object) -> dict:
+        patches = {"PROJECT_ROOTS": [root], "LARGE_FILE_MIN_BYTES": 1024,
+                   "LARGE_FILE_OLD_BYTES": 512, "LARGE_FILE_OLD_DAYS": 365}
+        patches.update(overrides)
+        with patch.multiple(cleanup, **patches):  # type: ignore[arg-type]
+            return cleanup.scan_large_files()
+
+    def test_large_files_flag_big_and_old_only(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="mdc-large-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self._make_file(root, "big.bin", 2048)                       # >1KB, new -> large-file
+        self._make_file(root, "old.bin", 600, age_days=400)          # >512B, old -> old-large-file
+        self._make_file(root, "small-new.bin", 600)                  # >512B but fresh -> skip
+        self._make_file(root, "tiny.bin", 100)                       # below both bars -> skip
+        link = root / "symlink.bin"
+        os.symlink(root / "big.bin", link)                           # symlinks never flagged
+        (root / ".DS_Store").write_bytes(b"\0" * 4096)               # noise file -> skip
+        result = self._scan(root)
+        by_reason = {}
+        for c in result.values():
+            by_reason.setdefault(c.reason, []).append(c.path.name)
+        self.assertEqual(sorted(by_reason.get("large-file", [])), ["big.bin"])
+        self.assertEqual(by_reason.get("old-large-file"), ["old.bin"])
+        self.assertTrue(all(c.risk == "manual" for c in result.values()))
+        self.assertTrue(all(c.category == "large-files" for c in result.values()))
+
+    def test_large_files_skip_paths_covered_by_earlier_passes(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="mdc-large-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        covered_dir = root / "DerivedData"
+        covered_dir.mkdir()
+        self._make_file(covered_dir, "inside.bin", 2048)
+        self._make_file(root, "outside.bin", 2048)
+        covered = {covered_dir.resolve(): cleanup.Candidate(
+            covered_dir.resolve(), 1, "xcode", "safe", "test")}
+        patches = {"PROJECT_ROOTS": [root], "LARGE_FILE_MIN_BYTES": 1024,
+                   "LARGE_FILE_OLD_BYTES": 512, "LARGE_FILE_OLD_DAYS": 365}
+        with patch.multiple(cleanup, **patches):  # type: ignore[arg-type]
+            result = cleanup.scan_large_files(covered=covered)
+        self.assertEqual([c.path.name for c in result.values()], ["outside.bin"])
+
+    def test_large_files_respect_item_cap(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="mdc-large-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for i in range(5):
+            self._make_file(root, f"f{i}.bin", 2048)
+        result = self._scan(root, LARGE_FILE_MAX_ITEMS=3)
+        self.assertEqual(len(result), 3)
+
+
+class WebTrashStatusTests(unittest.TestCase):
+    """collect_trash_status: quarantine + system blocks, TCC degradation."""
+
+    def _make_trash(self, entries: dict[str, int]) -> tuple[Path, Path]:
+        base = Path(tempfile.mkdtemp(prefix="mdc-webtrash-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        trash = base / "Trash"
+        quarantine = trash / "mac-dev-cleanup"
+        quarantine.mkdir(parents=True)
+        (quarantine / "op1").mkdir()
+        (quarantine / "op1" / "f.bin").write_bytes(b"\0" * 4096)
+        for name, size in entries.items():
+            p = trash / name
+            p.mkdir()
+            (p / "data.bin").write_bytes(b"\0" * size)
+        return trash, quarantine
+
+    def test_system_block_excludes_quarantine_and_sums_sizes(self) -> None:
+        trash, quarantine = self._make_trash({"BigDir": 8192, "SmallDir": 1024})
+        with patch.object(web_server, "TRASH_DIR", trash), \
+             patch.object(web_server, "QUARANTINE_DIR", quarantine):
+            status = web_server.collect_trash_status()
+        self.assertTrue(status["system"]["available"])
+        self.assertEqual(status["system"]["count"], 2)
+        self.assertEqual(status["system"]["total_bytes"], 9216)
+        self.assertEqual(status["system"]["items"][0]["name"], "BigDir")  # size desc
+        self.assertEqual(status["quarantine"]["total_bytes"], 4096)
+        self.assertNotIn("mac-dev-cleanup", [i["name"] for i in status["system"]["items"]])
+        self.assertEqual(status["grand_total_bytes"], 9216 + 4096)
+        # legacy top-level keys survive
+        self.assertEqual(status["total_bytes"], 4096)
+
+    def test_permission_denied_degrades_to_unavailable(self) -> None:
+        trash, _quarantine = self._make_trash({"Dir": 1024})
+        # Standalone quarantine outside ~/.Trash: proves the blocks degrade
+        # independently (in production it lives inside the Trash and dies with it).
+        standalone_q = trash.parent / "quarantine"
+        (standalone_q / "op1").mkdir(parents=True)
+        (standalone_q / "op1" / "f.bin").write_bytes(b"\0" * 2048)
+        trash.chmod(0o000)  # simulate TCC denial on ~/.Trash
+        self.addCleanup(trash.chmod, 0o755)
+        with patch.object(web_server, "TRASH_DIR", trash), \
+             patch.object(web_server, "QUARANTINE_DIR", standalone_q):
+            status = web_server.collect_trash_status()
+        self.assertFalse(status["system"]["available"])
+        self.assertEqual(status["system"]["items"], [])
+        self.assertTrue(status["quarantine"]["available"])  # separate block unaffected
+        self.assertEqual(status["quarantine"]["total_bytes"], 2048)
+
+    def test_empty_system_requires_exact_confirm_string(self) -> None:
+        # The gate lives in the handler; verified via regex on source so the
+        # literal confirm contract cannot silently drift.
+        src = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
+        self.assertIn('payload.get("confirm") != "EMPTY TRASH"', src)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "state.json"
 OPERATIONS_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "operations"
 EXEC_LOG_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "exec-logs"
 QUARANTINE_DIR = Path.home() / ".Trash" / "mac-dev-cleanup"
+TRASH_DIR = Path.home() / ".Trash"
 MAX_BODY = 256 * 1024
 SCAN_LOCK = threading.Lock()
 
@@ -152,6 +153,63 @@ def read_json(path: Path, fallback: object) -> object:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return fallback
+
+
+def collect_trash_status() -> dict:
+    """Read-only inventory of the quarantine area and the system Trash.
+
+    ~/.Trash is TCC-protected: a server started from a context without
+    Files-and-Folders/Full Disk Access gets PermissionError on iterdir.
+    That must degrade to available:false instead of a 500 — the quarantine
+    block is best-effort too and reported separately.
+    """
+    quarantine: dict = {"total_bytes": 0, "operations": [], "available": True}
+    try:
+        if QUARANTINE_DIR.is_dir():
+            for d in sorted(QUARANTINE_DIR.iterdir()):
+                if d.is_dir():
+                    dir_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                    quarantine["operations"].append({"operation_id": d.name, "bytes": dir_bytes})
+                    quarantine["total_bytes"] += dir_bytes
+    except OSError:
+        quarantine = {"total_bytes": 0, "operations": [], "available": False}
+
+    system: dict = {"total_bytes": 0, "count": 0, "items": [], "available": True}
+    try:
+        items: list[dict] = []
+        if TRASH_DIR.is_dir():
+            for entry in TRASH_DIR.iterdir():
+                if entry.name == QUARANTINE_DIR.name:
+                    continue  # reported separately above, restorable
+                is_dir = entry.is_dir()
+                mtime = 0
+                try:
+                    st = entry.stat()
+                    mtime = int(st.st_mtime)
+                    if is_dir:
+                        item_bytes = sum(f.stat().st_size for f in entry.rglob("*")
+                                         if f.is_file())
+                    else:
+                        item_bytes = st.st_size
+                except OSError:
+                    item_bytes = 0
+                items.append({"name": entry.name, "path": str(entry),
+                              "bytes": item_bytes, "is_dir": is_dir,
+                              "mtime": mtime})
+        system["count"] = len(items)
+        system["total_bytes"] = sum(i["bytes"] for i in items)
+        items.sort(key=lambda i: i["bytes"], reverse=True)
+        system["items"] = items[:100]
+    except OSError:
+        system = {"total_bytes": 0, "count": 0, "items": [], "available": False}
+    return {
+        # Legacy top-level keys (quarantine only) kept for compatibility.
+        "total_bytes": quarantine["total_bytes"],
+        "operations": quarantine["operations"],
+        "quarantine": quarantine,
+        "system": system,
+        "grand_total_bytes": quarantine["total_bytes"] + system["total_bytes"],
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -311,16 +369,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_json(200, {"operations": ops})
 
     def _handle_trash_get(self) -> None:
-        """Return quarantine trash status and size."""
-        total_bytes = 0
-        op_dirs = []
-        if QUARANTINE_DIR.is_dir():
-            for d in sorted(QUARANTINE_DIR.iterdir()):
-                if d.is_dir():
-                    dir_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                    op_dirs.append({"operation_id": d.name, "bytes": dir_bytes})
-                    total_bytes += dir_bytes
-        self.send_json(200, {"total_bytes": total_bytes, "operations": op_dirs})
+        """Quarantine status plus a read-only inventory of the system Trash."""
+        self.send_json(200, collect_trash_status())
 
     def _authorized(self) -> bool:
         if self.headers.get("X-MDC-Token") != API_TOKEN:
@@ -370,6 +420,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/trash/clear":
             self._handle_trash_clear()
+            return
+        if path == "/api/trash/empty-system":
+            self._handle_trash_empty_system(payload if isinstance(payload, dict) else {})
             return
         if path == "/api/clean":
             self._handle_clean(payload if isinstance(payload, dict) else {})
@@ -525,6 +578,57 @@ class Handler(SimpleHTTPRequestHandler):
                     deleted += 1
                     freed += dir_bytes
         self.send_json(200, {"ok": True, "deleted": deleted, "freed_bytes": freed})
+
+    def _handle_trash_empty_system(self, payload: dict) -> None:
+        """Empty the system Trash (~/.Trash), minus the quarantine directory
+        unless the caller explicitly asks to include it.
+
+        Gated twice: the API token plus a literal confirmation string the UI
+        must echo ("EMPTY TRASH") — no accidental single-click wipes. This is
+        a real deletion (not quarantine): Trash contents are already discarded
+        data, and moving them to our quarantine inside the same Trash would be
+        circular. Individual item failures are skipped and reported.
+        """
+        if payload.get("confirm") != "EMPTY TRASH":
+            self.send_json(400, {"ok": False,
+                                 "error": "confirm must be the exact string 'EMPTY TRASH'"})
+            return
+        include_quarantine = payload.get("include_quarantine", False) is True
+        if not TRASH_DIR.is_dir():
+            self.send_json(200, {"ok": True, "deleted": 0, "freed_bytes": 0,
+                                 "failed": 0})
+            return
+        try:
+            entries = list(TRASH_DIR.iterdir())
+        except OSError as exc:
+            self.send_json(503, {"ok": False,
+                                 "error": f"cannot read Trash (macOS permission?): {exc}"})
+            return
+        deleted = 0
+        freed = 0
+        failed = 0
+        for entry in entries:
+            if entry.name == QUARANTINE_DIR.name and not include_quarantine:
+                continue
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    item_bytes = sum(f.stat().st_size for f in entry.rglob("*")
+                                     if f.is_file())
+                    shutil.rmtree(entry)
+                else:
+                    item_bytes = entry.stat().st_size
+                    entry.unlink()
+            except OSError:
+                failed += 1
+                continue
+            if not entry.exists():
+                deleted += 1
+                freed += item_bytes
+            else:
+                failed += 1
+        self.send_json(200, {"ok": True, "deleted": deleted,
+                             "freed_bytes": freed, "failed": failed,
+                             "quarantine_preserved": not include_quarantine})
 
 
 class LoopbackServer(ThreadingHTTPServer):

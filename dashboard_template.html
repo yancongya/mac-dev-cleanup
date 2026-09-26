@@ -550,6 +550,35 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
 .copyable:hover{color:var(--text); background:var(--row-hover)}
 .chip .n{opacity:.65; margin-left:5px; font-variant-numeric:tabular-nums}
 
+/* treemap (overview: disk usage share by category) */
+.treemap svg{width:100%;height:auto;display:block}
+.treemap rect.cell{stroke:var(--panel);stroke-width:1}
+.treemap text{pointer-events:none;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+.treemap .tm-name{font-size:12px;font-weight:600;fill:var(--text)}
+.treemap .tm-size{font-size:10px;fill:var(--text);opacity:.75}
+.treemap-empty{padding:24px;text-align:center;color:var(--subtle);font-size:13px}
+
+/* trash panel: quarantine + system trash sub-sections */
+.trash-sub{padding:14px 16px;border-bottom:1px solid var(--border)}
+.trash-sub:last-of-type{border-bottom:none}
+.trash-sub-head{font-size:12px;font-weight:600;margin-bottom:10px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.trash-sub-head .note{font-size:11px;color:var(--subtle);font-weight:400}
+.sys-list{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);margin-top:10px}
+.sys-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:12px}
+.sys-item:last-child{border-bottom:none}
+.sys-item:hover{background:var(--row-hover)}
+.sys-item .si-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--muted)}
+.sys-item .si-size{font-variant-numeric:tabular-nums;font-weight:600;flex:0 0 auto}
+.sys-item .si-time{color:var(--subtle);font-size:11px;flex:0 0 auto;font-family:ui-monospace,monospace}
+/* strong-confirm modal (empty system trash) */
+.modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:90;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-mask[hidden]{display:none}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);max-width:420px;width:100%;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+.modal h3{margin:0 0 10px;font-size:15px}
+.modal p{margin:0 0 8px;font-size:13px;color:var(--muted);line-height:1.6}
+.modal .modal-note{color:var(--amber);font-size:12px}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+
 /* boot fallback */
 #boot-error{display:none;text-align:center;padding:64px 16px}
 #boot-error.show{display:block}
@@ -757,7 +786,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     safe:"安全", aggressive:"谨慎", manual:"待确认", "global-cache":"全局缓存", "app-cache":"应用缓存",
     "app-log":"应用日志", "project-generated":"项目生成物", "log-file":"日志", "temp-browser":"浏览器临时",
     "temp-file":"临时文件", "test-artifact":"测试产物", "screenshot":"截图", "large-dir":"大目录",
-    "large-file":"大文件", "stale-deps":"闲置依赖", "stale-model":"闲置模型",
+    "large-file":"大文件", "large-files":"大文件", "stale-deps":"闲置依赖", "stale-model":"闲置模型",
     "wechat-cache":"微信缓存", "wechat-media":"微信过期媒体",
     "xcode":"Xcode 产物", "dev-cache":"开发缓存", "ai-cache":"AI 工具缓存", "orphan":"孤立残留",
     "app-support-cache":"应用白名单缓存", "app-support-manual":"应用用户数据",
@@ -824,6 +853,9 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     [/^Large archive in (.+) \((.+)M\): (.+)$/, "大型压缩包（$1 / $2M）：$3"],
     [/^Large directory in (.+) \((.+)M\): (.+)$/, "大目录（$1 / $2M）：$3"],
     [/^Large file in (.+) \((.+)M\): (.+)$/, "大文件（$1 / $2M）：$3"],
+    /* large-files category (CLI emits bare reason keys) */
+    [/^large-file$/, "超过 100 MB 的大文件"],
+    [/^old-large-file$/, "超过 12 个月未用且大于 10 MB"],
     [/^Apple Photos library; personal media, do not auto-delete$/, "Apple 照片图库：个人媒体，不会自动删除"],
     [/^WeChat applet runtime cache \(radium\); rebuilt on demand$/, "微信小程序运行时缓存（radium），按需重建"],
     [/^WeChat runtime logs; no user data$/, "微信运行日志，不含用户数据"],
@@ -931,7 +963,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   // ---- unified collapsible panels ----
   // Collapse state is remembered across sessions via localStorage.
-  var PANEL_DEFAULTS = { summary:true, risk:true, cat:true, tools:true,
+  var PANEL_DEFAULTS = { summary:true, risk:true, cat:true, treemap:true, tools:true,
     disk:true, table:true, cleanup:true, exechist:true, ops:true, settings:true };
   var PANELS = Object.assign({}, PANEL_DEFAULTS);
   // .v2: 2026-09-24 — all panels default expanded; bumping the key discards
@@ -1392,6 +1424,104 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       return '<div class="card">'+listRows+'</div>';
     }
     return '<div class="cr-single">'+compactItems+'</div>';
+  }
+
+  // ---- overview treemap: disk usage share by category ----
+  // Aggregated from candidates (never DATA.by_category) per the dashboard
+  // contract; size -1 / <=0 means unknown and is skipped.
+  function treemapData(){
+    var byCat={}, cnt={};
+    (DATA.candidates||[]).forEach(function(c){
+      var s=fmt(c.size);
+      if(s<=0) return;
+      var k=c.category||"other";
+      byCat[k]=(byCat[k]||0)+s;
+      cnt[k]=(cnt[k]||0)+1;
+    });
+    var keys=Object.keys(byCat).sort(function(a,b){ return byCat[b]-byCat[a]; });
+    if(!keys.length) return {items:[]};
+    var items=keys.slice(0,12).map(function(k){
+      return {key:k, label:zh(k), bytes:byCat[k], count:cnt[k]};
+    });
+    var restBytes=0, restCnt=0;
+    keys.slice(12).forEach(function(k){ restBytes+=byCat[k]; restCnt+=cnt[k]; });
+    if(restBytes>0) items.push({key:"__other__", label:"其他", bytes:restBytes, count:restCnt});
+    return {items:items};
+  }
+  // Squarified treemap layout (Bruls et al.): values must be sorted desc.
+  // Returns [{x,y,w,h}] in the given rect coordinates.
+  function squarify(values, x, y, w, h){
+    var rects=[];
+    var total=0; values.forEach(function(v){ total+=v; });
+    if(total<=0 || w<=0 || h<=0 || !values.length) return rects;
+    var scale=(w*h)/total;
+    var vals=values.map(function(v){ return Math.max(0, v*scale); });
+    var i=0, guard=0;
+    function worst(row, side){
+      var sum=0; row.forEach(function(a){ sum+=a; });
+      var t=sum/side;
+      var worstR=0;
+      row.forEach(function(a){
+        var len=a/t;
+        var r=Math.max(t/len, len/t);
+        if(r>worstR) worstR=r;
+      });
+      return worstR;
+    }
+    var cx=x, cy=y, cw=w, ch=h;
+    while(i<vals.length && guard++<500){
+      // lay the row along the longer remaining side (horizontal strip on top
+      // when the rect is at least as wide as tall) — keeps cells near-square
+      var horiz = cw >= ch;
+      var side = horiz ? cw : ch;
+      if(side<=0) break;
+      var row=[vals[i]]; i++;
+      var best=worst(row, side);
+      while(i<vals.length){
+        var r2=worst(row.concat([vals[i]]), side);
+        if(r2<=best){ row.push(vals[i]); best=r2; i++; }
+        else break;
+      }
+      var sum=0; row.forEach(function(a){ sum+=a; });
+      var t=Math.min(sum/side, horiz?ch:cw);  // clamp float overflow
+      var off=0;
+      row.forEach(function(a){
+        var len=a/t;
+        if(horiz){ rects.push({x:cx+off, y:cy, w:len, h:t}); }
+        else { rects.push({x:cx, y:cy+off, w:t, h:len}); }
+        off+=len;
+      });
+      if(horiz){ cy+=t; ch-=t; }
+      else { cx+=t; cw-=t; }
+    }
+    return rects;
+  }
+  function renderTreemapInner(){
+    var d=treemapData();
+    if(!d.items.length) return '<div class="treemap-empty">暂无可视化的类别数据</div>';
+    var rects=squarify(d.items.map(function(it){ return it.bytes; }), 0, 0, 640, 320);
+    // color-mix over --panel keeps labels readable in both themes:
+    // light theme → pastel block + dark text; dark theme → deep block + light text
+    var cells=d.items.map(function(it, i){
+      var r=rects[i];
+      if(!r || r.w<=0 || r.h<=0) return "";
+      var color=CAT_COLORS[i % CAT_COLORS.length];
+      var title='<title>'+esc(it.label+' · '+fmtSize(it.bytes)+' · '+it.count+' 个路径')+'</title>';
+      var txt='';
+      if(r.w>=52 && r.h>=34){
+        txt='<text class="tm-name" x="'+(r.x+6).toFixed(1)+'" y="'+(r.y+16).toFixed(1)+'">'+esc(it.label)+'</text>'+
+            '<text class="tm-size" x="'+(r.x+6).toFixed(1)+'" y="'+(r.y+30).toFixed(1)+'">'+esc(fmtSize(it.bytes))+'</text>';
+      } else if(r.w>=36 && r.h>=18){
+        txt='<text class="tm-name" x="'+(r.x+5).toFixed(1)+'" y="'+(r.y+13).toFixed(1)+'">'+esc(it.label)+'</text>';
+      }
+      return '<g>'+title+
+        '<rect class="cell" x="'+r.x.toFixed(1)+'" y="'+r.y.toFixed(1)+'" width="'+r.w.toFixed(1)+'" height="'+r.h.toFixed(1)+'" rx="3" '+
+        'style="fill:color-mix(in srgb, '+color+' 45%, var(--panel))"></rect>'+
+        txt+'</g>';
+    }).join("");
+    return '<div class="treemap">'+
+      '<svg viewBox="0 0 640 320" preserveAspectRatio="xMidYMid meet" role="img" aria-label="按类别的磁盘占用占比图">'+cells+'</svg>'+
+    '</div>';
   }
 
   var TOOL_INSTALL = {
@@ -2107,39 +2237,147 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       });
   }
 
+  // Trash data: the backend nests quarantine under TRASH.quarantine (legacy
+  // top-level fields kept) and adds TRASH.system for ~/.Trash contents.
+  function quarantineTrash(){
+    return TRASH.quarantine || TRASH;
+  }
   function renderTrashPanelInner(){
-    return '<div id="trash-panel"><div class="empty">加载中…</div></div>';
+    return '<div class="trash-sub">'+
+        '<div class="trash-sub-head">清理隔离区<span class="note">本工具的清理记录 · 可在操作历史中还原</span></div>'+
+        '<div id="trash-quarantine"><div class="empty">加载中…</div></div>'+
+      '</div>'+
+      '<div class="trash-sub" id="sys-trash-section">'+
+        '<div class="trash-sub-head">系统废纸篓<span class="note">~/.Trash 中未被本工具管理的文件</span></div>'+
+        '<div id="sys-trash"><div class="empty">加载中…</div></div>'+
+      '</div>'+
+      // strong-confirm layer — opened by 清空系统废纸篓, request only fires on 确认清空
+      '<div class="modal-mask" id="sys-trash-confirm" hidden>'+
+        '<div class="modal" role="dialog" aria-modal="true" aria-label="确认清空系统废纸篓">'+
+          '<h3>确认清空系统废纸篓？</h3>'+
+          '<p id="sys-trash-confirm-text"></p>'+
+          '<p class="modal-note">默认保留 mac-dev-cleanup 隔离区（可恢复的清理记录）。</p>'+
+          '<div class="modal-actions">'+
+            '<button type="button" class="btn" id="sys-trash-cancel-btn">取消</button>'+
+            '<button type="button" class="btn danger" id="sys-trash-confirm-btn">确认清空</button>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
   }
   function renderTrashPanel(){
-    var el=$("trash-panel"); if(!el) return;
+    var qEl=$("trash-quarantine"), sysEl=$("sys-trash");
+    if(!qEl && !sysEl) return;
     if(!state.apiOnline){
-      el.innerHTML='<div class="empty">需通过本地服务打开才能读取隔离区状态</div>';
+      if(qEl) qEl.innerHTML='<div class="empty">需通过本地服务打开才能读取隔离区状态</div>';
+      renderSystemTrash(null);
       return;
     }
-    if(!TRASH.total_bytes){
-      el.innerHTML='<div class="empty">隔离区为空，无待还原的清理产物</div>';
+    var q=quarantineTrash();
+    if(qEl){
+      if(!q.total_bytes){
+        qEl.innerHTML='<div class="empty">隔离区为空，无待还原的清理产物</div>';
+      } else {
+        qEl.innerHTML='<div class="disk-compact">'+
+          '<div class="dc-metric"><div class="dc-val">'+fmtSize(q.total_bytes)+'</div><div class="dc-lbl">占用</div></div>'+
+          '<div class="dc-metric"><div class="dc-val">'+(q.operations||[]).length+'</div><div class="dc-lbl">操作目录</div></div>'+
+          '<div class="dc-bar"><span style="width:100%;background:var(--bar)"></span></div>'+
+          '<button class="btn" id="clear-trash-btn">清空废纸篓</button>'+
+        '</div>';
+        var btn=$("clear-trash-btn"); if(btn) btn.addEventListener("click",clearTrash);
+      }
+    }
+    renderSystemTrash(TRASH.system||null);
+  }
+  function renderSystemTrash(sys){
+    var el=$("sys-trash"); if(!el) return;
+    if(!state.apiOnline){
+      el.innerHTML='<div class="empty">需通过本地服务打开才能读取系统废纸篓</div>'+
+        '<div class="sys-trash-actions"><button type="button" class="btn danger" id="empty-system-trash-btn" disabled title="需通过本地服务打开">清空系统废纸篓</button></div>';
+      return;
+    }
+    var items=(sys && sys.items)||[];
+    if(sys && sys.available===false){
+      el.innerHTML='<div class="empty">macOS 未授权读取 ~/.Trash —— 给当前启动环境（终端/自动化）授予「完全磁盘访问」后重启服务即可</div>'+
+        '<div class="sys-trash-actions"><button type="button" class="btn danger" id="empty-system-trash-btn" disabled title="读取被 macOS 权限阻止">清空系统废纸篓</button></div>';
+      return;
+    }
+    if(!items.length){
+      el.innerHTML='<div class="empty">'+(sys ? '系统废纸篓是空的' : '暂无系统废纸篓数据（后端未提供）')+'</div>';
       return;
     }
     el.innerHTML='<div class="disk-compact">'+
-      '<div class="dc-metric"><div class="dc-val">'+fmtSize(TRASH.total_bytes)+'</div><div class="dc-lbl">占用</div></div>'+
-      '<div class="dc-metric"><div class="dc-val">'+TRASH.operations.length+'</div><div class="dc-lbl">操作目录</div></div>'+
-      '<div class="dc-bar"><span style="width:100%;background:var(--bar)"></span></div>'+
-      '<button class="btn" id="clear-trash-btn">清空废纸篓</button>'+
-    '</div>';
-    var btn=$("clear-trash-btn"); if(btn) btn.addEventListener("click",clearTrash);
+        '<div class="dc-metric"><div class="dc-val">'+fmtSize(sys.total_bytes)+'</div><div class="dc-lbl">占用</div></div>'+
+        '<div class="dc-metric"><div class="dc-val">'+(sys.count!=null?sys.count:items.length)+'</div><div class="dc-lbl">项目</div></div>'+
+        '<div class="dc-bar"><span style="width:100%;background:var(--bar)"></span></div>'+
+        '<button type="button" class="btn danger" id="empty-system-trash-btn">清空系统废纸篓</button>'+
+      '</div>'+
+      '<div class="sys-list">'+items.map(function(it){
+        return '<div class="sys-item">'+
+          '<span class="si-name" title="'+esc(it.path||it.name)+'">'+esc(it.name)+'</span>'+
+          '<span class="si-size">'+fmtSize(it.bytes)+'</span>'+
+          '<span class="si-time">'+(it.mtime?fmtWhen(it.mtime):'')+'</span>'+
+        '</div>';
+      }).join("")+'</div>';
+    var btn=$("empty-system-trash-btn");
+    if(btn) btn.addEventListener("click", openSystemTrashConfirm);
+  }
+  function openSystemTrashConfirm(){
+    var sys=TRASH.system; if(!sys || !state.apiOnline) return;
+    var n=sys.count!=null ? sys.count : (sys.items||[]).length;
+    var t=$("sys-trash-confirm-text");
+    if(t) t.textContent='即将永久删除系统废纸篓中的 '+n+' 个项目（共 '+fmtSize(sys.total_bytes)+'），此操作不可恢复。';
+    var mask=$("sys-trash-confirm"); if(mask) mask.hidden=false;
+  }
+  function hideSystemTrashConfirm(){
+    var mask=$("sys-trash-confirm"); if(mask) mask.hidden=true;
+  }
+  function bindTrashConfirm(){
+    var mask=$("sys-trash-confirm"); if(!mask) return;
+    var cancel=$("sys-trash-cancel-btn");
+    if(cancel) cancel.addEventListener("click", hideSystemTrashConfirm);
+    mask.addEventListener("click", function(e){ if(e.target===mask) hideSystemTrashConfirm(); });
+    var confirm=$("sys-trash-confirm-btn");
+    if(confirm) confirm.addEventListener("click", emptySystemTrash);
+  }
+  // POST /api/trash/empty-system — the literal confirm string is required by
+  // the backend (anything else gets a 400); quarantine is kept by default.
+  function emptySystemTrash(){
+    var btn=$("sys-trash-confirm-btn");
+    if(btn){ btn.disabled=true; btn.textContent="清空中…"; }
+    fetch("api/trash/empty-system",{method:"POST",headers:postHeaders(),
+        body:JSON.stringify({confirm:"EMPTY TRASH"})})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        hideSystemTrashConfirm();
+        if(btn){ btn.disabled=false; btn.textContent="确认清空"; }
+        if(j.ok){
+          toast("已清空 "+(j.deleted||0)+" 个项目，释放 "+fmtSize(j.freed_bytes||0),"ok");
+          loadTrash();
+        } else {
+          toast("清空失败："+(j.error||""),"err");
+        }
+      })
+      .catch(function(){
+        hideSystemTrashConfirm();
+        if(btn){ btn.disabled=false; btn.textContent="确认清空"; }
+        toast("网络错误","err");
+      });
   }
 
   function renderTrash(){
-    var el=$("trash-info"); if(!el) return;
-    if(!state.apiOnline) return;  // Keep placeholder until API loads
-    if(!TRASH.total_bytes){
-      el.innerHTML='<span class="lbl">隔离区</span><span class="val c-slate" style="font-size:16px">0</span><span class="sub">无隔离文件</span>';
-      renderTrashPanel();
-      return;
+    // #trash-info (overview summary cell) is optional — the history-view panel
+    // must render regardless of whether that cell exists.
+    var el=$("trash-info");
+    var q=quarantineTrash();
+    if(el && state.apiOnline){
+      if(!q.total_bytes){
+        el.innerHTML='<span class="lbl">隔离区</span><span class="val c-slate" style="font-size:16px">0</span><span class="sub">无隔离文件</span>';
+      } else {
+        el.innerHTML='<span class="lbl">隔离区</span>'+
+          '<span class="val c-slate" style="font-size:16px">'+fmtSize(q.total_bytes)+'</span>'+
+          '<span class="sub">'+(q.operations||[]).length+' 个操作目录</span>';
+      }
     }
-    el.innerHTML='<span class="lbl">隔离区</span>'+
-      '<span class="val c-slate" style="font-size:16px">'+fmtSize(TRASH.total_bytes)+'</span>'+
-      '<span class="sub">'+TRASH.operations.length+' 个操作目录</span>';
     renderTrashPanel();
   }
 
@@ -2315,6 +2553,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<div class="view" id="view-overview">'+
         renderOverview() +
         panel("cat","类别容量", catNote(), renderCatInner(), true) +
+        panel("treemap","磁盘占用分布","按类别体积占比 · 前 12 类 · 悬停查看路径数", renderTreemapInner(), true) +
         panel("disk","磁盘空间","清理前 / 清理后", renderDiskInner(), true) +
         panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
       '</div>'+
@@ -2358,6 +2597,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     bindApps();
     if(APPS.data) renderApps();
     renderTrash();
+    bindTrashConfirm();
     renderOperations();
     renderExecHistoryIfReady();
     renderLastCleanup();
