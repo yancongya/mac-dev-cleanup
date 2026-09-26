@@ -82,9 +82,9 @@ const ok = (name, cond, extra = "") =>
 // --- structure: sidebar + four views ---
 ok("app 容器已渲染", $("#app").children.length > 0);
 ok("boot-error 未触发", !$("#boot-error").classList.contains("show"));
-ok("侧边栏四个导航项", doc.querySelectorAll(".nav-item").length === 4, doc.querySelectorAll(".nav-item").length);
+ok("侧边栏五个导航项", doc.querySelectorAll(".nav-item").length === 5, doc.querySelectorAll(".nav-item").length);
 ok("清理导航徽标有值", ($("#nav-badge-clean")?.textContent || "").length > 0, $("#nav-badge-clean")?.textContent);
-ok("四个视图容器", doc.querySelectorAll(".view").length === 4);
+ok("五个视图容器", doc.querySelectorAll(".view").length === 5);
 ok("默认显示概览视图", visible("#view-overview") && !visible("#view-clean"));
 ok("英雄区环形图", !!$("#view-overview .donut circle.val"));
 ok("英雄区可清理大数字", ($("#view-overview .hero-big")?.textContent || "").length > 0, $("#view-overview .hero-big")?.textContent);
@@ -105,6 +105,14 @@ window.location.hash = "clean";
 await sleep(80);
 ok("路由切换到清理视图", visible("#view-clean") && !visible("#view-overview"));
 ok("导航高亮随路由切换", $(".nav-item.active")?.getAttribute("data-nav") === "clean", $(".nav-item.active")?.getAttribute("data-nav"));
+// --- apps view structure ---
+window.location.hash = "apps";
+await sleep(80);
+ok("路由切换到应用视图", visible("#view-apps") && !visible("#view-clean"));
+ok("应用视图导航高亮", $(".nav-item.active")?.getAttribute("data-nav") === "apps", $(".nav-item.active")?.getAttribute("data-nav"));
+ok("应用搜索框存在", !!$("#apps-search"));
+ok("应用列表容器存在", !!$("#apps-list"));
+ok("应用重扫按钮存在", !!$("#apps-rescan"));
 
 // --- i18n (candidate table lives in the clean view) ---
 const reasonCells = [...doc.querySelectorAll("td.reason")].map((e) => e.textContent);

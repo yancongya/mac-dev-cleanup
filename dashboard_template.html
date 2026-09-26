@@ -127,6 +127,19 @@ a{color:var(--indigo)}
 .eh-toggle{margin-left:auto;flex:0 0 auto;font-size:11px;color:var(--indigo);background:none;border:none;cursor:pointer;font-family:inherit;padding:2px 4px}
 .eh-toggle:hover{text-decoration:underline}
 .eh-log{max-height:240px;overflow:auto;margin:0 12px 10px;font-size:11px}
+/* apps view (应用卸载) */
+.ov-sub{font-size:12px;color:var(--muted);margin:4px 0 10px}
+.apps-tools{margin-bottom:8px}
+.apps-tools input{width:100%;max-width:320px;height:30px;padding:0 10px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--fg);font-size:12px}
+.app-item{border-bottom:1px solid var(--border)}
+.app-item:last-child{border-bottom:none}
+.app-row{display:flex;align-items:center;gap:10px;padding:9px 12px;font-size:12px}
+.app-name{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app-size{color:var(--muted);font-variant-numeric:tabular-nums;flex:0 0 auto}
+.app-relcount{color:var(--muted);font-size:11px;flex:0 0 auto}
+.app-rel{padding:0 12px 9px 12px}
+.app-rel-row{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--muted);padding:2px 0;font-family:var(--mono,monospace)}
+.app-rel-row span{flex:0 0 auto}
 .ov-rows{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .ov-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;cursor:pointer}
 .ov-row:last-child{border-bottom:none}
@@ -696,6 +709,10 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
       清理
       <span class="nav-badge" id="nav-badge-clean"></span>
     </button>
+    <button class="nav-item" data-nav="apps">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 3v18"/><path d="M13 8h5M13 12h5"/></svg>
+      应用
+    </button>
     <button class="nav-item" data-nav="history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
       操作历史
@@ -1188,7 +1205,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
 
   // ---- view router (hash-based) ----
-  var VIEWS = ["overview","clean","history","settings"];
+  var VIEWS = ["overview","clean","apps","history","settings"];
   function currentView(){
     var h = (location.hash||"#overview").slice(1);
     return VIEWS.indexOf(h)>=0 ? h : "overview";
@@ -2287,6 +2304,16 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '<div class="ov-head"><h2>执行日志</h2><span class="ov-head-note" id="exec-status"></span></div>'+
         '<pre class="cmd-out exec-log" id="exec-log" hidden></pre>'+
       '</div>'+
+      '<div class="view" id="view-apps" style="display:none">'+
+        '<div class="ov-head"><h2>应用卸载</h2>'+
+          '<span class="ov-head-note" id="apps-meta"></span>'+
+          '<button type="button" class="btn" id="apps-rescan" style="height:26px;font-size:11px" title="重新扫描已安装应用">重新扫描</button>'+
+        '</div>'+
+        '<p class="ov-sub">卸载 = 应用包和它的残留配置一起移入废纸篓隔离，可随时还原；正在运行的应用会被拒绝。</p>'+
+        '<div class="apps-tools"><input id="apps-search" type="search" placeholder="搜索应用名…" aria-label="搜索应用"></div>'+
+        '<div id="apps-list"><div class="empty">加载中…</div></div>'+
+        '<pre class="cmd-out" id="apps-out" hidden></pre>'+
+      '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
         panel("exechist","执行记录","实时运行的清理 · 含过程日志", '<div id="exec-hist"><div class="empty">加载中…</div></div>') +
         panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
@@ -2295,10 +2322,12 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<div class="view" id="view-settings" style="display:none">'+
         settingsHtml() +
       '</div>';
-    ["overview","clean","history","settings"].forEach(applyViewOrder);
+    ["overview","clean","apps","history","settings"].forEach(applyViewOrder);
     bindTable();
     bindOverview();
     bindSettings();
+    bindApps();
+    if(APPS.data) renderApps();
     renderTrash();
     renderOperations();
     renderExecHistoryIfReady();
@@ -2431,6 +2460,118 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       pre.scrollTop=pre.scrollHeight;
     };
   }
+  // ---- apps view (应用卸载) ----
+  var APPS = { data:null, filter:"", timer:null };
+
+  function loadApps(force){
+    if(!state.apiOnline) return;
+    var start = force
+      ? fetch("api/apps/refresh",{method:"POST",headers:postHeaders(),body:"{}"}).then(function(r){ return r.json(); })
+      : Promise.resolve({ok:true});
+    start.then(function(){
+      fetch("api/apps",{cache:"no-store"}).then(function(r){ return r.json(); })
+        .then(function(j){
+          clearTimeout(APPS.timer);
+          if(j.building){
+            APPS.data=null;
+            var el=$("apps-list");
+            if(el) el.innerHTML='<div class="empty">正在扫描已安装应用（首次需要一两分钟）…</div>';
+            var meta=$("apps-meta"); if(meta) meta.textContent="";
+            APPS.timer=setTimeout(function(){ loadApps(false); }, 2500);
+            return;
+          }
+          APPS.data=j;
+          renderApps();
+        }).catch(function(){ var el=$("apps-list"); if(el) el.innerHTML='<div class="empty">加载失败 — 请确认本地服务在线。</div>'; });
+    }).catch(function(){ toast("无法启动应用扫描","err"); });
+  }
+  function appsFiltered(){
+    var list=(APPS.data&&APPS.data.apps)||[];
+    if(!APPS.filter) return list;
+    var q=APPS.filter.toLowerCase();
+    return list.filter(function(a){
+      return a.name.toLowerCase().indexOf(q)>=0 || (a.bundle_id||"").toLowerCase().indexOf(q)>=0;
+    });
+  }
+  function renderApps(){
+    var el=$("apps-list"); if(!el) return;
+    var all=(APPS.data&&APPS.data.apps)||[];
+    var list=appsFiltered();
+    var meta=$("apps-meta");
+    if(meta) meta.textContent=all.length?("共 "+all.length+" 个应用"):"";
+    if(!all.length){ el.innerHTML='<div class="empty">还没有应用数据。</div>'; return; }
+    if(!list.length){ el.innerHTML='<div class="empty">没有匹配的应用。</div>'; return; }
+    el.innerHTML=list.map(function(a,i){
+      var relN=(a.related||[]).length;
+      var relHtml=relN?'<div class="app-rel" hidden>'+a.related.map(function(r){
+          return '<div class="app-rel-row">'+esc(r.path)+'<span>'+fmtSize(r.size)+'</span></div>';
+        }).join("")+'</div>':'';
+      return '<div class="app-item">'+
+        '<div class="app-row">'+
+          (a.running?'<span class="tag tag-manual">运行中</span>':'')+
+          '<span class="app-name" title="'+esc(a.path)+'">'+esc(a.name.replace(/\.app$/,""))+'</span>'+
+          '<span class="app-size">'+fmtSize(a.total_size)+'</span>'+
+          (relN?'<span class="app-relcount">残留 '+relN+' 项</span>':'')+
+          '<span class="spacer"></span>'+
+          (relN?'<button type="button" class="btn app-rel-btn" style="height:24px;font-size:10px">残留</button>':'')+
+          '<button type="button" class="btn danger app-un-btn" data-app="'+esc(a.name)+'"'+
+            (a.running?' disabled title="正在运行，退出后才能卸载"':'')+'>卸载</button>'+
+        '</div>'+relHtml+
+      '</div>';
+    }).join("");
+    el.onclick=function(e){
+      var relBtn=e.target.closest(".app-rel-btn");
+      if(relBtn){
+        var rel=relBtn.closest(".app-item").querySelector(".app-rel");
+        if(rel){ rel.hidden=!rel.hidden; relBtn.textContent=rel.hidden?"残留":"收起"; }
+        return;
+      }
+      var btn=e.target.closest(".app-un-btn"); if(!btn) return;
+      var app=btn.getAttribute("data-app");
+      if(btn.getAttribute("data-armed")!=="1"){
+        btn.setAttribute("data-armed","1"); btn.textContent="确认卸载？";
+        setTimeout(function(){
+          if(btn.getAttribute("data-armed")==="1"){ btn.setAttribute("data-armed","0"); btn.textContent="卸载"; }
+        },5000);
+        return;
+      }
+      btn.setAttribute("data-armed","0");
+      btn.disabled=true; btn.textContent="卸载中…";
+      var out=$("apps-out");
+      if(out){ out.hidden=false; out.textContent="正在卸载 "+app+" …"; }
+      fetch("api/uninstall",{method:"POST",headers:postHeaders(),
+        body:JSON.stringify({app:app,apply:true})})
+        .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j:j}; }); })
+        .then(function(res){
+          if(out){ out.textContent=res.j.output||""; out.scrollTop=out.scrollHeight; }
+          if(res.ok){
+            toast(app+" 已卸载（隔离区可还原）","ok");
+            loadOperations();
+          } else {
+            toast("卸载失败："+(res.j.error||("exit "+res.j.exit_code)),"err");
+          }
+          loadApps(true);  // app set changed — rebuild listing
+        })
+        .catch(function(){
+          btn.disabled=false; btn.textContent="卸载";
+          if(out){ out.textContent="卸载失败：网络错误"; }
+          toast("网络错误","err");
+        });
+    };
+  }
+  function bindApps(){
+    var si=$("apps-search");
+    if(si && !si.dataset.bound){
+      si.dataset.bound="1";
+      si.addEventListener("input",function(e){ APPS.filter=e.target.value.trim(); renderApps(); });
+    }
+    var rs=$("apps-rescan");
+    if(rs && !rs.dataset.bound){
+      rs.dataset.bound="1";
+      rs.addEventListener("click",function(){ loadApps(true); });
+    }
+  }
+
   function refreshAfterClean(){
     // cleanup rewrote state.json — refresh in place, candidate ids are new
     fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
@@ -2647,6 +2788,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var sb=$("scan-btn"); if(sb){ sb.disabled=false; sb.title="重新执行只读扫描"; }
       syncSaveBtn(); syncRunBtns();
       loadExecHistory();
+      loadApps(false);
       // resume the log panel if an execution is already in flight (reload mid-run)
       fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
         .then(function(s){

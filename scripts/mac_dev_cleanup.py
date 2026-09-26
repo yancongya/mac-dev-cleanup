@@ -14,6 +14,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -1456,6 +1457,194 @@ def restore_operation(operation_id: str) -> tuple[int, list[str]]:
     return restored, messages
 
 
+# ---- app uninstall (应用卸载) ----
+# Uninstall = quarantine, never rm: the .app bundle and every discovered
+# related file move into an operation folder under ~/.Trash/mac-dev-cleanup/,
+# so the standard --restore flow brings the whole app back.
+
+APP_DIRS = (Path("/Applications"), HOME / "Applications")
+APPS_STATE_PATH = LOG_DIR / "apps.json"
+# Bundle names on disk may be localized (e.g. 剪映.app), so allow anything
+# except separators/NUL and a leading dot; traversal is additionally blocked
+# structurally in find_app_bundle.
+APP_NAME_RE = re.compile(r"^(?!\.)[^/\\\x00]{1,128}\.app$")
+
+
+def app_bundle_info(bundle: Path) -> dict[str, str]:
+    """Read CFBundleName / CFBundleIdentifier from the bundle's Info.plist."""
+    info: dict[str, str] = {}
+    plist_path = bundle / "Contents" / "Info.plist"
+    try:
+        with plist_path.open("rb") as fh:
+            raw = plistlib.load(fh)
+        if isinstance(raw, dict):
+            for key, target in (("CFBundleName", "name"), ("CFBundleIdentifier", "bundle_id"),
+                                ("CFBundleExecutable", "executable")):
+                value = raw.get(key)
+                if isinstance(value, str) and value:
+                    info[target] = value
+    except Exception:  # noqa: BLE001 — a corrupt Info.plist must not kill the listing
+        pass
+    return info
+
+
+def installed_app_bundles() -> list[Path]:
+    """Top-level .app bundles in user-visible Applications dirs only."""
+    found: list[Path] = []
+    for root in APP_DIRS:
+        if not root.is_dir():
+            continue
+        try:
+            for child in sorted(root.iterdir()):
+                if child.name.endswith(".app") and child.is_dir() and not child.is_symlink():
+                    found.append(child)
+        except OSError:
+            continue
+    return found
+
+
+def app_related_paths(bundle_name: str, bundle_id: str) -> list[Path]:
+    """Conventional per-app leftovers under ~/Library (existence checked later)."""
+    lib = HOME / "Library"
+    stems: list[str] = []
+    for stem in (bundle_name[:-4], bundle_id):
+        if stem and stem not in stems:
+            stems.append(stem)
+    paths: list[Path] = []
+    for stem in stems:
+        for sub in ("Application Support", "Caches", "Logs"):
+            paths.append(lib / sub / stem)
+    if bundle_id:
+        paths += [
+            lib / "Preferences" / f"{bundle_id}.plist",
+            lib / "Containers" / bundle_id,
+            lib / "Group Containers" / f"group.{bundle_id}",
+            lib / "HTTPStorages" / bundle_id,
+            lib / "Saved Application State" / f"{bundle_id}.savedState",
+            lib / "WebKit" / bundle_id,
+        ]
+    unique: list[Path] = []
+    for p in paths:
+        if p not in unique:
+            unique.append(p)
+    return unique
+
+
+def app_record(bundle: Path) -> dict[str, object]:
+    info = app_bundle_info(bundle)
+    bundle_id = info.get("bundle_id", "")
+    related = [p for p in app_related_paths(bundle.name, bundle_id) if p.exists()]
+    app_size = size_bytes(bundle)
+    related_items = [{"path": str(p), "size": size_bytes(p)} for p in related]
+    return {
+        "name": bundle.name,
+        "bundle_id": bundle_id,
+        "path": str(bundle),
+        "app_size": app_size,
+        "related": related_items,
+        "total_size": app_size + sum(item["size"] for item in related_items),
+        "running": process_running(bundle.name),
+    }
+
+
+def cmd_apps() -> int:
+    """Build apps.json (consumed by the dashboard's 应用 view)."""
+    records: list[dict[str, object]] = []
+    for bundle in installed_app_bundles():
+        rec = app_record(bundle)
+        records.append(rec)
+        print(f"scanned: {rec['name']}  {fmt_size(int(rec['total_size']))}"
+              + ("  [running]" if rec["running"] else ""), flush=True)
+    records.sort(key=lambda r: int(r["total_size"]), reverse=True)
+    payload = {
+        "timestamp": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "apps": records,
+    }
+    APPS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    APPS_STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    print(f"apps_json: {APPS_STATE_PATH}")
+    print(f"apps: {len(records)}")
+    return 0
+
+
+def find_app_bundle(app_name: str) -> Path | None:
+    """Exact bundle-name match under the allowed Applications dirs only.
+    The parent check structurally rejects ".."-style traversal: any name that
+    escapes the Applications root (e.g. "../Foo.app") resolves to a different
+    parent and is refused before any filesystem access."""
+    if not APP_NAME_RE.match(app_name) or ".." in app_name:
+        return None
+    for root in APP_DIRS:
+        candidate = root / app_name
+        if candidate.parent != root:
+            return None
+        if candidate.is_dir() and not candidate.is_symlink():
+            return candidate
+    return None
+
+
+def move_path_to_quarantine(path: Path, operation_id: str, reason: str) -> tuple[bool, str, dict[str, object] | None]:
+    """Quarantine one path for uninstall; keeps the standard entry shape."""
+    try:
+        if not (is_under(path, Path("/Applications")) or is_under(path, HOME)):
+            return False, "refused: outside /Applications and home", None
+        before = fingerprint(path)
+        if before["is_symlink"]:
+            return False, "refused: path is a symlink", None
+        destination_dir = TRASH_ROOT / operation_id
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+        destination = destination_dir / f"{digest}-{path.name}"
+        if destination.exists():
+            return False, "refused: quarantine destination already exists", None
+        size = size_bytes(path)
+        shutil.move(str(path), str(destination))
+        entry = {
+            "candidate_id": digest, "original_path": str(path),
+            "quarantine_path": str(destination), "category": "app-uninstall",
+            "risk": "manual", "reason": reason, "size": size,
+            "fingerprint": before, "status": "quarantined",
+        }
+        return True, "quarantined", entry
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc), None
+
+
+def cmd_uninstall(app_name: str, apply: bool) -> int:
+    bundle = find_app_bundle(app_name)
+    if bundle is None:
+        print(f"error: no installed app named {app_name!r} under /Applications or ~/Applications")
+        return 2
+    if process_running(bundle.name):
+        print(f"error: {bundle.name} is running — quit it first, then uninstall")
+        return 1
+    info = app_bundle_info(bundle)
+    paths = [bundle] + [p for p in app_related_paths(bundle.name, info.get("bundle_id", "")) if p.exists()]
+    total = sum(size_bytes(p) for p in paths)
+    print(f"app: {bundle.name}")
+    print(f"bundle_id: {info.get('bundle_id') or '(unknown)'}")
+    for p in paths:
+        print(f"  {fmt_size(size_bytes(p))}  {p}")
+    print(f"total: {fmt_size(total)} across {len(paths)} paths")
+    if not apply:
+        print("dry-run: nothing moved (pass --apply to quarantine the list above)")
+        return 0
+    operation_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    entries: list[dict[str, object]] = []
+    for p in paths:
+        ok, message, entry = move_path_to_quarantine(p, operation_id, f"uninstall {bundle.name}")
+        print(f"  {message}: {p}")
+        if entry:
+            entries.append(entry)
+    if entries:
+        manifest = save_operation(operation_id, "uninstall", entries)
+        print(f"operation_id: {operation_id}")
+        print(f"operation_manifest: {manifest}")
+        print(f"restore_command: python3 {Path(__file__).resolve()} --restore {operation_id}")
+    print(f"uninstalled: {bundle.name} ({len(entries)}/{len(paths)} paths quarantined)")
+    return 0
+
+
 def candidate_action(candidate: Candidate, mode: str, actions: dict[Path, str]) -> str:
     if candidate.path in actions:
         return actions[candidate.path]
@@ -1595,8 +1784,10 @@ def _render_dashboard_html(state: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan and clean macOS developer-generated files.")
-    parser.add_argument("mode", nargs="?", choices=["scan", "clean-safe", "clean-aggressive"],
+    parser.add_argument("mode", nargs="?", choices=["scan", "clean-safe", "clean-aggressive", "apps", "uninstall"],
                         help="Operation mode. Omit when using --show-config / --set-config.")
+    parser.add_argument("--app-name", metavar="NAME.app",
+                        help="App bundle name for the uninstall mode (exact match under /Applications or ~/Applications).")
     parser.add_argument("--apply", action="store_true", help="Actually delete candidates for the selected mode.")
     parser.add_argument("--limit", type=int, default=0, help="Only print the largest N candidates in terminal output.")
     parser.add_argument("--candidate-id", action="append", default=[], help="Limit this run to a stable candidate ID; repeatable.")
@@ -1651,6 +1842,12 @@ def main() -> int:
             return 2
         print(f"config written atomically to {CONFIG_PATH}")
         return 0
+    if args.mode == "apps":
+        return cmd_apps()
+    if args.mode == "uninstall":
+        if not args.app_name:
+            parser.error("--app-name is required for uninstall (e.g. --app-name 'Foo.app')")
+        return cmd_uninstall(args.app_name, args.apply)
 
     if not args.mode:
         parser.error("mode is required (scan / clean-safe / clean-aggressive) unless using --show-config / --set-config")

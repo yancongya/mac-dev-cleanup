@@ -533,5 +533,45 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(manifest["entries"][0]["status"], "restored")
 
 
+class AppUninstallTests(unittest.TestCase):
+    """App uninstall: name validation, traversal guards, related-file discovery."""
+
+    def test_app_name_regex_allows_localized_names_and_bans_separators(self) -> None:
+        self.assertTrue(cleanup.APP_NAME_RE.match("Foo.app"))
+        self.assertTrue(cleanup.APP_NAME_RE.match("剪映专业版.app"))
+        self.assertFalse(cleanup.APP_NAME_RE.match("foo/bar.app"))
+        self.assertFalse(cleanup.APP_NAME_RE.match("..app"))
+        self.assertFalse(cleanup.APP_NAME_RE.match(".app"))
+
+    def test_find_app_bundle_rejects_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Foo.app").mkdir()
+            with patch.object(cleanup, "APP_DIRS", (root,)):
+                self.assertIsNotNone(cleanup.find_app_bundle("Foo.app"))
+                self.assertIsNone(cleanup.find_app_bundle("../Foo.app"))
+                self.assertIsNone(cleanup.find_app_bundle("sub/Foo.app"))
+                self.assertIsNone(cleanup.find_app_bundle("Missing.app"))
+
+    def test_app_related_paths_covers_conventional_locations(self) -> None:
+        rel = cleanup.app_related_paths("Foo.app", "com.foo.bar")
+        joined = [str(p) for p in rel]
+        self.assertIn(str(cleanup.HOME / "Library/Preferences/com.foo.bar.plist"), joined)
+        self.assertIn(str(cleanup.HOME / "Library/Containers/com.foo.bar"), joined)
+        self.assertIn(str(cleanup.HOME / "Library/Group Containers/group.com.foo.bar"), joined)
+        self.assertIn(str(cleanup.HOME / "Library/Application Support/Foo"), joined)
+        self.assertIn(str(cleanup.HOME / "Library/Caches/Foo"), joined)
+
+    def test_move_path_to_quarantine_refuses_paths_outside_allowed_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "victim.txt"
+            outside.write_text("x")
+            ok, message, entry = cleanup.move_path_to_quarantine(outside, "op", "uninstall test")
+            self.assertFalse(ok)
+            self.assertIn("refused", message)
+            self.assertIsNone(entry)
+            self.assertTrue(outside.exists())  # untouched
+
+
 if __name__ == "__main__":
     unittest.main()

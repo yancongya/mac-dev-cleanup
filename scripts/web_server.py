@@ -58,6 +58,13 @@ EXEC_HISTORY: list[dict] = []
 EXEC_HISTORY_LOADED = False
 EXEC_HISTORY_CAP = 20
 
+# Installed-apps listing: the CLI `apps` subcommand walks every bundle and its
+# related Library files (slow, minutes) and writes APPS_STATE_PATH. The server
+# runs it as a background job on first request and serves the JSON afterwards.
+APPS_STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "apps.json"
+APPS_MUX = threading.Lock()
+APPS_BUILDING = False
+
 
 def _record_filename(started: float) -> str:
     return time.strftime("%Y%m%d-%H%M%S", time.localtime(started)) + ".json"
@@ -174,10 +181,41 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/operations":
             self._handle_operations_get()
             return
+        if path == "/api/apps":
+            self._handle_apps_get()
+            return
         if path == "/api/trash":
             self._handle_trash_get()
             return
         super().do_GET()
+
+    def _handle_apps_get(self) -> None:
+        """Serve the installed-apps listing, building it in the background on
+        first access (the CLI walks every bundle — takes a while)."""
+        global APPS_BUILDING
+        data = read_json(APPS_STATE_PATH, None)
+        if isinstance(data, dict) and isinstance(data.get("apps"), list):
+            self.send_json(200, {"ok": True, "building": False,
+                                 "timestamp": data.get("timestamp", ""),
+                                 "apps": data["apps"]})
+            return
+        with APPS_MUX:
+            if not APPS_BUILDING:
+                APPS_BUILDING = True
+
+                def worker() -> None:
+                    global APPS_BUILDING
+                    try:
+                        subprocess.run([sys.executable, str(SCRIPT), "apps"], cwd=ROOT,
+                                       text=True, capture_output=True, timeout=1800)
+                    except Exception:  # noqa: BLE001 — background job
+                        pass
+                    finally:
+                        with APPS_MUX:
+                            APPS_BUILDING = False
+
+                threading.Thread(target=worker, daemon=True).start()
+        self.send_json(200, {"ok": True, "building": True, "apps": [], "timestamp": ""})
 
     def _handle_operations_get(self) -> None:
         """Return operation history from the operations directory."""
@@ -264,7 +302,69 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/clean":
             self._handle_clean(payload if isinstance(payload, dict) else {})
             return
+        if path == "/api/apps/refresh":
+            self._handle_apps_refresh()
+            return
+        if path == "/api/uninstall":
+            self._handle_uninstall(payload if isinstance(payload, dict) else {})
+            return
         self.send_json(404, {"ok": False, "error": "unknown API endpoint"})
+
+    def _handle_apps_refresh(self) -> None:
+        """Force a rebuild of the installed-apps listing (background job)."""
+        global APPS_BUILDING
+        with APPS_MUX:
+            if APPS_BUILDING:
+                self.send_json(409, {"ok": False, "error": "apps listing is already being rebuilt"})
+                return
+            APPS_BUILDING = True
+
+        def worker() -> None:
+            global APPS_BUILDING
+            try:
+                subprocess.run([sys.executable, str(SCRIPT), "apps"], cwd=ROOT,
+                               text=True, capture_output=True, timeout=1800)
+            except Exception:  # noqa: BLE001 — background job
+                pass
+            finally:
+                with APPS_MUX:
+                    APPS_BUILDING = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.send_json(200, {"ok": True, "building": True})
+
+    def _handle_uninstall(self, payload: dict) -> None:
+        """Uninstall one app via the CLI: quarantine the bundle and its related
+        Library leftovers, restorable through the standard operation flow.
+        Synchronous — a same-volume move is fast."""
+        app = payload.get("app")
+        if not isinstance(app, str) or not cleanup.APP_NAME_RE.match(app):
+            self.send_json(400, {"ok": False, "error": "app must be a bundle name like 'Foo.app'"})
+            return
+        apply = payload.get("apply", True)
+        if not isinstance(apply, bool):
+            apply = True
+        if not APPS_MUX.acquire(blocking=False):
+            self.send_json(409, {"ok": False, "error": "another apps operation is running"})
+            return
+        try:
+            argv = [sys.executable, str(SCRIPT), "uninstall", "--app-name", app]
+            if apply:
+                argv.append("--apply")
+            proc = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True,
+                                  timeout=900, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+            out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+            m = re.search(r"^operation_id:\s*(\S+)", out, re.M)
+            ok = proc.returncode == 0
+            self.send_json(200 if ok else 422, {
+                "ok": ok, "exit_code": proc.returncode,
+                "operation_id": m.group(1) if m else None,
+                "output": out[-4000:],
+            })
+        except subprocess.TimeoutExpired:
+            self.send_json(504, {"ok": False, "error": "uninstall timed out"})
+        finally:
+            APPS_MUX.release()
 
     def _handle_clean(self, payload: dict) -> None:
         """Start per-candidate cleanup through the CLI (quarantine, restorable).
