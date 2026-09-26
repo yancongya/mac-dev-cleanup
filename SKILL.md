@@ -129,15 +129,23 @@ The lesson: the same machine can present a stuck counter in one session and a he
 
 | risk | behavior | examples |
 |---|---|---|
-| `safe` | deleted by `clean-safe` and `clean-aggressive` (with `--apply`) | `__pycache__`, pip/npm/uv cache, playwright temp, project logs, coverage, `app-support-cache` |
-| `aggressive` | deleted only by `clean-aggressive` (with `--apply`) | `node_modules`, `.venv`, `build`, `dist`, Codex/Trae caches, large app caches/logs, `stale-deps`, `wechat-cache`, `wechat-media` |
-| `manual` | never auto-deleted; shown in report as "needs review" | screenshots, large dirs, archives, dumps, large personal files, `stale-model`, `app-support-manual` |
+| `safe` | deleted by `clean-safe` and `clean-aggressive` (with `--apply`) | `__pycache__`, pip/npm/uv cache, playwright temp, project logs, coverage, `app-support-cache`, Xcode/swiftpm caches, Homebrew downloads, pnpm/go stores |
+| `aggressive` | deleted only by `clean-aggressive` (with `--apply`) | `node_modules`, `.venv`, `build`, `dist`, Codex/Trae caches, large app caches/logs, `stale-deps`, `wechat-cache`, `wechat-media`, Xcode DerivedData/DeviceSupport, go mod, conda pkgs, superseded Claude Code versions |
+| `manual` | never auto-deleted; shown in report as "needs review" | screenshots, large dirs, archives, dumps, large personal files, `stale-model`, `app-support-manual`, Xcode Archives & simulator Devices, ollama models, `orphan` |
 
 Cleaning `aggressive` is not automatically worth it: **updater/runtime caches are deleted and re-downloaded the same day**, so a pass over them costs bandwidth and changes nothing. Field-observed 2026-09-22: an aggressive run removed `~/.cache/codex-runtimes` (1.6G), `hanako-updater` (437M) and `com.google.antigravity` (352M), and all three were back within hours. Spend aggressive effort on build output (`target`, `build`, `dist`, `.venv`, `node_modules`) instead, and leave self-updating runtime caches alone unless space is genuinely critical.
 
 ## Categories recognized
 
-`global-cache`, `app-cache`, `app-log`, `app-support-cache`, `app-support-manual`, `project-generated`, `log-file`, `temp-browser`, `temp-file`, `test-artifact`, `screenshot`, `large-dir`, `large-file`, `stale-deps`, `stale-model`, `wechat-cache`, `wechat-media`
+`global-cache`, `app-cache`, `app-log`, `app-support-cache`, `app-support-manual`, `project-generated`, `log-file`, `temp-browser`, `temp-file`, `test-artifact`, `screenshot`, `large-dir`, `large-file`, `stale-deps`, `stale-model`, `wechat-cache`, `wechat-media`, `xcode`, `dev-cache`, `ai-cache`, `orphan`
+
+## P0 expansion (2026-09-27): Xcode / dev caches / AI caches / orphans
+
+- **`xcode`**: DerivedData, iOS/tvOS/watchOS/macOS DeviceSupport, XCTestDevices (aggressive); `com.apple.dt.Xcode` cache, CoreSimulator Caches, swiftpm, Previews (safe); **Archives and CoreSimulator/Devices are manual** — release dSYMs and simulator state are unrecoverable. The whole category is skipped while Xcode runs (deleting build state under a live IDE corrupts it).
+- **`dev-cache`**: Homebrew downloads + build logs, pnpm store, go mod download cache, mise (safe); go mod tree, conda pkgs (aggressive). Gradle/go paths are skipped while `GradleDaemon`/`go`/`gopls` processes are live (deleting a store mid-build breaks the build).
+- **`ai-cache`**: ollama/LM Studio logs (safe), ollama web cache (aggressive), **ollama models are manual** (re-download = gigabytes). Claude Code: `~/.local/share/claude/versions` children are semver-sorted and only superseded versions are flagged aggressive — the newest is always kept.
+- **`orphan`**: reverse scan of volatile Library roots only (`Caches`, `Logs`, `Saved Application State`, `HTTPStorages`, `WebKit`) — first-level entries whose normalized name matches no installed app identifier (bundle id or app name, both directions, ≥5 chars). Skips: `com.apple.*`, Apple services without the prefix (GeoServices/PassKit/Animoji/…), dev-tool cache names (bun/gradle/…), pure-UUID dirs, entries < 1 MB. Always `manual`. Identifiers come from `apps.json` when present, else a live `/Applications` scan.
+- **Security hardening shipped with the same change**: `IMMUNE_PATHS` (`.ssh/.aws/.gnupg/.kube/.docker`, `Library/Keychains|Cookies|Mail`) are excluded by code regardless of config — never proposed, never quarantined; both quarantine paths re-stat the target right before `shutil.move` and refuse on device/inode mismatch (TOCTOU guard, parity with PureMac).
 
 ## Tauri / Vite build by-products (config-driven)
 

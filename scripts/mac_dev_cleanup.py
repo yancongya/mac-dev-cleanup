@@ -468,6 +468,58 @@ GLOBAL_AGGRESSIVE_PATHS = [
     HOME / ".local" / "share" / "uv",
 ]
 
+# --- P0 expansion: Xcode toolchain, global dev caches, AI tool caches ---
+# Archives and simulator Devices are manual on purpose: release dSYMs and
+# simulator state are lost for good once quarantined away from a live Xcode.
+XCODE_SAFE_PATHS = [
+    HOME / "Library" / "Caches" / "com.apple.dt.Xcode",
+    HOME / "Library" / "Developer" / "CoreSimulator" / "Caches",
+    HOME / "Library" / "Caches" / "org.swift.swiftpm",
+    HOME / "Library" / "org.swift.swiftpm",
+    HOME / "Library" / "Developer" / "Xcode" / "UserData" / "Previews",
+]
+XCODE_AGGRESSIVE_PATHS = [
+    HOME / "Library" / "Developer" / "Xcode" / "DerivedData",
+    HOME / "Library" / "Developer" / "Xcode" / "iOS DeviceSupport",
+    HOME / "Library" / "Developer" / "Xcode" / "tvOS DeviceSupport",
+    HOME / "Library" / "Developer" / "Xcode" / "watchOS DeviceSupport",
+    HOME / "Library" / "Developer" / "Xcode" / "macOS DeviceSupport",
+    HOME / "Library" / "Developer" / "XCTestDevices",
+]
+XCODE_MANUAL_PATHS = [
+    HOME / "Library" / "Developer" / "Xcode" / "Archives",
+    HOME / "Library" / "Developer" / "CoreSimulator" / "Devices",
+]
+
+# Global dev-tool caches (parity: Mole dev.sh / Pearcleaner development view).
+# Stores re-resolve from registries on demand; Homebrew downloads re-fetch.
+DEV_GLOBAL_SAFE_PATHS = [
+    HOME / "Library" / "Caches" / "Homebrew" / "downloads",
+    HOME / "Library" / "Logs" / "Homebrew",
+    HOME / "Library" / "pnpm" / "store",
+    HOME / ".cache" / "go-build",
+    HOME / "go" / "pkg" / "mod" / "cache" / "download",
+    HOME / "Library" / "Caches" / "mise",
+]
+DEV_GLOBAL_AGGRESSIVE_PATHS = [
+    HOME / "go" / "pkg" / "mod",
+    HOME / ".conda" / "pkgs",
+]
+
+# AI tool caches (parity: Mole AI section / PureMac AI apps). Model blobs are
+# manual: re-download means gigabytes, never auto-clean them.
+AI_SAFE_PATHS = [
+    HOME / ".ollama" / "logs",
+    HOME / ".lmstudio" / "server-logs",
+]
+AI_AGGRESSIVE_PATHS = [
+    HOME / "Library" / "Caches" / "ollama",
+]
+AI_MANUAL_PATHS = [
+    HOME / ".ollama" / "models",
+]
+CLAUDE_VERSIONS_DIR = HOME / ".local" / "share" / "claude" / "versions"
+
 # System caches / app data roots scanned at top level for large entries.
 APP_CACHES_ROOT = HOME / "Library" / "Caches"
 APP_LOGS_ROOT = HOME / "Library" / "Logs"
@@ -759,6 +811,13 @@ def process_running(pattern: str) -> bool:
     return code == 0
 
 
+def process_running_exact(name: str) -> bool:
+    """Match the process name exactly (pgrep -x) — avoids -f substring false
+    positives like 'Xcode' matching XcodeHelper or a file path argument."""
+    code, _ = run(["pgrep", "-x", name])
+    return code == 0
+
+
 @dataclass(frozen=True)
 class Candidate:
     path: Path
@@ -814,10 +873,29 @@ def is_under(path: Path, parent: Path) -> bool:
         return False
 
 
+# Credential/sensitive roots protected by code, not config. Deleting anything
+# under these breaks logins or loses secrets; scanners skip them entirely.
+IMMUNE_PATHS = (
+    HOME / ".ssh",
+    HOME / ".aws",
+    HOME / ".gnupg",
+    HOME / ".kube",
+    HOME / ".docker",
+    HOME / "Library" / "Keychains",
+    HOME / "Library" / "Cookies",
+    HOME / "Library" / "Mail",
+)
+
+
 def excluded(path: Path, category: str | None = None) -> bool:
     """User-level protection applied in addition to immutable system prune rules."""
     expanded = path.expanduser()
     if category and category in PROTECTED_CATEGORIES:
+        return True
+    # Code-level immune zone: credential stores and sensitive user data are
+    # never proposed by any scanner and never pass quarantine, regardless of
+    # config (parity: PureMac deniedUserRoots).
+    if any(is_under(expanded, p) for p in IMMUNE_PATHS):
         return True
     if any(is_under(expanded, p) for p in EXCLUDE_PATHS + PROTECTED_PROJECTS):
         return True
@@ -1337,6 +1415,165 @@ def scan_stale_projects(stale_days: int) -> dict[Path, Candidate]:
     return candidates
 
 
+def scan_xcode() -> dict[Path, Candidate]:
+    """Xcode toolchain artifacts. Skipped entirely while Xcode runs — deleting
+    DerivedData/index stores under a live IDE corrupts its build state."""
+    if process_running("/Applications/Xcode.app"):
+        return {}
+    candidates: dict[Path, Candidate] = {}
+    for p in XCODE_SAFE_PATHS:
+        add_path(candidates, p, "xcode", "safe", "Rebuildable Xcode cache")
+    for p in XCODE_AGGRESSIVE_PATHS:
+        add_path(candidates, p, "xcode", "aggressive", "Regenerable Xcode toolchain data")
+    for p in XCODE_MANUAL_PATHS:
+        add_path(candidates, p, "xcode", "manual", "Archives/simulator data — review before removing")
+    return candidates
+
+
+def scan_dev_global() -> dict[Path, Candidate]:
+    """Global dev-tool caches (Homebrew/pnpm/go/gradle/conda/mise). Gradle
+    caches are skipped while a daemon is live; go caches while a go process
+    builds — deleting a store mid-build breaks the running build."""
+    candidates: dict[Path, Candidate] = {}
+    gradle_live = process_running_exact("GradleDaemon")
+    go_live = process_running_exact("go") or process_running_exact("gopls")
+
+    def guarded(p: Path) -> bool:
+        """True when a live process owns this store and it must be skipped."""
+        parts = {part.lower() for part in p.parts}
+        if gradle_live and "gradle" in parts:
+            return True
+        if go_live and "go" in parts:
+            return True
+        return False
+
+    for p in DEV_GLOBAL_SAFE_PATHS:
+        if not guarded(p):
+            add_path(candidates, p, "dev-cache", "safe", "Rebuildable developer cache")
+    for p in DEV_GLOBAL_AGGRESSIVE_PATHS:
+        if not guarded(p):
+            add_path(candidates, p, "dev-cache", "aggressive", "Tool store; re-resolves from registry on demand")
+    return candidates
+
+
+def _version_sort_key(name: str) -> tuple:
+    return tuple(int(x) if x.isdigit() else 0 for x in re.findall(r"\d+", name)) + (name,)
+
+
+def scan_ai_caches() -> dict[Path, Candidate]:
+    """AI tool caches. Model blobs stay manual (re-download = gigabytes).
+    Claude Code: keep the newest version, flag superseded ones only."""
+    candidates: dict[Path, Candidate] = {}
+    for p in AI_SAFE_PATHS:
+        add_path(candidates, p, "ai-cache", "safe", "Rebuildable AI tool log/cache")
+    for p in AI_AGGRESSIVE_PATHS:
+        add_path(candidates, p, "ai-cache", "aggressive", "AI tool cache; may require re-download")
+    for p in AI_MANUAL_PATHS:
+        add_path(candidates, p, "ai-cache", "manual", "AI model files — review before removing")
+    if CLAUDE_VERSIONS_DIR.is_dir():
+        try:
+            children = [c for c in CLAUDE_VERSIONS_DIR.iterdir() if c.is_dir() and not c.is_symlink()]
+        except OSError:
+            children = []
+        children.sort(key=lambda c: _version_sort_key(c.name))
+        for old in children[:-1]:
+            add_path(candidates, old, "ai-cache", "aggressive", "Superseded Claude Code version")
+    return candidates
+
+
+def _norm_token(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+ORPHAN_SCAN_ROOTS = (
+    HOME / "Library" / "Caches",
+    HOME / "Library" / "Logs",
+    HOME / "Library" / "Saved Application State",
+    HOME / "Library" / "HTTPStorages",
+    HOME / "Library" / "WebKit",
+)
+# Volatile-only roots (PureMac orphan policy): preferences/containers hold
+# live user data and sandbox documents, so they are deliberately excluded.
+# Skip words: Apple system services whose cache dirs carry no com.apple
+# prefix (GeoServices/PassKit/...) plus dev-tool cache names that belong to
+# build tooling rather than any single .app (bun/gradle/...).
+ORPHAN_SKIP_WORDS = (
+    "apple", "icloud", "homebrew", "kernel", "system", ".ds_store",
+    "geoservices", "passkit", "animoji", "sharedimagecache", "cloudkit",
+    "gamecenter", "knowledge", "siri", "maps", "metalkit", "findmy",
+    "bun", "deno", "pnpm", "npm", "yarn", "cargo", "pip", "uv", "gradle",
+    "maven", "conda", "ollama", "lmstudio", "claude", "codex", "playwright",
+    "puppeteer", "electron", "node", "python", "golang", "rust", "dotnet",
+    "perl", "php", "composer", "go-build", "typescript", "swiftpm",
+)
+ORPHAN_MIN_SIZE = 1024 * 1024
+ORPHAN_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$|^[0-9a-fA-F]{32}$")
+
+
+def _installed_identifiers() -> set[str]:
+    """Normalized name/bundle-id tokens for every installed app, for reverse
+    orphan matching. Prefers the apps.json listing; falls back to a live scan."""
+    idents: set[str] = set()
+    entries: list[tuple[str, str]] = []
+    try:
+        payload = json.loads(APPS_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("apps"), list) and payload["apps"]:
+            for a in payload["apps"]:
+                if isinstance(a, dict):
+                    entries.append((str(a.get("name", "")), str(a.get("bundle_id", ""))))
+    except (OSError, json.JSONDecodeError):
+        entries = []
+    if not entries:
+        for bundle in installed_app_bundles():
+            info = app_bundle_info(bundle)
+            entries.append((bundle.name, info.get("bundle_id", "")))
+    for name, bundle_id in entries:
+        for tok in (name[:-4] if name.endswith(".app") else name, bundle_id):
+            norm = _norm_token(tok)
+            if norm:
+                idents.add(norm)
+    return idents
+
+
+def scan_orphans() -> dict[Path, Candidate]:
+    """Library entries no installed app claims (uninstall leftovers). Manual
+    risk only: reverse matching is heuristic, deletion stays a human decision."""
+    installed = _installed_identifiers()
+    candidates: dict[Path, Candidate] = {}
+    for root in ORPHAN_SCAN_ROOTS:
+        if not root.is_dir():
+            continue
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name
+            if name in {".DS_Store", ".localized"} or ORPHAN_UUID_RE.match(name):
+                continue
+            low = name.lower()
+            if any(word in low for word in ORPHAN_SKIP_WORDS):
+                continue
+            stem = low[:-6] if low.endswith(".plist") else low
+            if stem.startswith("group."):
+                stem = stem[6:]
+            norm = _norm_token(stem)
+            if len(norm) < 3:
+                continue
+            if any(len(i) >= 5 and (i in norm or norm in i) for i in installed):
+                continue
+            if excluded(entry, "orphan") or pruned(entry, "orphan"):
+                continue
+            sz = size_bytes(entry)
+            if sz < ORPHAN_MIN_SIZE:
+                continue
+            resolved = entry.resolve()
+            if resolved not in candidates:
+                candidates[resolved] = Candidate(resolved, sz, "orphan", "manual",
+                                                 "Orphan: no installed app claims this entry")
+    return candidates
+
+
 def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
     candidates: dict[Path, Candidate] = {}
     candidates.update(discover_global())
@@ -1347,6 +1584,10 @@ def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
     candidates.update(scan_app_support())
     candidates.update(scan_screenshots())
     candidates.update(scan_personal_large())
+    candidates.update(scan_xcode())
+    candidates.update(scan_dev_global())
+    candidates.update(scan_ai_caches())
+    candidates.update(scan_orphans())
     # stale-project pass runs last so stale-deps/stale-model labels win over
     # generic project-generated/large-file for the same paths (dict.update
     # would otherwise let later passes overwrite the more specific stale tag).
@@ -1402,6 +1643,12 @@ def move_to_quarantine(candidate: Candidate, operation_id: str) -> tuple[bool, s
             return False, "refused: candidate became a symlink", None
         if excluded(candidate.path, candidate.category) or pruned(candidate.path, candidate.category):
             return False, "refused: candidate is protected", None
+        # TOCTOU guard (parity: PureMac identity check): re-stat right before
+        # the move; a changed device/inode means the path was swapped between
+        # scan and clean — refuse rather than quarantine the wrong file.
+        after = fingerprint(candidate.path)
+        if (after["device"], after["inode"]) != (before["device"], before["inode"]):
+            return False, "refused: path changed since scan (TOCTOU guard)", None
         destination_dir = TRASH_ROOT / operation_id
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination = destination_dir / f"{candidate_id(candidate)}-{candidate.path.name}"
@@ -1591,6 +1838,9 @@ def move_path_to_quarantine(path: Path, operation_id: str, reason: str) -> tuple
         before = fingerprint(path)
         if before["is_symlink"]:
             return False, "refused: path is a symlink", None
+        after = fingerprint(path)
+        if (after["device"], after["inode"]) != (before["device"], before["inode"]):
+            return False, "refused: path changed since scan (TOCTOU guard)", None
         destination_dir = TRASH_ROOT / operation_id
         destination_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]

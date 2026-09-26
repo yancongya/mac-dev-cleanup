@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sys
+import shutil
 import tempfile
 import time
 import unittest
@@ -571,6 +572,145 @@ class AppUninstallTests(unittest.TestCase):
             self.assertIn("refused", message)
             self.assertIsNone(entry)
             self.assertTrue(outside.exists())  # untouched
+
+
+class P0SecurityTests(unittest.TestCase):
+    """Immune zone + TOCTOU guard added with the P0 category expansion."""
+
+    def test_immune_credential_paths_are_always_excluded(self) -> None:
+        # Code-level protection, independent of user config: scanners must
+        # never propose anything under credential stores or mail data.
+        for p in (
+            cleanup.HOME / ".ssh" / "id_rsa",
+            cleanup.HOME / ".aws" / "credentials",
+            cleanup.HOME / ".gnupg" / "pubring.kbx",
+            cleanup.HOME / ".kube" / "config",
+            cleanup.HOME / "Library" / "Keychains" / "login.keychain-db",
+            cleanup.HOME / "Library" / "Cookies",
+        ):
+            self.assertTrue(cleanup.excluded(p), p)
+
+    def test_move_to_quarantine_refuses_swapped_path(self) -> None:
+        real_fp = cleanup.fingerprint
+        calls = {"n": 0}
+
+        def flaky_fp(p):
+            calls["n"] += 1
+            result = real_fp(p)
+            if calls["n"] == 2:  # second stat = right before shutil.move
+                return {**result, "inode": result["inode"] + 1}
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(cleanup, "TRASH_ROOT", Path(tmp) / "trash"):
+            victim = Path(tmp) / "victim.txt"
+            victim.write_text("x")
+            with patch.object(cleanup, "fingerprint", flaky_fp):
+                ok, message, entry = cleanup.move_to_quarantine(
+                    cleanup.Candidate(victim, 1, "dev-cache", "safe", "test"), "op-test")
+            self.assertFalse(ok)
+            self.assertIn("TOCTOU", message)
+            self.assertIsNone(entry)
+            self.assertTrue(victim.exists())  # untouched
+
+    def test_move_path_to_quarantine_refuses_swapped_path(self) -> None:
+        real_fp = cleanup.fingerprint
+        calls = {"n": 0}
+
+        def flaky_fp(p):
+            calls["n"] += 1
+            result = real_fp(p)
+            if calls["n"] == 2:
+                return {**result, "inode": result["inode"] + 1}
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(cleanup, "TRASH_ROOT", Path(tmp) / "trash"):
+            outside_roots = Path(tmp) / "app.app"  # refused by root check first
+            outside_roots.mkdir()
+            ok, message, _ = cleanup.move_path_to_quarantine(outside_roots, "op", "t")
+            self.assertFalse(ok)  # root check fires before fingerprinting
+
+
+class P0OrphanScanTests(unittest.TestCase):
+    def _make_root(self, entries: dict[str, int]) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="mdc-orphans-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for name, kb in entries.items():
+            d = root / name
+            d.mkdir()
+            (d / "blob.bin").write_bytes(b"\0" * (kb * 1024))
+        return root
+
+    def test_orphans_flag_unclaimed_entries_and_skip_known_owners(self) -> None:
+        root = self._make_root({
+            "RemovedApp": 2048,          # no installed app claims it -> flagged
+            "com.apple.ubd": 2048,       # com.apple -> skipped
+            "GeoServices": 2048,         # Apple service without the prefix -> skipped
+            "Bun": 2048,                 # dev-tool cache -> skipped
+            "0123456789abcdef0123456789abcdef": 2048,  # UUID -> skipped
+            "Tiny": 1,                   # below 1MB -> skipped
+        })
+        with patch.object(cleanup, "ORPHAN_SCAN_ROOTS", (root,)), \
+             patch.object(cleanup, "_installed_identifiers", return_value={"googlechrome"}):
+            result = cleanup.scan_orphans()
+        self.assertEqual([c.path.name for c in result.values()], ["RemovedApp"])
+        cand = next(iter(result.values()))
+        self.assertEqual(cand.category, "orphan")
+        self.assertEqual(cand.risk, "manual")  # never auto-cleaned
+
+    def test_orphans_match_installed_identifiers_both_directions(self) -> None:
+        root = self._make_root({"WeChatHelperCache": 2048, "MysteryTool": 2048})
+        with patch.object(cleanup, "ORPHAN_SCAN_ROOTS", (root,)), \
+             patch.object(cleanup, "_installed_identifiers", return_value={"wechat"}):
+            result = cleanup.scan_orphans()
+        # identifier contained in entry ("wechat" in "wechathelpercache") -> skip
+        self.assertEqual([c.path.name for c in result.values()], ["MysteryTool"])
+
+    def test_orphan_identifiers_read_apps_json_when_available(self) -> None:
+        payload = {"apps": [{"name": "Foo.app", "bundle_id": "com.foo.bar"}, "bad"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "apps.json"
+            state.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(cleanup, "APPS_STATE_PATH", state):
+                idents = cleanup._installed_identifiers()
+        self.assertIn("foo", idents)
+        self.assertIn("comfoobar", idents)
+
+
+class P0CategoryScanTests(unittest.TestCase):
+    def test_scan_xcode_skips_while_xcode_running(self) -> None:
+        with patch.object(cleanup, "process_running", return_value=True):
+            self.assertEqual(cleanup.scan_xcode(), {})
+
+    def test_scan_xcode_risk_tiers(self) -> None:
+        with patch.object(cleanup, "process_running", return_value=False):
+            result = cleanup.scan_xcode()
+        for c in result.values():  # empty on hosts without Xcode dirs — fine
+            self.assertEqual(c.category, "xcode")
+            self.assertIn(c.risk, {"safe", "aggressive", "manual"})
+
+    def test_scan_dev_global_guards_live_toolchains(self) -> None:
+        with patch.object(cleanup, "process_running_exact", return_value=True):
+            result = cleanup.scan_dev_global()
+        for c in result.values():
+            text = c.path.as_posix().lower()
+            self.assertNotIn("gradle", text)
+            self.assertFalse(any(part == "go" for part in c.path.parts))
+
+    def test_scan_ai_caches_keeps_newest_claude_version(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-claude-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        for v in ("1.0.9", "1.0.10", "1.1.0"):
+            (base / v).mkdir()
+        with patch.object(cleanup, "CLAUDE_VERSIONS_DIR", base), \
+             patch.object(cleanup, "AI_SAFE_PATHS", []), \
+             patch.object(cleanup, "AI_AGGRESSIVE_PATHS", []), \
+             patch.object(cleanup, "AI_MANUAL_PATHS", []):
+            result = cleanup.scan_ai_caches()
+        flagged = sorted(c.path.name for c in result.values())
+        self.assertEqual(flagged, ["1.0.10", "1.0.9"])  # lexicographic; 1.1.0 (newest) kept
+        self.assertTrue(all(c.risk == "aggressive" for c in result.values()))
 
 
 if __name__ == "__main__":
