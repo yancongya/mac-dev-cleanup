@@ -41,7 +41,8 @@
 
 ## 能力
 
-- 识别 **17 类**清理目标：全局/应用缓存与日志、项目生成物、日志与临时文件、测试产物、截图、大目录/大文件、闲置依赖与闲置模型、微信缓存与过期媒体、白名单应用的缓存与用户数据…
+- 识别 **25 类**清理目标：全局/应用缓存与日志、项目生成物、日志与临时文件、测试产物、截图、大目录/大文件、闲置依赖与闲置模型、微信缓存与过期媒体、白名单应用的缓存与用户数据、Xcode 产物（DerivedData/DeviceSupport/Archives/模拟器）、开发缓存（Homebrew/pnpm/go/mise，Gradle 守护进程感知）、AI 工具缓存（含 Claude Code 旧版本，只留最新）、孤儿残留（反向扫描易失性目录 + 双向标识符匹配）、浏览器 profile 缓存（Chromium 系 + Firefox，Service Worker 站点数据永不碰）、安装包（DMG/PKG/ISO/XIP + ZIP 载荷校验）、iOS 设备备份（只读报告）…
+- **重复文件查找（`dupes` 子命令）**：大小 → 64KB 头哈希 → 全量 SHA-256 四级渐进；硬链接不算重复；报告性质（选哪份保留是人决策），看板报告面板展示浪费总量
 - **三级风险模型**：`safe` / `aggressive` / `manual`（`manual` 永不自动删除，仅报告待确认）
 - **配置化应用白名单**：把 `~/Library/Application Support/<App>` 下可安全回收的缓存（如录屏中断残档、Crashpad、日志）纳入扫描，用户数据（如截图历史）只报告不删；应用常驻时自动跳过，退出后重跑即回收
 - **Stale 项目识别**：以源码 mtime + 最后 git commit 判定（默认 90 天）
@@ -49,7 +50,11 @@
 - **清理后自动回收**：`--apply` 完成后自动清空废纸篓（后台 osascript + 10 分钟轮询）并核验回收；`df` 未回补时按 SKILL.md 的对照实验判断，而不是重复删除
 - **容器只报告、不盲删**：Docker / OrbStack 的镜像与卷只做列表与人工确认（`docker container prune` 会连服务容器一起删）
 - **项目内结构整理（Project hygiene）**：除磁盘级缓存外，还能整理单个项目——清空格目录、删 AI IDE 残留（`.agents`/`.claude`/`.opencode`/`.superpowers`/`.workflow`/`.DS_Store`/`*.bak`）、把散落的 `migrate_*`/`fix_*`/`test_*`/`init_*` 脚本归位到 `scripts/`/`tests/`、合并冗余文档。全程 Git 感知（`git mv`/`git rm`），不碰源码与数据库
-- **本地 Web 控制台**：只读状态查看 + 配置编辑 + 触发扫描；端口解析顺序 `--port` → `MDC_PORT` → `config.json: dashboard_port`（默认 8766，避让常被占用的 8765）
+- **本地 Web 控制台**：六视图（总览含磁盘树图 / 缓存 / 应用卸载 / 大文件 / 废纸篓 / 报告）+ 配置编辑 + 触发扫描；端口解析顺序 `--port` → `MDC_PORT` → `config.json: dashboard_port`（默认 8766，避让常被占用的 8765）
+- **系统废纸篓管理**：`~/.Trash` 全量清单（隔离区单列、保持可恢复）；清空需逐字确认串 `EMPTY TRASH` + API token 双重门禁，默认保留隔离区
+- **TM 本地快照管理**：列表 + 单条删除；`com.apple.os.update-*` 系统更新回滚点代码级拒绝删除，重启装完更新即自动释放
+- **启动项只读报告**：第三方 LaunchAgents/LaunchDaemons 解析（com.apple.* 过滤）；刻意不接删除，启停归 `launchctl`
+- **TCC 优雅降级**：`~/.Trash` 与 `MobileSync` 是 macOS 权限保护目录——无权限时 API 返回 `available: false` / 类别缺席并给出授权指引，绝不中断扫描或报 500
 - **零运行时依赖**：纯 Python 标准库
 
 ## 命令参考
@@ -60,6 +65,7 @@
 python3 <skill-dir>/scripts/mac_dev_cleanup.py scan               # 只读扫描
 python3 <skill-dir>/scripts/mac_dev_cleanup.py clean-safe         # 干跑（只报告）
 python3 <skill-dir>/scripts/mac_dev_cleanup.py clean-safe --apply # 真清理（进废纸篓）
+python3 <skill-dir>/scripts/mac_dev_cleanup.py dupes              # 重复文件报告（只读）
 python3 <skill-dir>/scripts/mac_dev_cleanup.py --show-config      # 查看当前配置
 python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地 Web 控制台
 ```
@@ -71,3 +77,5 @@ python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地
 清理采用「Trash-first」策略：真实删除会先把文件移入 `~/.Trash/mac-dev-cleanup/<操作ID>/` 并写入操作清单，便于一键还原。完成后 Skill 会自动清空废纸篓释放空间（后台 osascript + 10 分钟轮询），并核验回收。
 
 若 `df` 未及时回血，先用**对照实验**区分「记账失灵」与「清理没生效」：往 `/tmp` 写一个 512M 文件看 `df` 是否变化，再删掉看是否回补——写降删不回补是记账问题（多见于有待装系统更新），写降删也回补则说明腾出的块被其它进程占用，两种都不该重复删。切勿因 `df` 未变就误判清理失败（验证用 `df -h ~`，而非 `df /`）。详见 SKILL.md 的「APFS snapshots」章节。
+
+另注意：`~/.Trash` 与 `~/Library/Application Support/MobileSync` 受 macOS TCC 保护。若 Web 控制台的「系统废纸篓」显示不可用、或扫描报告里没有 iOS 备份类别，把运行 `web_server.py` / 清理脚本的上下文（终端 App 或 launchd）加入「完全磁盘访问权限」即可，无需其它配置。
