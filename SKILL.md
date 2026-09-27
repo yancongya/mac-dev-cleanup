@@ -165,6 +165,15 @@ Cleaning `aggressive` is not automatically worth it: **updater/runtime caches ar
 - **Launch items report** (`GET /api/launch`): every third-party `.plist` under `~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons` parsed via plistlib (label, program, RunAtLoad/KeepAlive/Disabled). `com.apple.*` filtered. Deliberately read-only — enable/disable belongs to `launchctl`/the app, the report is the deliverable.
 - **TM local snapshots** (`GET /api/snapshots`, `POST /api/snapshot/delete`): `tmutil listlocalsnapshots /System/Volumes/Data` parsed, header line ignored. Deletion accepts ONLY strict date-format names (`YYYY-MM-DD-HHMMSS`) plus the literal confirm string `DELETE SNAPSHOT` — `com.apple.os.update-*` rollback points never match the pattern and are refused by code; only a reboot installing the update may reclaim them. Remind users: snapshot space may not show in `df` until the update installs.
 
+## Scheduled execution (2026-09-28): cron-managed 计划任务 tab
+
+- **Dashboard 计划任务 view** (`GET/POST /api/schedule`): configure unattended runs from the panel. Two schedulable jobs only — `scan` (weekly, weekday selectable) and `clean-safe` (daily HH:MM, runs with `--apply`). **`clean-aggressive` is deliberately not schedulable** (400 from the API): aggressive cleanup removes rebuild-costly trees (`node_modules`, virtualenvs) and requires per-candidate human confirmation.
+- **Crontab coexistence contract**: only lines carrying a trailing `# mdc-managed:<job>` marker are ever read or rewritten; the rest of the user's crontab is untouched. A disabled job stays in the crontab as a commented line, so the configured time survives a toggle. Pure functions `build_managed_cron_line` / `parse_managed_crontab` (round-trip tested) live in the CLI module; the web layer only shells out to `/usr/bin/crontab -l` / `crontab -`. Logs append to `~/.codex/logs/mac-dev-cleanup/cron-<job>.log`. A serving context without crontab access degrades to `crontab_available: false` and the panel disables its controls with an explanation.
+
+## Apps-listing self-healing (2026-09-28)
+
+- Uninstalling an app used to leave it in the dashboard listing forever (and its icon-cache PNG on disk): a present-but-stale `apps.json` short-circuited the rebuild path, and the `force` flag from the front end had no backend effect. Now `prune_stale_app_records()` (a) drops the uninstalled app's record and its md5-keyed icon-cache PNG right after a successful `--apply` uninstall, (b) runs on every `GET /api/apps` so externally deleted bundles self-heal, and (c) `prune_orphan_icons()` sweeps icon-cache PNGs whose bundle left apps.json after every rebuild.
+
 ## Tauri / Vite build by-products (config-driven)
 
 A Tauri app keeps its Rust workspace in `<project>/src-tauri`, and `tauri build` leaves several GB behind. These shapes are matched **anchored on the `src-tauri` parent**, so a generic name like `gen` elsewhere in a project is never touched.

@@ -161,6 +161,71 @@ def read_json(path: Path, fallback: object) -> object:
         return fallback
 
 
+def prune_stale_app_records(only_name: str | None = None) -> int:
+    """Drop apps.json records whose bundle has vanished and rewrite the file.
+
+    Self-healing for uninstalls (via this tool or elsewhere — Finder, another
+    cleaner): the listing used to keep serving deleted apps forever because a
+    present-but-stale apps.json short-circuits the rebuild path. When
+    *only_name* is given, records of other apps are kept untouched and only
+    that app's vanished bundle is removed (the post-uninstall fast path — no
+    need to stat the whole library). The icon-cache PNG keyed by the bundle
+    path is removed along with each dropped record. Returns records removed;
+    the file is rewritten only when something changed.
+    """
+    data = read_json(APPS_STATE_PATH, None)
+    if not (isinstance(data, dict) and isinstance(data.get("apps"), list)):
+        return 0
+    kept: list[object] = []
+    removed = 0
+    for a in data["apps"]:
+        if not isinstance(a, dict):
+            kept.append(a)
+            continue
+        if only_name is not None and a.get("name") != only_name:
+            kept.append(a)
+            continue
+        if Path(str(a.get("path", ""))).is_dir():
+            kept.append(a)
+            continue
+        removed += 1
+        key = hashlib.md5(str(a.get("path", "")).encode("utf-8")).hexdigest()
+        try:
+            (ICON_CACHE_DIR / (key + ".png")).unlink(missing_ok=True)
+        except OSError:
+            pass
+    if removed:
+        data["apps"] = kept
+        try:
+            APPS_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False),
+                                       encoding="utf-8")
+        except OSError:
+            pass
+    return removed
+
+
+def prune_orphan_icons() -> int:
+    """Delete icon-cache PNGs whose bundle is no longer in apps.json.
+
+    Runs after a full apps rebuild; the cache is keyed by md5(bundle path),
+    so uninstalled bundles leave orphans behind unless swept.
+    """
+    data = read_json(APPS_STATE_PATH, None)
+    apps = data.get("apps", []) if isinstance(data, dict) else []
+    valid = {hashlib.md5(str(a.get("path", "")).encode("utf-8")).hexdigest()
+             for a in apps if isinstance(a, dict)}
+    removed = 0
+    if ICON_CACHE_DIR.is_dir():
+        for f in ICON_CACHE_DIR.glob("*.png"):
+            if f.stem not in valid:
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    return removed
+
+
 def collect_trash_status() -> dict:
     """Read-only inventory of the quarantine area and the system Trash.
 
@@ -306,12 +371,93 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/dupes":
             self._handle_dupes_get()
             return
+        if path == "/api/schedule":
+            self._handle_schedule_get()
+            return
         super().do_GET()
+
+    # --- scheduled execution (crontab entries managed via marker lines) ---
+
+    @staticmethod
+    def _read_crontab() -> str | None:
+        """Current user crontab, or None when crontab is unavailable."""
+        try:
+            r = subprocess.run(["/usr/bin/crontab", "-l"],
+                               capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if r.returncode != 0:
+            # "no crontab for user" is an empty crontab, not an error
+            if "no crontab" in (r.stderr or "").lower():
+                return ""
+            return None
+        return r.stdout
+
+    @staticmethod
+    def _write_crontab(text: str) -> bool:
+        try:
+            r = subprocess.run(["/usr/bin/crontab", "-"], input=text,
+                               capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return r.returncode == 0
+
+    def _schedule_payload(self, crontab_text: str | None) -> dict:
+        managed = cleanup.parse_managed_crontab(crontab_text or "")
+        jobs: dict[str, object] = {}
+        for job in ("scan", "clean-safe"):
+            rec = managed.get(job)
+            jobs[job] = ({"enabled": rec["enabled"], "hour": rec["hour"],
+                          "minute": rec["minute"], "dow": rec["dow"],
+                          "line": rec["line"]} if rec else None)
+        return {"ok": True, "crontab_available": crontab_text is not None,
+                "jobs": jobs}
+
+    def _handle_schedule_get(self) -> None:
+        self.send_json(200, self._schedule_payload(self._read_crontab()))
+
+    def _handle_schedule_post(self, payload: dict) -> None:
+        job = payload.get("job")
+        if job not in cleanup.CRON_LOG_PATHS:
+            self.send_json(400, {
+                "ok": False,
+                "error": ("job must be 'scan' or 'clean-safe'; "
+                          "clean-aggressive is deliberately not schedulable")})
+            return
+        hour, minute = payload.get("hour"), payload.get("minute")
+        dow = payload.get("dow")
+        enabled = payload.get("enabled", True)
+        if not isinstance(enabled, bool):
+            self.send_json(400, {"ok": False, "error": "enabled must be a boolean"})
+            return
+        try:
+            line = cleanup.build_managed_cron_line(
+                job, hour if isinstance(hour, int) else -1,
+                minute if isinstance(minute, int) else -1,
+                dow if isinstance(dow, int) else None, enabled)
+        except ValueError as exc:
+            self.send_json(400, {"ok": False, "error": str(exc)})
+            return
+        current = self._read_crontab()
+        if current is None:
+            self.send_json(503, {"ok": False,
+                                 "error": "crontab unavailable from this process"})
+            return
+        # Drop every existing managed line for this job, then append the new one.
+        kept = [ln for ln in current.splitlines()
+                if not (f"{cleanup.MDC_CRON_MARKER}:{job}" in ln
+                        and (ln.find(cleanup.MDC_CRON_MARKER + ":") > 0))]
+        new_text = "\n".join(kept + [line]).rstrip("\n") + "\n"
+        if not self._write_crontab(new_text):
+            self.send_json(503, {"ok": False, "error": "failed to write crontab"})
+            return
+        self.send_json(200, self._schedule_payload(new_text))
 
     def _handle_apps_get(self) -> None:
         """Serve the installed-apps listing, building it in the background on
         first access (the CLI walks every bundle — takes a while)."""
         global APPS_BUILDING
+        prune_stale_app_records()  # self-heal: drop bundles deleted elsewhere
         data = read_json(APPS_STATE_PATH, None)
         if isinstance(data, dict) and isinstance(data.get("apps"), list):
             self.send_json(200, {"ok": True, "building": False,
@@ -322,18 +468,19 @@ class Handler(SimpleHTTPRequestHandler):
             if not APPS_BUILDING:
                 APPS_BUILDING = True
 
-                def worker() -> None:
-                    global APPS_BUILDING
-                    try:
-                        subprocess.run([sys.executable, str(SCRIPT), "apps"], cwd=ROOT,
-                                       text=True, capture_output=True, timeout=1800)
-                    except Exception:  # noqa: BLE001 — background job
-                        pass
-                    finally:
-                        with APPS_MUX:
-                            APPS_BUILDING = False
+        def worker() -> None:
+            global APPS_BUILDING
+            try:
+                subprocess.run([sys.executable, str(SCRIPT), "apps"], cwd=ROOT,
+                               text=True, capture_output=True, timeout=1800)
+                prune_orphan_icons()
+            except Exception:  # noqa: BLE001 — background job
+                pass
+            finally:
+                with APPS_MUX:
+                    APPS_BUILDING = False
 
-                threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=True).start()
         self.send_json(200, {"ok": True, "building": True, "apps": [], "timestamp": ""})
 
     def _handle_app_icon(self) -> None:
@@ -454,6 +601,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/uninstall":
             self._handle_uninstall(payload if isinstance(payload, dict) else {})
             return
+        if path == "/api/schedule":
+            self._handle_schedule_post(payload if isinstance(payload, dict) else {})
+            return
         self.send_json(404, {"ok": False, "error": "unknown API endpoint"})
 
     def _handle_apps_refresh(self) -> None:
@@ -470,6 +620,7 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 subprocess.run([sys.executable, str(SCRIPT), "apps"], cwd=ROOT,
                                text=True, capture_output=True, timeout=1800)
+                prune_orphan_icons()
             except Exception:  # noqa: BLE001 — background job
                 pass
             finally:
@@ -572,6 +723,11 @@ class Handler(SimpleHTTPRequestHandler):
             out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
             m = re.search(r"^operation_id:\s*(\S+)", out, re.M)
             ok = proc.returncode == 0
+            if ok and apply:
+                # Drop the uninstalled app from apps.json (and its icon cache)
+                # right away: the listing otherwise keeps serving it until a
+                # full rebuild, which never triggers while the file exists.
+                prune_stale_app_records(only_name=app)
             self.send_json(200 if ok else 422, {
                 "ok": ok, "exit_code": proc.returncode,
                 "operation_id": m.group(1) if m else None,

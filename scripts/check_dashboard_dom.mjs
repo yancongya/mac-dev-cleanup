@@ -82,9 +82,9 @@ const ok = (name, cond, extra = "") =>
 // --- structure: sidebar + four views ---
 ok("app 容器已渲染", $("#app").children.length > 0);
 ok("boot-error 未触发", !$("#boot-error").classList.contains("show"));
-ok("侧边栏六个导航项", doc.querySelectorAll(".nav-item").length === 6, doc.querySelectorAll(".nav-item").length);
+ok("侧边栏七个导航项", doc.querySelectorAll(".nav-item").length === 7, doc.querySelectorAll(".nav-item").length);
 ok("清理导航徽标有值", ($("#nav-badge-clean")?.textContent || "").length > 0, $("#nav-badge-clean")?.textContent);
-ok("六个视图容器", doc.querySelectorAll(".view").length === 6);
+ok("七个视图容器", doc.querySelectorAll(".view").length === 7);
 ok("默认显示概览视图", visible("#view-overview") && !visible("#view-clean"));
 ok("英雄区环形图", !!$("#view-overview .donut circle.val"));
 ok("英雄区可清理大数字", ($("#view-overview .hero-big")?.textContent || "").length > 0, $("#view-overview .hero-big")?.textContent);
@@ -144,6 +144,28 @@ ok("快照确认层含 tmutil 警示", ($("#snapshot-confirm")?.textContent || "
 ok("重复文件面板存在", !!$("#panel-dupes") && !!$("#pbody-dupes"));
 ok("重复文件浪费总量节点存在", !!$("#dupes-wasted"));
 ok("重复文件刷新按钮存在", !!$("#dupes-refresh"));
+
+// --- schedule view: cron-managed tasks (offline static skeleton + defaults) ---
+window.location.hash = "schedule";
+await sleep(80);
+ok("路由切换到计划任务视图", visible("#view-schedule") && !visible("#view-reports"));
+ok("计划任务视图导航高亮", $(".nav-item.active")?.getAttribute("data-nav") === "schedule", $(".nav-item.active")?.getAttribute("data-nav"));
+ok("schedule 导航项存在", !!doc.querySelector('.nav-item[data-nav="schedule"]'));
+ok("每日安全清理卡片存在", !!$("#panel-sched-clean-safe") && !!$("#pbody-sched-clean-safe"));
+ok("每周只读扫描卡片存在", !!$("#panel-sched-scan") && !!$("#pbody-sched-scan"));
+ok("clean-safe 时间控件存在", !!$("#sched-clean-safe-hour") && !!$("#sched-clean-safe-minute"));
+ok("scan 星期控件含七个选项", !!$("#sched-scan-dow") && $("#sched-scan-dow").querySelectorAll("option").length === 7);
+ok("scan 时间控件存在", !!$("#sched-scan-hour") && !!$("#sched-scan-minute"));
+ok("clean-safe 默认 03:30 且关闭", $("#sched-clean-safe-hour").value === "3" && $("#sched-clean-safe-minute").value === "30" && !$("#sched-clean-safe-en").checked);
+ok("scan 默认周日 04:00 且关闭", $("#sched-scan-dow").value === "0" && $("#sched-scan-hour").value === "4" && !$("#sched-scan-en").checked);
+ok("两张卡片各有保存按钮", !!$("#sched-clean-safe-save") && !!$("#sched-scan-save"));
+const schedNotes = $("#pbody-sched-notes")?.textContent || "";
+ok("clean-aggressive 禁用说明存在", schedNotes.includes("clean-aggressive") && schedNotes.includes("刻意不提供定时执行"), schedNotes.slice(0, 60));
+ok("mdc-managed 标记说明存在", schedNotes.includes("# mdc-managed:"));
+ok("清理日志路径说明存在", schedNotes.includes("cron-*.log"));
+const cronLines = doc.querySelectorAll("#pbody-sched-clean-safe .sched-cron, #pbody-sched-scan .sched-cron");
+ok("两卡片显示 crontab 行小字", cronLines.length === 2 && [...cronLines].every((e) => e.getAttribute("title")));
+ok("crontab 不可用提示默认隐藏", !!$("#sched-cron-warn") && $("#sched-cron-warn").hidden === true);
 
 // --- i18n (candidate table lives in the clean view) ---
 const reasonCells = [...doc.querySelectorAll("td.reason")].map((e) => e.textContent);

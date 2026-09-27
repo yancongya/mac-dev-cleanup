@@ -1936,6 +1936,88 @@ def restore_operation(operation_id: str) -> tuple[int, list[str]]:
 
 APP_DIRS = (Path("/Applications"), HOME / "Applications")
 APPS_STATE_PATH = LOG_DIR / "apps.json"
+
+# --- scheduled execution (dashboard 计划任务 tab) ---------------------------
+# Managed crontab entries carry a trailing "# mdc-managed:<job>" marker; only
+# those lines are ever read or rewritten, the rest of the user's crontab is
+# untouched. Only read-only/conservative jobs are schedulable by design —
+# clean-aggressive requires per-candidate human confirmation and must never
+# run unattended.
+MDC_CRON_MARKER = "# mdc-managed"
+CRON_LOG_PATHS = {
+    "scan": LOG_DIR / "cron-scan.log",
+    "clean-safe": LOG_DIR / "cron-clean-safe.log",
+}
+CRON_SCRIPT_DIR = Path(__file__).resolve().parent
+CRON_PYTHON = sys.executable or "python3"
+
+
+def build_managed_cron_line(job: str, hour: int, minute: int,
+                            dow: int | None = None,
+                            enabled: bool = True) -> str:
+    """One managed crontab line for a schedulable job.
+
+    scan is weekly (dow 0-6, Sunday=0, default Sunday); clean-safe is daily.
+    A disabled job stays in the crontab as a commented line so the configured
+    time survives a toggle. Raises ValueError on any policy violation.
+    """
+    if job not in CRON_LOG_PATHS:
+        raise ValueError(f"job must be one of {sorted(CRON_LOG_PATHS)}; "
+                         "clean-aggressive is deliberately not schedulable")
+    if not (isinstance(hour, int) and 0 <= hour <= 23
+            and isinstance(minute, int) and 0 <= minute <= 59):
+        raise ValueError("hour must be 0-23 and minute 0-59")
+    if job == "scan":
+        if dow is None:
+            dow = 0
+        if not (isinstance(dow, int) and 0 <= dow <= 6):
+            raise ValueError("scan dow must be 0-6 (Sunday=0)")
+        expr = f"{minute} {hour} * * {dow}"
+    else:
+        expr = f"{minute} {hour} * * *"
+    log = CRON_LOG_PATHS[job]
+    cmd = (f"cd {CRON_SCRIPT_DIR.parent} && {CRON_PYTHON} "
+           f"scripts/{Path(__file__).name} {job}"
+           + (" --apply" if job == "clean-safe" else "")
+           + f" >> {log} 2>&1")
+    line = f"{expr}  {cmd}  {MDC_CRON_MARKER}:{job}"
+    return f"# {line}" if not enabled else line
+
+
+def parse_managed_crontab(text: str) -> dict[str, dict[str, object]]:
+    """Extract managed jobs from crontab text -> {job: {...}}.
+
+    Lines are recognized by the trailing marker; a leading '#' (after optional
+    whitespace) marks the job disabled. Unknown job names after the marker are
+    ignored (forward compatibility).
+    """
+    jobs: dict[str, dict[str, object]] = {}
+    for raw in text.splitlines():
+        idx = raw.find(MDC_CRON_MARKER + ":")
+        if idx < 0:
+            continue
+        job = raw[idx + len(MDC_CRON_MARKER) + 1:].strip()
+        if job not in CRON_LOG_PATHS:
+            continue
+        body = raw.strip()
+        enabled = not body.startswith("#")
+        if not enabled:
+            body = body.lstrip("#").strip()
+        fields = body.split()
+        if len(fields) < 5:
+            continue
+        try:
+            minute, hour = int(fields[0]), int(fields[1])
+        except ValueError:
+            continue
+        try:
+            dow: int | None = int(fields[4])
+        except ValueError:
+            dow = None  # '*' or step/list syntax — no single weekday
+        jobs[job] = {"enabled": enabled, "hour": hour, "minute": minute,
+                     "dow": None if job == "clean-safe" else dow,
+                     "line": raw}
+    return jobs
 # Bundle names on disk may be localized (e.g. 剪映.app), so allow anything
 # except separators/NUL and a leading dot; traversal is additionally blocked
 # structurally in find_app_bundle.

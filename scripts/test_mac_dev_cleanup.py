@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt  # noqa: F401  (kept for parity with production imports)
+import hashlib
 import importlib.util
 import json
 import os
@@ -829,6 +830,150 @@ class WebTrashStatusTests(unittest.TestCase):
         # literal confirm contract cannot silently drift.
         src = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
         self.assertIn('payload.get("confirm") != "EMPTY TRASH"', src)
+
+
+class AppPruneTests(unittest.TestCase):
+    """apps.json self-healing: stale records + icon-cache orphans."""
+
+    def _make_state(self, base: Path, apps: list[dict]) -> Path:
+        state = base / "apps.json"
+        state.write_text(json.dumps({"timestamp": "t", "apps": apps},
+                                    ensure_ascii=False), encoding="utf-8")
+        return state
+
+    def _icon(self, base: Path, bundle_path: str) -> Path:
+        icons = base / "icon-cache"
+        icons.mkdir(parents=True, exist_ok=True)
+        p = icons / (hashlib.md5(bundle_path.encode("utf-8")).hexdigest() + ".png")
+        p.write_bytes(b"\x89PNG")
+        return p
+
+    def test_prune_drops_vanished_bundle_and_its_icon(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-appprune-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        alive = base / "Kept.app"; alive.mkdir()
+        state = self._make_state(base, [
+            {"name": "Kept.app", "path": str(alive)},
+            {"name": "Gone.app", "path": str(base / "Gone.app")},
+        ])
+        gone_icon = self._icon(base, str(base / "Gone.app"))
+        kept_icon = self._icon(base, str(alive))
+        with patch.object(web_server, "APPS_STATE_PATH", state), \
+             patch.object(web_server, "ICON_CACHE_DIR", base / "icon-cache"):
+            removed = web_server.prune_stale_app_records()
+        self.assertEqual(removed, 1)
+        data = json.loads(state.read_text(encoding="utf-8"))
+        self.assertEqual([a["name"] for a in data["apps"]], ["Kept.app"])
+        self.assertFalse(gone_icon.exists())       # icon swept with its record
+        self.assertTrue(kept_icon.exists())
+
+    def test_prune_only_name_leaves_other_stale_records(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-appprune-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        state = self._make_state(base, [
+            {"name": "Target.app", "path": str(base / "nope1.app")},
+            {"name": "Other.app", "path": str(base / "nope2.app")},
+        ])
+        with patch.object(web_server, "APPS_STATE_PATH", state), \
+             patch.object(web_server, "ICON_CACHE_DIR", base / "icon-cache"):
+            self.assertEqual(web_server.prune_stale_app_records(only_name="Target.app"), 1)
+        names = [a["name"] for a in json.loads(state.read_text(encoding="utf-8"))["apps"]]
+        self.assertEqual(names, ["Other.app"])     # untouched: full prune is GET's job
+
+    def test_prune_noop_when_all_alive_or_file_absent(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-appprune-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        alive = base / "Here.app"; alive.mkdir()
+        state = self._make_state(base, [{"name": "Here.app", "path": str(alive)}])
+        with patch.object(web_server, "APPS_STATE_PATH", state), \
+             patch.object(web_server, "ICON_CACHE_DIR", base / "icon-cache"):
+            self.assertEqual(web_server.prune_stale_app_records(), 0)
+            with patch.object(web_server, "APPS_STATE_PATH", base / "absent.json"):
+                self.assertEqual(web_server.prune_stale_app_records(), 0)
+        # no rewrite when nothing changed
+        self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["apps"],
+                         [{"name": "Here.app", "path": str(alive)}])
+
+    def test_prune_orphan_icons_keeps_current_apps(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-appprune-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        alive = base / "Here.app"; alive.mkdir()
+        self._make_state(base, [{"name": "Here.app", "path": str(alive)}])
+        keep = self._icon(base, str(alive))
+        orphan = self._icon(base, str(base / "Removed.app"))
+        with patch.object(web_server, "APPS_STATE_PATH", base / "apps.json"), \
+             patch.object(web_server, "ICON_CACHE_DIR", base / "icon-cache"):
+            self.assertEqual(web_server.prune_orphan_icons(), 1)
+        self.assertTrue(keep.exists())
+        self.assertFalse(orphan.exists())
+
+
+class CronScheduleTests(unittest.TestCase):
+    """Managed crontab lines: build/parse round-trip, policy, upsert."""
+
+    def test_build_scan_weekly_and_clean_safe_daily(self) -> None:
+        line = cleanup.build_managed_cron_line("scan", 4, 0, dow=0)
+        self.assertTrue(line.startswith("0 4 * * 0"))
+        self.assertNotIn("--apply", line)                  # scan is read-only
+        self.assertIn("scan", line)
+        self.assertIn(cleanup.MDC_CRON_MARKER + ":scan", line)
+        daily = cleanup.build_managed_cron_line("clean-safe", 3, 30)
+        self.assertTrue(daily.startswith("30 3 * * *"))
+        self.assertIn("clean-safe --apply", daily)
+
+    def test_build_policy_rejections(self) -> None:
+        with self.assertRaises(ValueError):
+            cleanup.build_managed_cron_line("clean-aggressive", 3, 30)
+        with self.assertRaises(ValueError):
+            cleanup.build_managed_cron_line("scan", 24, 0)
+        with self.assertRaises(ValueError):
+            cleanup.build_managed_cron_line("scan", 3, 60)
+        with self.assertRaises(ValueError):
+            cleanup.build_managed_cron_line("scan", 3, 30, dow=7)
+
+    def test_disabled_line_stays_commented(self) -> None:
+        line = cleanup.build_managed_cron_line("clean-safe", 3, 30, enabled=False)
+        self.assertTrue(line.startswith("#"))
+        jobs = cleanup.parse_managed_crontab(line)
+        self.assertFalse(jobs["clean-safe"]["enabled"])
+        self.assertEqual(jobs["clean-safe"]["hour"], 3)  # config survives toggle
+
+    def test_parse_round_trip_and_foreign_lines_untouched(self) -> None:
+        text = "\n".join([
+            "*/5 * * * * /usr/bin/something-else",           # foreign: kept out
+            "0 12 * * 1 echo hi  # not-a-managed-marker",    # foreign
+            cleanup.build_managed_cron_line("scan", 4, 0, dow=0),
+            cleanup.build_managed_cron_line("clean-safe", 3, 30, enabled=False),
+        ])
+        jobs = cleanup.parse_managed_crontab(text)
+        self.assertEqual(sorted(jobs), ["clean-safe", "scan"])
+        self.assertTrue(jobs["scan"]["enabled"])
+        self.assertEqual(jobs["scan"]["dow"], 0)
+        self.assertEqual(jobs["scan"]["minute"], 0)
+        self.assertFalse(jobs["clean-safe"]["enabled"])
+        self.assertIsNone(jobs["clean-safe"]["dow"])
+
+    def test_parse_ignores_unknown_job_after_marker(self) -> None:
+        text = f"0 5 * * * echo hi  {cleanup.MDC_CRON_MARKER}:future-job"
+        self.assertEqual(cleanup.parse_managed_crontab(text), {})
+
+    def test_upsert_replaces_only_own_job_lines(self) -> None:
+        # Mirror of the handler's filter logic, pinned so it cannot drift.
+        old_scan = cleanup.build_managed_cron_line("scan", 4, 0, dow=0)
+        old_cs = cleanup.build_managed_cron_line("clean-safe", 3, 30)
+        foreign = "*/10 * * * * /usr/bin/foreign-job"
+        crontab = "\n".join([foreign, old_scan, old_cs])
+        new_scan = cleanup.build_managed_cron_line("scan", 5, 15, dow=6)
+        job = "scan"
+        kept = [ln for ln in crontab.splitlines()
+                if not (f"{cleanup.MDC_CRON_MARKER}:{job}" in ln
+                        and (ln.find(cleanup.MDC_CRON_MARKER + ":") > 0))]
+        result = "\n".join(kept + [new_scan])
+        self.assertIn(foreign, result)                       # foreign intact
+        self.assertIn(old_cs, result)                        # other job intact
+        self.assertNotIn("0 4 * * 0", result)                # old scan gone
+        self.assertIn("15 5 * * 6", result)                  # new scan present
+
 
 
 class P1Batch2Tests(unittest.TestCase):

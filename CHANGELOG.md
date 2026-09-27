@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **计划任务 tab（2026-09-28）：dashboard 直配定时执行**。第 8 个视图「计划任务」：每日安全清理（clean-safe，每日 HH:MM，带 --apply）与每周只读扫描（scan，星期可选）的启用/时间配置。底层读写用户 crontab 中带 `# mdc-managed:<job>` 尾标的托管行——**其余条目永不触碰**；禁用 = 行首注释（保留配置的时间）。**clean-aggressive 刻意不可调度**（API 400）：aggressive 涉及 node_modules/虚拟环境等重建成本高的目录，必须人工逐项确认。纯函数 `build_managed_cron_line`/`parse_managed_crontab`（往返单测）在 CLI 模块，web 层只 shell 出 `/usr/bin/crontab`；crontab 不可用的上下文降级 `crontab_available:false`、控件禁用并给说明。日志写 `cron-<job>.log`。单测 74 → 80，DOM 79 → 95（第 8 视图 +16 断言）。
+
+### Fixed
+- **应用卸载后列表/图标残留（2026-09-28）**：卸载成功后 `apps.json` 不失效，而 `GET /api/apps` 只要文件存在就直接返回旧数据（前端 `loadApps(true)` 的 force 参数对后端无效）——已卸载应用永久残留；图标缓存 PNG（md5(bundle path) 键）也永不清理，实测真实环境已积累孤儿文件。修复三层：① 卸载 `--apply` 成功后立即从 apps.json 外科手术式移除该应用记录并删其图标缓存；② `GET /api/apps` 每次自愈过滤 bundle 已消失的死记录（外部途径删除的应用也能自愈）并持久化；③ 每次后台重建完成后孤儿图标清扫。
+
 ### Changed
 - **仓库去衍生物：`dashboard.html` 不再入库**。`dashboard.html` 与 `dashboard_template.html` 逐字节相同（`shasum 6b0a3b84…`）——自看板改为「不内联数据、由 `dashboard_data.js` / `config_data.js` 承载」之后，`_render_dashboard_html()` 已退化为模板的恒等拷贝，仓库却仍在提交两份 123,711 B 的文件。现收敛为**只跟踪模板**，`dashboard.html` 写入 `.gitignore`（每次 `scan` 重建，本地照常可打开）。连带把「`skilldo update` 会丢失的本地文件」清单从 3 项更正为 **4 项**（多出 `dashboard.html`），`_render_dashboard_html()` 的文档字符串也写明「恒等拷贝」这一事实与其保留原因（保证 `DASHBOARD_PATH` 在 scan 后必定存在，供 `web_server.py` 与门禁使用）。
 - **删除零引用的 `assets/` 目录**：全仓搜不到任何 `assets/` 引用（README、`docs/index.html`、全部脚本均无）；`assets/logo-light.svg` 与 `docs/logo.svg` 同哈希（`54f1658a…`）属纯重复，唯一独有内容 `logo-dark.svg` 先移入 `docs/` 再删目录。落地页仍从 `docs/logo.svg` 取图，展示不受影响。

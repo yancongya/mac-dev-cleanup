@@ -160,6 +160,15 @@ a{color:var(--indigo)}
 .ov-row .s{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600;flex:0 0 auto}
 .ov-selbar{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-top:12px;font-size:12px;color:var(--muted)}
 .cmd-out{background:var(--panel);border:1px dashed var(--border);border-radius:var(--radius);padding:10px 14px;margin-top:8px;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:var(--text);user-select:all}
+/* schedule view (计划任务) */
+.sched-warn{background:color-mix(in srgb, var(--amber) 12%, var(--panel));border:1px solid color-mix(in srgb, var(--amber) 40%, var(--border));border-radius:var(--radius);padding:10px 14px;margin-bottom:12px;font-size:12.5px;color:var(--amber)}
+.sched-card select{height:30px;padding:0 6px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--text);font-size:12px;font-family:inherit}
+.sched-card input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;margin:0}
+.sched-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
+.sched-cron{font-size:10.5px;color:var(--subtle);margin-top:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sched-notes{margin:0;padding-left:18px}
+.sched-notes li{margin:5px 0;font-size:12px;color:var(--muted);line-height:1.55}
+.sched-notes code{font-size:11px;color:var(--text)}
 
 /* top bar */
 .topbar{
@@ -761,6 +770,10 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
       报告
     </button>
+    <button class="nav-item" data-nav="schedule">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h4"/></svg>
+      计划任务
+    </button>
     <button class="nav-item" data-nav="settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       设置
@@ -976,7 +989,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // Collapse state is remembered across sessions via localStorage.
   var PANEL_DEFAULTS = { summary:true, risk:true, cat:true, treemap:true, tools:true,
     disk:true, table:true, cleanup:true, exechist:true, ops:true, settings:true,
-    launch:true, snapshots:true, dupes:true };
+    launch:true, snapshots:true, dupes:true,
+    "sched-clean-safe":true, "sched-scan":true, "sched-notes":true };
   var PANELS = Object.assign({}, PANEL_DEFAULTS);
   // .v2: 2026-09-24 — all panels default expanded; bumping the key discards
   // previously saved collapsed states so the new defaults actually apply.
@@ -1270,7 +1284,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
 
   // ---- view router (hash-based) ----
-  var VIEWS = ["overview","clean","apps","history","reports","settings"];
+  var VIEWS = ["overview","clean","apps","history","reports","schedule","settings"];
   function currentView(){
     var h = (location.hash||"#overview").slice(1);
     return VIEWS.indexOf(h)>=0 ? h : "overview";
@@ -1292,6 +1306,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(v==="clean") refreshList();
     if(v==="overview") syncOverviewSel();
     if(v==="reports") loadReports();
+    if(v==="schedule") loadSchedule();
     // jsdom's scrollTo is a not-implemented stub that logs a jsdomError; skip it
     // in headless checks so the render stays error-free.
     if(!/jsdom/i.test(navigator.userAgent)) window.scrollTo(0,0);
@@ -2606,16 +2621,28 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         panel("snapshots","TM 快照","本地快照 · 删除需强确认", renderSnapshotsInner(), true) +
         panel("dupes","重复文件","四级渐进哈希 · 已排除硬链接与 .git", renderDupesInner(), true) +
       '</div>'+
+      '<div class="view" id="view-schedule" style="display:none">'+
+        '<div class="ov-head"><h2>计划任务</h2>'+
+          '<span class="ov-head-note" id="sched-meta"></span>'+
+        '</div>'+
+        '<p class="ov-sub">定时执行只读扫描与安全清理（底层为 crontab 中由本工具托管的条目）。</p>'+
+        '<div class="sched-warn" id="sched-cron-warn" hidden>当前服务进程无法访问 crontab——请从终端启动 web_server</div>'+
+        panel("sched-clean-safe","每日安全清理","safe 级别 · 先进废纸篓可还原", scheduleCardHtml("clean-safe")) +
+        panel("sched-scan","每周只读扫描","只读 · 刷新看板数据", scheduleCardHtml("scan")) +
+        panel("sched-notes","安全说明","逐条必读", renderScheduleNotesInner()) +
+      '</div>'+
       '<div class="view" id="view-settings" style="display:none">'+
         settingsHtml() +
       '</div>';
-    ["overview","clean","apps","history","reports","settings"].forEach(applyViewOrder);
+    ["overview","clean","apps","history","reports","schedule","settings"].forEach(applyViewOrder);
     bindTable();
     bindOverview();
     bindSettings();
     bindApps();
     bindReports();
+    bindSchedule();
     if(APPS.data) renderApps();
+    if(SCHED.data) renderSchedule();
     renderTrash();
     bindTrashConfirm();
     renderOperations();
@@ -2909,6 +2936,119 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   var REPORTS = { launch:null, snapshots:null, dupes:null, dupesTimer:null };
   var PENDING_SNAPSHOT = null;
   var SCOPE_ZH = { "user":"用户", "local-agents":"本地代理", "local-daemons":"本地守护" };
+
+  // ---- schedule view (计划任务：crontab 托管条目) ----
+  var DOW_ZH = ["周日","周一","周二","周三","周四","周五","周六"];
+  var SCHED = { data:null };   // GET /api/schedule 响应缓存；null = 尚未加载
+
+  function loadSchedule(){
+    if(!state.apiOnline) return;
+    fetch("api/schedule",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(j){
+        if(!j || !j.ok) return;
+        SCHED.data=j;
+        renderSchedule();
+      }).catch(function(){});
+  }
+  // 未配置过的任务（null）给默认值：clean-safe 03:30 关闭；scan 周日 04:00 关闭
+  function schedJob(job){
+    var j = SCHED.data && SCHED.data.jobs && SCHED.data.jobs[job];
+    if(j) return j;
+    return job==="scan"
+      ? {enabled:false, hour:4, minute:0, dow:0, line:null}
+      : {enabled:false, hour:3, minute:30, dow:null, line:null};
+  }
+  function schedSelect(id, opts, val, disabled){
+    return '<select id="'+esc(id)+'" aria-label="'+esc(id)+'"'+(disabled?" disabled":"")+'>'+
+      opts.map(function(o){
+        return '<option value="'+o.v+'"'+(String(o.v)===String(val)?" selected":"")+'>'+esc(o.l)+'</option>';
+      }).join("")+'</select>';
+  }
+  function scheduleCardHtml(job){
+    var dis = !!(SCHED.data && SCHED.data.crontab_available===false);
+    var j = schedJob(job);
+    var isScan = job==="scan";
+    var hours=[],minutes=[],dows=DOW_ZH.map(function(l,v){return {v:v,l:l};});
+    for(var h=0;h<24;h++) hours.push({v:h, l:(h<10?"0":"")+h});
+    for(var m=0;m<60;m++) minutes.push({v:m, l:(m<10?"0":"")+m});
+    var desc = isScan
+      ? "每周全量只读扫描并刷新看板数据，不删除任何文件"
+      : "每日在指定时间自动运行安全清理（safe 级别：纯缓存/临时产物，先进废纸篓可还原）";
+    var line = j.line || "尚未配置（保存后写入 crontab）";
+    return '<div class="sched-card">'+
+      '<label class="sched-row"><input type="checkbox" id="sched-'+job+'-en"'+(j.enabled?" checked":"")+(dis?" disabled":"")+'> <strong>启用</strong></label>'+
+      '<p class="ov-sub" style="margin:8px 0 10px">'+esc(desc)+'</p>'+
+      '<div class="sched-row">'+
+        (isScan
+          ? '<span>每</span>'+schedSelect("sched-scan-dow",dows,(j.dow==null?0:j.dow),dis)
+          : '<span>每天</span>')+
+        '<span>，</span>'+
+        schedSelect("sched-"+job+"-hour",hours,j.hour,dis)+'<span>点</span>'+
+        schedSelect("sched-"+job+"-minute",minutes,j.minute,dis)+'<span>分执行</span>'+
+      '</div>'+
+      '<div class="sched-row" style="margin-top:12px">'+
+        '<button type="button" class="btn primary sched-save" id="sched-'+job+'-save" data-job="'+job+'"'+(dis?" disabled":"")+'>保存</button>'+
+      '</div>'+
+      '<div class="mono sched-cron" id="sched-'+job+'-line" title="'+esc(line)+'">crontab 行：'+esc(line)+'</div>'+
+    '</div>';
+  }
+  function renderScheduleNotesInner(){
+    return '<ul class="sched-notes">'+
+      '<li>深度清理（clean-aggressive）刻意不提供定时执行——涉及 node_modules/虚拟环境等重建成本高的目录，必须人工逐项确认。</li>'+
+      '<li>本面板只读写 crontab 中带 <code class="mono"># mdc-managed:&lt;任务名&gt;</code> 标记的行，你自己的其它定时任务不受影响。</li>'+
+      '<li>清理日志写入 <code class="mono">~/.codex/logs/mac-dev-cleanup/cron-*.log</code>。</li>'+
+    '</ul>';
+  }
+  // 用已加载数据重绘两张任务卡片（离线/未加载时保持 renderAll 里的默认骨架）
+  function renderSchedule(){
+    var data=SCHED.data;
+    var warn=$("sched-cron-warn");
+    if(warn) warn.hidden = !(data && data.crontab_available===false);
+    var meta=$("sched-meta");
+    if(meta) meta.textContent = data
+      ? (data.crontab_available===false ? "crontab 不可用" : "crontab 已连接")
+      : "";
+    ["clean-safe","scan"].forEach(function(job){
+      var body=$("pbody-sched-"+job);
+      if(body) body.innerHTML = scheduleCardHtml(job);
+    });
+  }
+  function saveSchedule(job){
+    if(!state.apiOnline){ toast("需要在线模式才能操作","err"); return; }
+    if(SCHED.data && SCHED.data.crontab_available===false){ toast("crontab 不可用，无法保存","err"); return; }
+    var hour=parseInt($("sched-"+job+"-hour").value,10);
+    var minute=parseInt($("sched-"+job+"-minute").value,10);
+    var body={job:job, hour:hour, minute:minute, enabled:!!($("sched-"+job+"-en") && $("sched-"+job+"-en").checked)};
+    if(job==="scan") body.dow=parseInt($("sched-scan-dow").value,10);
+    var btn=$("sched-"+job+"-save");
+    if(btn){ btn.disabled=true; btn.textContent="保存中…"; }
+    fetch("api/schedule",{method:"POST",headers:postHeaders(),body:JSON.stringify(body)})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if(btn){ btn.disabled=false; btn.textContent="保存"; }
+        if(j && j.ok){
+          if(SCHED.data && j.jobs) SCHED.data.jobs=j.jobs;
+          else SCHED.data=j;
+          renderSchedule();
+          toast("计划任务已保存","ok");
+        } else {
+          toast("保存失败："+((j && j.error)||"未知错误"),"err");
+        }
+      })
+      .catch(function(){
+        if(btn){ btn.disabled=false; btn.textContent="保存"; }
+        toast("网络错误","err");
+      });
+  }
+  function bindSchedule(){
+    var view=$("view-schedule");
+    if(!view) return;
+    view.addEventListener("click", function(e){
+      var btn=e.target.closest(".sched-save");
+      if(!btn) return;
+      saveSchedule(btn.getAttribute("data-job"));
+    });
+  }
 
   function loadReports(){
     if(!state.apiOnline) return;
@@ -3370,6 +3510,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       loadExecHistory();
       loadApps(false);
       loadReports();
+      loadSchedule();
       // resume the log panel if an execution is already in flight (reload mid-run)
       fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
         .then(function(s){
