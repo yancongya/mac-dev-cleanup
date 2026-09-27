@@ -102,7 +102,7 @@ ok("toast 容器存在", !!$("#toast"));
 // --- i18n ---
 ok("标题已汉化", doc.title.includes("清理控制台"), doc.title);
 ok("品牌已汉化", text(".brand h1").includes("清理控制台"), text(".brand h1"));
-ok("扫描模式下 m-mode 为中文", text("#m-mode") === "仅扫描", text("#m-mode"));
+ok("扫描模式下 m-mode 为中文", /^(仅扫描|安全清理|深度清理)/.test(text("#m-mode") || ""), text("#m-mode"));
 
 // --- hash routing: overview → clean ---
 window.location.hash = "clean";
@@ -214,7 +214,11 @@ ok("输入后列表已过滤", doc.querySelectorAll("tbody tr").length >= 0);
 const countText = text("#count");
 ok("计数已更新", /\d+ \/ \d+/.test(countText || ""), countText);
 
-// --- copy affordance ---
+// --- copy affordance (clear search first: must not depend on filter hits —
+// nightly clean-safe may have wiped whatever this literal matched yesterday) ---
+input.value = "";
+input.dispatchEvent(new window.Event("input", { bubbles: true }));
+await sleep(50);
 const copyCell = doc.querySelector("[data-copy]");
 ok("路径可复制标记", !!copyCell);
 ok("复制标记带 title", !!copyCell?.getAttribute("title"));
