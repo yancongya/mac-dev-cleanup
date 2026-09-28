@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import plistlib
+import subprocess
 import sys
 import shutil
 import tempfile
@@ -1155,6 +1156,59 @@ class P2ReportTests(unittest.TestCase):
         (root / "y.bin").write_bytes(head + b"2" * 1024)
         result = cleanup.find_duplicates([root], min_size=1024)
         self.assertEqual(result["groups"], [])
+
+
+    def test_service_plist_shape(self) -> None:
+        xml = cleanup._service_plist_xml()
+        self.assertIn(cleanup.SERVICE_LABEL, xml)
+        self.assertIn(cleanup.WEB_SERVER_PATH.name, xml)
+        self.assertIn(cleanup.SERVICE_PYTHON, xml)
+        self.assertIn("<key>KeepAlive</key><true/>", xml)
+        self.assertIn("<key>RunAtLoad</key><true/>", xml)
+        self.assertIn(str(cleanup._dashboard_port()), xml)
+
+    def test_service_plist_rejects_nonexistent_python(self) -> None:
+        # install path guards against a missing interpreter (exit 2, no plist write)
+        with patch.object(cleanup, "SERVICE_PYTHON", "/no/such/python"), \
+             patch.object(cleanup, "SERVICE_PLIST",
+                          Path(tempfile.mkdtemp(prefix="mdc-svc-")) / "x.plist") as plist:
+            rc = cleanup.cmd_service("install")
+        self.assertEqual(rc, 2)
+        self.assertFalse(plist.exists())
+
+    def test_service_uninstall_removes_plist(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="mdc-svc-"))
+        plist = tmp / "svc.plist"
+        plist.write_text("<plist/>")
+        with patch.object(cleanup, "SERVICE_PLIST", plist):
+            rc = cleanup.cmd_service("uninstall")
+        self.assertEqual(rc, 0)
+        self.assertFalse(plist.exists())
+
+    def test_service_status_reports_down(self) -> None:
+        with patch.object(cleanup, "SERVICE_PLIST",
+                          Path(tempfile.mkdtemp(prefix="mdc-svc-")) / "none.plist"), \
+             patch.object(cleanup, "_service_running", return_value=False), \
+             patch.object(cleanup.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
+            rc = cleanup.cmd_service("status")
+        self.assertEqual(rc, 0)
+
+    def test_candidate_id_deterministic(self) -> None:
+        c1 = cleanup.Candidate(Path("/tmp/a"), 100, "app-cache", "safe", "r")
+        c2 = cleanup.Candidate(Path("/tmp/a"), 100, "app-cache", "safe", "r")
+        c3 = cleanup.Candidate(Path("/tmp/a"), 100, "app-log", "safe", "r")
+        self.assertEqual(cleanup.candidate_id(c1), cleanup.candidate_id(c2))
+        self.assertNotEqual(cleanup.candidate_id(c1), cleanup.candidate_id(c3))
+
+    def test_filtered_run_never_overwrites_state(self) -> None:
+        # Contract: with --candidate-id/--category the main flow must not call
+        # write_state (the dashboard refreshes the inventory with its own scan).
+        src = (Path(__file__).parent / "mac_dev_cleanup.py").read_text(encoding="utf-8")
+        self.assertIn("if args.candidate_id or args.category:", src)
+        self.assertIn("state.json left unchanged", src)
+        guarded = src[src.index("if args.candidate_id or args.category:"):]
+        guarded = guarded[:guarded.index("else:")]
+        self.assertNotIn("write_state(", guarded)
 
 
 if __name__ == "__main__":

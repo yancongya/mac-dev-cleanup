@@ -2517,10 +2517,133 @@ def _render_dashboard_html(state: dict) -> None:
         print(f"warning: failed to build dashboard.html: {exc}")
 
 
+# ---- launchd service (常驻服务) ---------------------------------------------
+# The dashboard only sees TCC-protected data (~/.Trash, MobileSync) and the
+# user's crontab when it runs from a properly permissioned, persistent context.
+# A user LaunchAgent solves both: it survives terminal/session exits, and once
+# the interpreter is granted Full Disk Access every protected feature works.
+
+SERVICE_LABEL = "com.yancongya.mac-dev-cleanup"
+SERVICE_PLIST = HOME / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
+SERVICE_PYTHON = "/usr/bin/python3"
+WEB_SERVER_PATH = Path(__file__).resolve().parent / "web_server.py"
+
+
+def _dashboard_port() -> int:
+    try:
+        return int(CONFIG.get("dashboard_port", 8766))
+    except (TypeError, ValueError):
+        return 8766
+
+
+def _service_plist_xml() -> str:
+    log = LOG_DIR / "service"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{SERVICE_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{SERVICE_PYTHON}</string>
+        <string>{WEB_SERVER_PATH}</string>
+        <string>--port</string>
+        <string>{_dashboard_port()}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>{log / "out.log"}</string>
+    <key>StandardErrorPath</key><string>{log / "err.log"}</string>
+    <key>WorkingDirectory</key><string>{Path(__file__).resolve().parent.parent}</string>
+</dict>
+</plist>
+"""
+
+
+def _service_uid() -> str:
+    import os
+    return str(os.getuid())
+
+
+def _service_running() -> bool:
+    """True when something is answering the dashboard health endpoint."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{_dashboard_port()}/api/health",
+                timeout=3) as resp:
+            return resp.status == 200
+    except OSError:
+        return False
+
+
+def cmd_service(action: str) -> int:
+    uid = _service_uid()
+    if action == "status":
+        installed = SERVICE_PLIST.is_file()
+        loaded = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"],
+            capture_output=True, text=True).returncode == 0
+        alive = _service_running()
+        print(f"plist installed : {installed}  ({SERVICE_PLIST})")
+        print(f"launchd loaded  : {loaded}")
+        print(f"health endpoint : {'up' if alive else 'down'}  (port {_dashboard_port()})")
+        if installed and not alive:
+            print("hint: 授权「完全磁盘访问」后 `launchctl kickstart -k gui/"
+                  f"{uid}/{SERVICE_LABEL}` 重启服务")
+        return 0
+    if action == "uninstall":
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
+                       capture_output=True, text=True)
+        if SERVICE_PLIST.exists():
+            SERVICE_PLIST.unlink()
+            print(f"removed {SERVICE_PLIST}")
+        else:
+            print("service was not installed")
+        return 0
+    # install
+    if not Path(SERVICE_PYTHON).exists():
+        print(f"error: {SERVICE_PYTHON} not found — install the Command Line Tools (xcode-select --install)", file=sys.stderr)
+        return 2
+    if _service_running():
+        print(f"warning: 端口 {_dashboard_port()} 已有服务在响应——如果它是某个会话临时启动的，")
+        print("  请先停掉它，否则本服务会因端口冲突反复重启。继续安装（会在旧服务停止后自动接管）。")
+    SERVICE_PLIST.parent.mkdir(parents=True, exist_ok=True)
+    (LOG_DIR / "service").mkdir(parents=True, exist_ok=True)
+    # Bootout first so reinstall always starts from a clean slate.
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
+                   capture_output=True, text=True)
+    SERVICE_PLIST.write_text(_service_plist_xml(), encoding="utf-8")
+    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(SERVICE_PLIST)],
+                   capture_output=True, text=True)
+    loaded = subprocess.run(
+        ["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"],
+        capture_output=True, text=True).returncode == 0
+    if loaded:
+        print(f"installed & loaded: {SERVICE_PLIST}")
+        print(f"dashboard : http://127.0.0.1:{_dashboard_port()}/dashboard.html  (开机自启 · 崩溃自动拉起)")
+    else:
+        # Some host contexts (IDEs, agent runners) are refused by launchd with
+        # "Input/output error" regardless of plist validity — the bootstrap
+        # must come from a real login shell (Terminal).
+        print(f"plist written : {SERVICE_PLIST}")
+        print("launchd 未加载 —— 当前宿主环境被 macOS 拒绝执行 bootstrap（正常现象，Terminal 不受影响）。")
+        print("请在 Terminal.app 里执行一次：")
+        print(f"  launchctl bootstrap gui/{uid} {SERVICE_PLIST}")
+        print(f"之后用 `python3 {Path(__file__).resolve()} service --service-action status` 验证。")
+    print("--- 最后一步（必需，授权完全磁盘访问）---")
+    print(f"系统设置 → 隐私与安全性 → 完全磁盘访问 → 添加「{SERVICE_PYTHON}」（「+ 其他」里选它），")
+    print(f"然后运行: launchctl kickstart -k gui/{uid}/{SERVICE_LABEL}")
+    print("授权后系统废纸篓 / iOS 备份 / Safari 缓存全部可用；crontab 计划任务在服务加载后立即可用。")
+    return 0 if loaded else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan and clean macOS developer-generated files.")
-    parser.add_argument("mode", nargs="?", choices=["scan", "clean-safe", "clean-aggressive", "apps", "uninstall", "dupes"],
+    parser.add_argument("mode", nargs="?", choices=["scan", "clean-safe", "clean-aggressive", "apps", "uninstall", "dupes", "service"],
                         help="Operation mode. Omit when using --show-config / --set-config.")
+    parser.add_argument("--service-action", choices=["install", "uninstall", "status"], default=None,
+                        help="service mode: install / uninstall / status the launchd LaunchAgent.")
     parser.add_argument("--min-size", type=int, default=None,
                         help="dupes: minimum file size in bytes (default 10 MB).")
     parser.add_argument("--roots", action="append", default=[],
@@ -2590,6 +2713,10 @@ def main() -> int:
     if args.mode == "dupes":
         roots = [Path(r).expanduser() for r in args.roots] or None
         return cmd_dupes(args.min_size if args.min_size else DUPES_MIN_SIZE_DEFAULT, roots)
+    if args.mode == "service":
+        if not args.service_action:
+            parser.error("--service-action install|uninstall|status is required for service mode")
+        return cmd_service(args.service_action)
 
     if not args.mode:
         parser.error("mode is required (scan / clean-safe / clean-aggressive) unless using --show-config / --set-config")
@@ -2654,7 +2781,18 @@ def main() -> int:
             print(f"warning: {count} candidates skipped — {msg[len('skipped: '):]}; quit the app and re-run")
 
     after_df = get_free_space()
-    state = write_state(args.mode, args.apply, tools, candidates, actions, before_df, after_df, stale_days)
+    # Filtered runs (--candidate-id / --category) are dashboard-selected
+    # operations against a possibly stale inventory. They must never overwrite
+    # the global state: with zero matches (the nightly job already cleaned what
+    # the user selected) a full overwrite would wipe the dashboard inventory,
+    # and with matches it would shrink it to just the filtered subset. The
+    # web panel refreshes the full inventory with its own scan after a clean.
+    if args.candidate_id or args.category:
+        if not candidates:
+            print("warning: no candidates matched the selected ids/categories — state.json left unchanged")
+        state = "unchanged (filtered run)"
+    else:
+        state = write_state(args.mode, args.apply, tools, candidates, actions, before_df, after_df, stale_days)
 
     visible = candidates[: args.limit] if args.limit else candidates
     potential = sum(c.size for c in candidates if c.size >= 0 and is_eligible(c))

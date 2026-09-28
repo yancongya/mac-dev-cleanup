@@ -524,11 +524,36 @@ class Handler(SimpleHTTPRequestHandler):
                         "mode": data.get("mode", ""),
                         "entry_count": len(entries),
                         "total_bytes": total_bytes,
+                        # Preview for the expandable row (paths only, capped).
+                        "entries": [str(e.get("original_path") or e.get("path") or "")
+                                    for e in entries[:20]],
                         "restore_command": f"python3 scripts/mac_dev_cleanup.py --restore {data.get('operation_id', f.stem)}",
                     })
                 except (OSError, json.JSONDecodeError):
                     continue
         self.send_json(200, {"operations": ops})
+
+    def _handle_operations_restore(self, payload: dict) -> None:
+        """One-click restore: move a whole quarantined operation back in place."""
+        op_id = str(payload.get("operation_id", "")).strip()
+        if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", op_id):
+            self.send_json(400, {"ok": False, "error": "invalid operation_id"})
+            return
+        if not (OPERATIONS_DIR / f"{op_id}.json").is_file():
+            self.send_json(404, {"ok": False, "error": f"operation not found: {op_id}"})
+            return
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT), "--restore", op_id],
+                cwd=ROOT, text=True, capture_output=True, timeout=1800)
+        except subprocess.TimeoutExpired:
+            self.send_json(504, {"ok": False, "error": "restore timed out"})
+            return
+        out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        m = re.search(r"^restored:\s*(\d+)", out, re.M)
+        self.send_json(200 if proc.returncode == 0 else 500,
+                       {"ok": proc.returncode == 0, "operation_id": op_id,
+                        "restored": int(m.group(1)) if m else 0, "output": out[-4000:]})
 
     def _handle_trash_get(self) -> None:
         """Quarantine status plus a read-only inventory of the system Trash."""
@@ -597,6 +622,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/snapshot/delete":
             self._handle_snapshot_delete(payload if isinstance(payload, dict) else {})
+            return
+        if path == "/api/operations/restore":
+            self._handle_operations_restore(payload if isinstance(payload, dict) else {})
             return
         if path == "/api/uninstall":
             self._handle_uninstall(payload if isinstance(payload, dict) else {})
@@ -801,6 +829,15 @@ class Handler(SimpleHTTPRequestHandler):
                     EXEC_HISTORY.insert(0, rec)
                     del EXEC_HISTORY[EXEC_HISTORY_CAP:]
                 _persist_exec_record(rec)
+                # A filtered clean never rewrites state.json (see the CLI), so
+                # the inventory would keep listing already-cleaned items. Fire
+                # a full read-only scan afterwards to refresh it in place.
+                if code == 0 and apply:
+                    try:
+                        subprocess.run([sys.executable, str(SCRIPT), "scan", "--limit", "0"],
+                                       cwd=ROOT, text=True, capture_output=True, timeout=600)
+                    except Exception:  # noqa: BLE001 — best-effort refresh
+                        pass
             except Exception as exc:  # noqa: BLE001 — background thread, report anything
                 with EXEC_MUX:
                     EXEC_STATE["exit_code"] = -1

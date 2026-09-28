@@ -174,6 +174,12 @@ Cleaning `aggressive` is not automatically worth it: **updater/runtime caches ar
 
 - Uninstalling an app used to leave it in the dashboard listing forever (and its icon-cache PNG on disk): a present-but-stale `apps.json` short-circuited the rebuild path, and the `force` flag from the front end had no backend effect. Now `prune_stale_app_records()` (a) drops the uninstalled app's record and its md5-keyed icon-cache PNG right after a successful `--apply` uninstall, (b) runs on every `GET /api/apps` so externally deleted bundles self-heal, and (c) `prune_orphan_icons()` sweeps icon-cache PNGs whose bundle left apps.json after every rebuild.
 
+## LaunchAgent service + one-click restore (2026-09-28)
+
+- **`service --service-action install|uninstall|status`**: writes `~/Library/LaunchAgents/com.yancongya.mac-dev-cleanup.plist` (RunAtLoad + KeepAlive, system `/usr/bin/python3`, logs under `LOG_DIR/service/`). `launchctl bootstrap` **from IDE/agent host contexts is refused by macOS with "Input/output error" (5)** — even for minimal valid plists; only a real Terminal login shell can load it. The installer therefore writes the plist, verifies the load, and prints the exact Terminal command when refused. `~/.Trash`, `MobileSync`, Safari caches and the dashboard schedule tab all need this persistent, FDA-granted context.
+- **One-click restore**: `POST /api/operations/restore` (id regex-gated, 404 on unknown ids) wraps the CLI `--restore`; the operations panel lists file previews (`original_path` — note the manifest key is NOT `path`) with a two-click armed restore button.
+- **State-integrity guard (root cause of "everything went empty")**: the dashboard's clean runs use `--candidate-id` filters against a possibly stale inventory. When the ids no longer match (e.g. the nightly job cleaned them first), collect() returns empty and `write_state` would overwrite the good inventory with 0 candidates — collapsing the whole dashboard. Filtered runs now **never** write `state.json` (zero-match case prints a warning and leaves state untouched); the web server fires a full `scan --limit 0` after every applied clean to refresh the inventory, and the UI re-polls state after 6 s.
+
 ## Tauri / Vite build by-products (config-driven)
 
 A Tauri app keeps its Rust workspace in `<project>/src-tauri`, and `tauri build` leaves several GB behind. These shapes are matched **anchored on the `src-tauri` parent**, so a generic name like `gen` elsewhere in a project is never touched.

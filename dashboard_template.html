@@ -545,6 +545,11 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
 @media(max-width:639px){.ops-count{margin-left:0}}
 .ops-size{font-family:ui-monospace,monospace;font-weight:600;font-variant-numeric:tabular-nums;min-width:60px;text-align:right}
 .ops-restore{flex:0 0 auto}
+.ops-item{border-bottom:1px solid var(--border)}
+.ops-item:last-child{border-bottom:none}
+.ops-detail{padding:6px 18px 10px 28px;background:var(--row-hover)}
+.ops-entry{font-family:ui-monospace,monospace;font-size:11px;color:var(--muted);padding:2px 0;word-break:break-all}
+.apps-after{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
 /* cleanup guide */
 .cleanup-cmd{margin-bottom:12px}
 .cleanup-cmd:last-child{margin-bottom:0}
@@ -811,7 +816,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     "scan only":"仅扫描", "would delete":"将删除", deleted:"已删除", "needs review":"待确认", failed:"失败",
     "skipped: WeChat is running":"跳过：微信运行中"
   };
-  var MODE_ZH = { scan:"仅扫描", "clean-safe":"安全清理", "clean-aggressive":"深度清理" };
+  var MODE_ZH = { scan:"仅扫描", "clean-safe":"安全清理", "clean-aggressive":"深度清理", uninstall:"应用卸载" };
   var TOOL_ZH = { ok:"已安装", miss:"缺失", core:"核心", optional:"可选" };
 
   /* Theme toggle: persisted to localStorage, overrides system preference */
@@ -2326,7 +2331,9 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     }
     var items=(sys && sys.items)||[];
     if(sys && sys.available===false){
-      el.innerHTML='<div class="empty">macOS 未授权读取 ~/.Trash —— 给当前启动环境（终端/自动化）授予「完全磁盘访问」后重启服务即可</div>'+
+      el.innerHTML='<div class="empty">macOS 未授权读取 ~/.Trash —— 授权两步即可：<br>'+
+        '① 终端运行 <code>python3 scripts/mac_dev_cleanup.py service install</code> 安装常驻服务；'+
+        '② 系统设置 → 隐私与安全性 → 完全磁盘访问 → 添加 <code>/usr/bin/python3</code>，然后 <code>launchctl kickstart -k gui/$UID/'+esc("com.yancongya.mac-dev-cleanup")+'</code> 重启服务</div>'+
         '<div class="sys-trash-actions"><button type="button" class="btn danger" id="empty-system-trash-btn" disabled title="读取被 macOS 权限阻止">清空系统废纸篓</button></div>';
       return;
     }
@@ -2417,19 +2424,58 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   function renderOperations(){
     var el=$("ops-list"); if(!el) return;
-    if(!OPERATIONS.length){ el.innerHTML='<div class="empty">暂无操作记录</div>'; return; }
-    el.innerHTML=OPERATIONS.slice(0,10).map(function(op){
+    if(!OPERATIONS.length){ el.innerHTML='<div class="empty">暂无操作记录 — 卸载应用、执行清理后，所有可还原的操作都会出现在这里</div>'; return; }
+    el.innerHTML=OPERATIONS.slice(0,15).map(function(op,i){
       var t=op.timestamp?op.timestamp.replace("T"," ").slice(0,16):"";
       var modeLabel=MODE_ZH[op.mode]||op.mode;
-      return '<div class="ops-row">'+
-        '<span class="ops-time">'+esc(t)+'</span>'+
-        '<span class="tag tag-'+(op.mode==="clean-safe"?"safe":"aggressive")+'">'+esc(modeLabel)+'</span>'+
-        '<span class="ops-count">'+op.entry_count+' 项</span>'+
-        '<span class="ops-size">'+fmtSize(op.total_bytes)+'</span>'+
-        '<button class="ra-btn ops-restore copyable" data-copy="'+esc(op.restore_command)+'" title="复制还原命令" aria-label="还原">↺</button>'+
+      var entries=(op.entries||[]).map(function(p){ return '<div class="ops-entry">'+esc(p)+'</div>'; }).join("");
+      var more=(op.entry_count||0)>(op.entries||[]).length?'<div class="ops-entry c-slate">…共 '+(op.entry_count||0)+' 项</div>':"";
+      return '<div class="ops-item">'+
+        '<div class="ops-row" data-ops="'+i+'">'+
+          '<span class="ops-time">'+esc(t)+'</span>'+
+          '<span class="tag tag-'+(op.mode==="clean-safe"?"safe":(op.mode==="uninstall"?"manual":"aggressive"))+'">'+esc(modeLabel)+'</span>'+
+          '<span class="ops-count">'+op.entry_count+' 项</span>'+
+          '<span class="ops-size">'+fmtSize(op.total_bytes)+'</span>'+
+          '<button type="button" class="btn ops-restore-btn" data-ops="'+i+'" style="height:24px;font-size:10px">一键还原</button>'+
+          '<button class="ra-btn ops-restore copyable" data-copy="'+esc(op.restore_command)+'" title="复制还原命令" aria-label="复制还原命令">⧉</button>'+
+          '<button type="button" class="eh-toggle ops-toggle" data-ops="'+i+'">明细</button>'+
+        '</div>'+
+        '<div class="ops-detail" data-ops-detail="'+i+'" hidden>'+
+          (entries||'<div class="ops-entry c-slate">（无文件明细）</div>')+more+
+        '</div>'+
       '</div>';
     }).join("");
-    var btns=el.querySelectorAll(".ops-restore");
+    el.onclick=function(e){
+      var tog=e.target.closest(".ops-toggle");
+      if(tog){
+        var d=el.querySelector('[data-ops-detail="'+tog.getAttribute("data-ops")+'"]');
+        if(d){ d.hidden=!d.hidden; tog.textContent=d.hidden?"明细":"收起"; }
+        return;
+      }
+      var rb=e.target.closest(".ops-restore-btn"); if(!rb) return;
+      var idx=+rb.getAttribute("data-ops"); var op=OPERATIONS[idx]; if(!op) return;
+      if(rb.getAttribute("data-armed")!=="1"){
+        rb.setAttribute("data-armed","1"); rb.textContent="确认还原？";
+        rb.title="将 "+op.entry_count+" 项文件移回原位置";
+        setTimeout(function(){ if(rb.getAttribute("data-armed")==="1"){ rb.setAttribute("data-armed","0"); rb.textContent="一键还原"; } },5000);
+        return;
+      }
+      rb.setAttribute("data-armed","0"); rb.disabled=true; rb.textContent="还原中…";
+      fetch("api/operations/restore",{method:"POST",headers:postHeaders(),
+        body:JSON.stringify({operation_id:op.operation_id})})
+        .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j:j}; }); })
+        .then(function(res){
+          rb.disabled=false; rb.textContent="一键还原";
+          if(res.ok){
+            toast("已还原 "+(res.j.restored||0)+" 项到原位置","ok");
+            OPERATIONS.splice(idx,1); renderOperations(); loadTrash();
+          } else {
+            toast("还原失败："+(res.j.error||("exit "+(res.j.output||"").slice(-200))),"err");
+          }
+        })
+        .catch(function(){ rb.disabled=false; rb.textContent="一键还原"; toast("网络错误","err"); });
+    };
+    var btns=el.querySelectorAll(".ops-restore.copyable");
     for(var i=0;i<btns.length;i++){
       btns[i].addEventListener("click",function(e){
         e.stopPropagation();
@@ -2610,11 +2656,12 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '</div>'+
         '<div class="app-list-shell"><div id="apps-list"><div class="empty">加载中…</div></div></div>'+
         '<pre class="cmd-out" id="apps-out" hidden></pre>'+
+        '<div class="apps-after" id="apps-after" hidden><button type="button" class="btn" id="apps-goto-history">↺ 查看操作历史并还原</button><span class="c-slate" style="font-size:11px">已卸载的整包（含残留配置）保存在废纸篓隔离区，可随时一键还原</span></div>'+
       '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
-        panel("exechist","执行记录","实时运行的清理 · 含过程日志", '<div id="exec-hist"><div class="empty">加载中…</div></div>') +
+        panel("ops","操作历史","全部操作记录 · 卸载/清理均可一键还原", renderOperationsInner(), true) +
         panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
-        panel("ops","操作历史","最近操作 · 可还原", renderOperationsInner(), true) +
+        panel("exechist","执行记录（仅看板触发）","只记录从本看板「执行清理」按钮发起的运行", '<div id="exec-hist"><div class="empty">加载中…</div></div>') +
       '</div>'+
       '<div class="view" id="view-reports" style="display:none">'+
         panel("launch","启动项",'<span id="launch-count"></span>第三方 LaunchAgents/Daemons · 只读', renderLaunchInner(), true) +
@@ -2626,7 +2673,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           '<span class="ov-head-note" id="sched-meta"></span>'+
         '</div>'+
         '<p class="ov-sub">定时执行只读扫描与安全清理（底层为 crontab 中由本工具托管的条目）。</p>'+
-        '<div class="sched-warn" id="sched-cron-warn" hidden>当前服务进程无法访问 crontab——请从终端启动 web_server</div>'+
+        '<div class="sched-warn" id="sched-cron-warn" hidden>当前服务进程无法访问 crontab —— 在终端运行 <code>python3 scripts/mac_dev_cleanup.py service install</code> 安装常驻服务后即可配置（服务上下文拥有 crontab 权限）</div>'+
         panel("sched-clean-safe","每日安全清理","safe 级别 · 先进废纸篓可还原", scheduleCardHtml("clean-safe")) +
         panel("sched-scan","每周只读扫描","只读 · 刷新看板数据", scheduleCardHtml("scan")) +
         panel("sched-notes","安全说明","逐条必读", renderScheduleNotesInner()) +
@@ -2763,7 +2810,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(EH.data.running) items.push(row(EH.data.running, "live", true));
     (EH.data.past||[]).forEach(function(rec, i){ items.push(row(rec, String(i), false)); });
     el.innerHTML = items.length ? items.join("")
-      : '<div class="empty">还没有执行记录 — 在清理视图勾选候选项后点「执行清理」。</div>';
+      : '<div class="empty">还没有看板触发的执行记录 — 在清理视图勾选候选项后点「执行清理」。<br><span class="c-slate">夜间定时清理、命令行运行和应用卸载不会出现在这里，它们的记录在上方「操作历史」。</span></div>';
     el.onclick = function(e){
       var btn=e.target.closest(".eh-toggle"); if(!btn) return;
       var r=btn.closest(".eh-row");
@@ -2896,11 +2943,14 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j:j}; }); })
         .then(function(res){
           if(out){ out.textContent=res.j.output||""; out.scrollTop=out.scrollHeight; }
+          var after=$("apps-after");
           if(res.ok){
             toast(app+" 已卸载（隔离区可还原）","ok");
+            if(after) after.hidden=false;
             loadOperations();
           } else {
             toast("卸载失败："+(res.j.error||("exit "+res.j.exit_code)),"err");
+            if(after) after.hidden=true;
           }
           loadApps(true);  // app set changed — rebuild listing
         })
@@ -2927,6 +2977,11 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     if(rs && !rs.dataset.bound){
       rs.dataset.bound="1";
       rs.addEventListener("click",function(){ loadApps(true); });
+    }
+    var gh=$("apps-goto-history");
+    if(gh && !gh.dataset.bound){
+      gh.dataset.bound="1";
+      gh.addEventListener("click",function(){ gotoView("history"); });
     }
   }
 
@@ -3292,8 +3347,10 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       }).join("")+'</div>';
   }
 
-  function refreshAfterClean(){
-    // cleanup rewrote state.json — refresh in place, candidate ids are new
+  function refreshAfterClean(repoll){
+    // cleanup rewrote state.json — refresh in place, candidate ids are new.
+    // Filtered cleans refresh the inventory via a follow-up scan on the server,
+    // so poll once more after a few seconds if the timestamp hasn't moved yet.
     fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
       .then(function(s){
         state.selected={};
@@ -3311,6 +3368,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
               else if(x.exit_code!=null) st.textContent="已结束 (exit "+x.exit_code+")";
             }
           }).catch(function(){});
+        if(!repoll && s.timestamp){ setTimeout(function(){ refreshAfterClean(true); }, 6000); }
       }).catch(function(){ location.reload(); });
   }
   function runSelection(btnId){
