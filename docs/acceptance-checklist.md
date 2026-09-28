@@ -145,6 +145,33 @@ node scripts/check_dashboard_dom.mjs dashboard.html   # DOM 结构
 
 ## 验收记录
 
+### 2026-09-28 自动验收（本会话执行）
+
+**全过项：**
+
+- **§0 门禁**：80/80 单测、95/95 DOM、模板一致 [OK]、12 GET 端点 200（icon 实测 PNG 1024×1024）、POST 门禁 4/4（empty-system 错 confirm 400 / update 回滚点名 400 / clean-aggressive 400 / 无 token 403）
+- **§1 总览**：英雄区/树图/风险卡/预览行/吸底栏全部有 DOM 断言且通过
+- **§2 清理**：搜索/筛选/排序/复制标记/命令生成有断言；**manual 永不自动勾选**（clean-safe 干跑实测：screenshot/PixPin/模拟器 Devices 全标 needs review）；**reason 汉化全覆盖**（JS 运行时真实匹配：52 规则覆盖 state 全部 28 个 reason，零漏翻）；浏览器运行中其候选缺席（Chrome 守护实测）
+- **§3 卸载**：图标端点真图验证；卸载即时移除（单测+真机实测）；外部删除自愈（单测）；Trash-first 隔离（夜间自动化历史操作可查）
+- **§4 历史**：区块结构有断言；EMPTY TRASH 逐字门禁实测 400；TCC 降级实测 available:false
+- **§5 报告**：启动项 30 项解析；快照 update 回滚点拒删 400；dupes 真实 25 组/2.1G + building 轮询断言；硬链接单测
+- **§6 计划任务**：16 条 DOM 断言全过；aggressive 400 拒绝实测；crontab 不可用降级实测（crontab_available:false + 控件禁用）；禁用=注释行（单测往返）
+- **§7 设置**：中文标签/aria 折叠断言过；配置校验单测；CLI --show-config 与 API 配置核心键一致
+- **§9 复刻对照**：18 项全部有对应实现与验证证据
+- **§10 刻意不做**：6 项静态审计全过（无 lipo/.lproj/FSEvents/boost 文案/杀毒 VPN/SW CacheStorage 删除路径）
+
+**待人工项（jsdom/沙箱无法模拟）：**
+
+1. 明暗主题切换的**视觉效果**（结构性断言已过，需肉眼过一遍八视图）
+2. **真实卸载**一次应用走完整交互（两段式确认观感、toast、列表即时消失）
+3. **真实清空**系统废纸篓（强确认弹层操作流）
+4. crontab **真实写入**：本上下文 crontab 命令被宿主权限拦截（降级路径已实测正确）——从终端打开 dashboard 保存一次，`crontab -l` 核对只动托管行
+5. FDA 上下文复跑 scan：确认 Safari 缓存（TCC 拦截，见 §11）与 iOS 备份/系统废纸篓全量出现
+
+**验收中发现的新事实：**
+
+- §11 Safari 行更新：`~/Library/Caches/com.apple.Safari` 存在但 state 无候选——**CLI 过滤器并不排斥它**（excluded/pruned 均 False），缺席是 Safari 目录自身的 TCC 保护所致（du/ls 均无输出）。留 FDA 上下文复验；若仍缺席再考虑专项拆解。
+
 | 日期 | 门禁 | 人工走查 | 结论 |
 |---|---|---|---|
-| 2026-09-28 | 80/80 · 95/95 · [OK] · 12 端点 200 | 待走查 |  |
+| 2026-09-28 | 80/80 · 95/95 · [OK] · 12 端点 200 · POST 4/4 | 待人工 5 项 | **自动验收通过**，剩 5 项需真机肉眼/终端操作 |
