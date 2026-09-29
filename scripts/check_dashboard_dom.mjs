@@ -93,9 +93,10 @@ ok("三张风险卡片", doc.querySelectorAll("#view-overview .rcard").length ==
 ok("treemap 区块已渲染", !!$("#panel-treemap") && !!$("#pbody-treemap"));
 ok("treemap 至少绘制一个方块", doc.querySelectorAll("#pbody-treemap svg rect.cell").length > 0, doc.querySelectorAll("#pbody-treemap svg rect.cell").length);
 ok("treemap 方块带悬停提示", doc.querySelectorAll("#pbody-treemap svg title").length > 0);
-ok("深度清理候选预览行", doc.querySelectorAll("#ov-rows .ov-row input[data-sel]").length > 0, doc.querySelectorAll("#ov-rows .ov-row").length);
-ok("概览吸底选择栏", !!$("#ov-selbar") && !!$("#ov-cmd-btn"));
+ok("深度清理候选预览行", doc.querySelectorAll("#ov-rows .ov-row").length > 0, doc.querySelectorAll("#ov-rows .ov-row").length);
+ok("概览已收敛为只读（无勾选/无执行入口）", doc.querySelectorAll("#ov-rows input[data-sel]").length === 0 && !$("#ov-run-btn") && !$("#ov-selbar"));
 ok("工具自检格子", doc.querySelectorAll(".tool-cell").length > 0);
+ok("工具自检位于设置视图", !!$("#view-settings #panel-tools"));
 ok("面板系统已渲染", doc.querySelectorAll(".panel").length >= 8, doc.querySelectorAll(".panel").length);
 ok("toast 容器存在", !!$("#toast"));
 
@@ -198,7 +199,7 @@ if (selectable) {
   click(selectable);
   await sleep(30);
   ok("吸底操作栏显示已选", (text("#sel-info") || "").includes("已选"), text("#sel-info"));
-  ok("执行按钮离线隐藏", $("#sel-run-btn")?.hidden === true && $("#ov-run-btn")?.hidden === true);
+  ok("执行按钮离线隐藏", $("#sel-run-btn")?.hidden === true);
   ok("生成命令按钮已启用", $("#sel-cmd-btn") && !$("#sel-cmd-btn").disabled);
   click($("#sel-cmd-btn"));
   await sleep(30);

@@ -1339,7 +1339,6 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     });
     // Keep views that mirror shared state fresh when (re)entering them.
     if(v==="clean") refreshList();
-    if(v==="overview") syncOverviewSel();
     if(v==="reports") loadReports();
     if(v==="schedule") loadSchedule();
     // jsdom's scrollTo is a not-implemented stub that logs a jsdomError; skip it
@@ -1875,13 +1874,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     var cmdBtn=$("sel-cmd-btn"); if(cmdBtn) cmdBtn.disabled = n===0;
     bar.classList.toggle("idle", n===0);
     syncRunBtns(n);
-    // overview mini selection bar mirrors the same shared selection state
-    var ovInfo=$("ov-info");
-    if(ovInfo) ovInfo.innerHTML = n ? ('已选 '+n+' 项 · '+fmtSize(bytes)) : '未选择候选项';
-    var ovCmd=$("ov-cmd-btn"); if(ovCmd) ovCmd.disabled = n===0;
-    var ovBar=$("ov-selbar"); if(ovBar) ovBar.classList.toggle("idle", n===0);
     // a revealed command belongs to the previous selection — hide when empty
-    if(n===0){ var o1=$("ov-cmd-out"); if(o1) o1.hidden=true; var s1=$("sel-cmd-out"); if(s1) s1.hidden=true; }
+    if(n===0){ var s1=$("sel-cmd-out"); if(s1) s1.hidden=true; }
     // header select-all reflects whether every selectable filtered row is picked
     var all=$("sel-all");
     if(all){
@@ -2602,29 +2596,20 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       .sort(function(a,b){ return (b.size||0)-(a.size||0); });
     var top = aggr.slice(0,6);
     var rows = top.length ? top.map(function(c){
-      return '<label class="ov-row">'+
-        '<input type="checkbox" data-sel="'+esc(c.id)+'"'+(state.selected[c.id]?" checked":"")+'>'+
+      // Overview is a read-only dashboard: rows deep-link into the clean view
+      // (selection & execution live there exclusively — P1 de-duplication).
+      return '<div class="ov-row" data-goto="clean" data-risk="aggressive" role="button" tabindex="0" title="到清理视图勾选并执行">'+
         '<span class="p" title="'+esc(c.path)+'">'+esc(truncatePath(c.path))+'</span>'+
-        '<span class="s">'+esc(c.size_human)+'</span></label>';
+        '<span class="s">'+esc(c.size_human)+'</span></div>';
     }).join("") : '<div class="ov-row"><span class="p">没有谨慎级别的候选项</span></div>';
     var preview =
       '<div class="ov-head"><h2>深度清理候选</h2>'+
       '<button type="button" class="lnk" data-goto="clean" data-risk="aggressive">查看全部 '+aggr.length+' 项 →</button></div>'+
-      '<div class="ov-rows" id="ov-rows">'+rows+'</div>'+
-      '<div class="ov-selbar" id="ov-selbar">'+
-        '<span id="ov-info">未选择候选项</span><span class="spacer"></span>'+
-        '<button type="button" class="btn danger" id="ov-run-btn" hidden>执行清理</button>'+
-        '<button type="button" class="btn primary" id="ov-cmd-btn" disabled>生成清理命令</button>'+
-      '</div>'+
-      '<pre class="cmd-out" id="ov-cmd-out" hidden></pre>';
+      '<div class="ov-rows" id="ov-rows">'+rows+'</div>';
     return hero + riskCardsHtml() + preview;
   }
   function bindOverview(){
     var view = $("view-overview"); if(!view) return;
-    view.addEventListener("change", function(e){
-      var box = e.target.closest("input[data-sel]");
-      if(box) toggleCandidate(box.getAttribute("data-sel"), box.checked);
-    });
     view.addEventListener("click", function(e){
       var card = e.target.closest(".rcard");
       if(card){
@@ -2641,22 +2626,6 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         if(sb && !sb.disabled) sb.click();
         else toast("静态页面无法扫描——请通过本地服务打开","err");
       }
-    });
-    var ob = $("ov-cmd-btn");
-    if(ob) ob.addEventListener("click", function(){
-      var cmd = buildCleanCommand();
-      if(!cmd){ toast("尚未勾选任何候选项","err"); return; }
-      copyText(cmd, "清理命令已复制，粘贴到终端执行", "ov-cmd-out");
-    });
-    var orun = $("ov-run-btn");
-    if(orun) orun.addEventListener("click", function(){ runSelection("ov-run-btn"); });
-  }
-  // Re-sync overview preview checkboxes with shared selection state
-  // (selections may have changed in the clean view since last render).
-  function syncOverviewSel(){
-    var holder = $("ov-rows"); if(!holder) return;
-    holder.querySelectorAll("input[data-sel]").forEach(function(b){
-      b.checked = !!state.selected[b.getAttribute("data-sel")];
     });
   }
 
@@ -2677,7 +2646,6 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         panel("cat","类别容量", catNote(), renderCatInner(), true) +
         panel("treemap","磁盘占用分布","按类别体积占比 · 前 12 类 · 悬停查看路径数", renderTreemapInner(), true) +
         panel("disk","磁盘空间","清理前 / 清理后", renderDiskInner(), true) +
-        panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
       '</div>'+
       '<div class="view" id="view-clean" style="display:none">'+
         panel("cleanup","整模式清理","忽略勾选 · 清理该级别全部候选 · 复制到终端执行", renderCleanupGuideInner()) +
@@ -2727,6 +2695,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '</div>'+
       '<div class="view" id="view-settings" style="display:none">'+
         settingsHtml() +
+        panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
       '</div>';
     ["overview","clean","apps","history","reports","schedule","settings"].forEach(applyViewOrder);
     bindTable();
@@ -2772,7 +2741,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // both updateSelBar (selection changes) and detectApi (connection).
   function syncRunBtns(n){
     if(n==null) n=selectionCount();
-    ["sel-run-btn","ov-run-btn"].forEach(function(id){
+    ["sel-run-btn"].forEach(function(id){
       var b=$(id); if(!b) return;
       b.hidden = !state.apiOnline;
       b.disabled = n===0 || state.busyRun;
