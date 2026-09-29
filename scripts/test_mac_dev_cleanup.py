@@ -1221,7 +1221,7 @@ class P2ReportTests(unittest.TestCase):
             rc = cleanup.cmd_service("uninstall")
         self.assertEqual(rc, 0)
         self.assertEqual(run.call_count, 2)
-        self.assertIn("bootout", run.call_args_list[1][0][0][0])
+        self.assertIn("bootout", run.call_args_list[1][0][0][1])
 
     def test_service_status_reports_down(self) -> None:
         with patch.object(cleanup, "SERVICE_PLIST",
