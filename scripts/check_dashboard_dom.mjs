@@ -82,9 +82,9 @@ const ok = (name, cond, extra = "") =>
 // --- structure: sidebar + four views ---
 ok("app 容器已渲染", $("#app").children.length > 0);
 ok("boot-error 未触发", !$("#boot-error").classList.contains("show"));
-ok("侧边栏七个导航项", doc.querySelectorAll(".nav-item").length === 7, doc.querySelectorAll(".nav-item").length);
+ok("侧边栏六个导航项", doc.querySelectorAll(".nav-item").length === 6, doc.querySelectorAll(".nav-item").length);
 ok("清理导航徽标有值", ($("#nav-badge-clean")?.textContent || "").length > 0, $("#nav-badge-clean")?.textContent);
-ok("七个视图容器", doc.querySelectorAll(".view").length === 7);
+ok("六个视图容器", doc.querySelectorAll(".view").length === 6);
 ok("默认显示概览视图", visible("#view-overview") && !visible("#view-clean"));
 ok("英雄区环形图", !!$("#view-overview .donut circle.val"));
 ok("英雄区可清理大数字", ($("#view-overview .hero-big")?.textContent || "").length > 0, $("#view-overview .hero-big")?.textContent);
@@ -120,6 +120,8 @@ ok("应用列表容器存在", !!$("#apps-list"));
 ok("应用重扫按钮存在", !!$("#apps-rescan"));
 ok("应用统计条存在", !!$("#apps-stats"));
 ok("应用排序控件存在", !!$("#apps-sort"));
+ok("启动项面板已并入系统视图", !!$("#view-apps #panel-launch"));
+ok("TM 快照面板已并入系统视图", !!$("#view-apps #panel-snapshots"));
 
 // --- history view: trash panel (quarantine + system trash sub-sections) ---
 window.location.hash = "history";
@@ -134,11 +136,7 @@ ok("统一确认层默认隐藏", !!$("#app-confirm") && $("#app-confirm").hidde
 ok("清空系统废纸篓标注不可恢复", ($("#sys-trash-confirm")?.textContent || "").includes("不可恢复"));
 ok("快照删除标注不可恢复", ($("#snapshot-confirm")?.textContent || "").includes("不可恢复"));
 
-// --- reports view: launch items / TM snapshots / duplicate files ---
-window.location.hash = "reports";
-await sleep(80);
-ok("路由切换到报告视图", visible("#view-reports") && !visible("#view-history"));
-ok("报告视图导航高亮", $(".nav-item.active")?.getAttribute("data-nav") === "reports", $(".nav-item.active")?.getAttribute("data-nav"));
+// --- reports panels live in 系统(apps) view now; dupes lives in clean view ---
 ok("启动项面板存在", !!$("#panel-launch") && !!$("#pbody-launch"));
 ok("启动项面板含只读说明", ($("#pbody-launch")?.textContent || "").includes("仅报告"));
 ok("启动项面板无删除/禁用按钮", !$("#pbody-launch").querySelector("button"));
@@ -146,14 +144,17 @@ ok("快照面板存在", !!$("#panel-snapshots") && !!$("#pbody-snapshots"));
 ok("快照强确认层默认隐藏", !!$("#snapshot-confirm") && $("#snapshot-confirm").hidden === true);
 ok("快照面板含 df 不实时说明", ($("#pbody-snapshots")?.textContent || "").includes("df 可能不实时反映"));
 ok("快照确认层含 tmutil 警示", ($("#snapshot-confirm")?.textContent || "").includes("tmutil deletelocalsnapshots"));
-ok("重复文件面板存在", !!$("#panel-dupes") && !!$("#pbody-dupes"));
+window.location.hash = "clean";
+await sleep(80);
+ok("重复文件面板已并入清理视图", !!$("#view-clean #panel-dupes") && !!$("#pbody-dupes"));
 ok("重复文件浪费总量节点存在", !!$("#dupes-wasted"));
 ok("重复文件刷新按钮存在", !!$("#dupes-refresh"));
+ok("报告导航项已移除", !doc.querySelector('.nav-item[data-nav="reports"]'));
 
 // --- schedule view: cron-managed tasks (offline static skeleton + defaults) ---
 window.location.hash = "schedule";
 await sleep(80);
-ok("路由切换到计划任务视图", visible("#view-schedule") && !visible("#view-reports"));
+ok("路由切换到计划任务视图", visible("#view-schedule") && !visible("#view-apps"));
 ok("计划任务视图导航高亮", $(".nav-item.active")?.getAttribute("data-nav") === "schedule", $(".nav-item.active")?.getAttribute("data-nav"));
 ok("schedule 导航项存在", !!doc.querySelector('.nav-item[data-nav="schedule"]'));
 ok("每日安全清理卡片存在", !!$("#panel-sched-clean-safe") && !!$("#pbody-sched-clean-safe"));

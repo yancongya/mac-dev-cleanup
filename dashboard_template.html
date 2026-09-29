@@ -765,15 +765,11 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
     </button>
     <button class="nav-item" data-nav="apps">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 3v18"/><path d="M13 8h5M13 12h5"/></svg>
-      应用
+      系统
     </button>
     <button class="nav-item" data-nav="history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
       还原
-    </button>
-    <button class="nav-item" data-nav="reports">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
-      报告
     </button>
     <button class="nav-item" data-nav="schedule">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h4"/></svg>
@@ -1319,7 +1315,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
 
   // ---- view router (hash-based) ----
-  var VIEWS = ["overview","clean","apps","history","reports","schedule","settings"];
+  var VIEWS = ["overview","clean","apps","history","schedule","settings"];
   function currentView(){
     var h = (location.hash||"#overview").slice(1);
     return VIEWS.indexOf(h)>=0 ? h : "overview";
@@ -1339,7 +1335,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     });
     // Keep views that mirror shared state fresh when (re)entering them.
     if(v==="clean") refreshList();
-    if(v==="reports") loadReports();
+    if(v==="clean" || v==="apps") loadReports();  // dupes lives in clean; launch/snapshots in apps
     if(v==="schedule") loadSchedule();
     // jsdom's scrollTo is a not-implemented stub that logs a jsdomError; skip it
     // in headless checks so the render stays error-free.
@@ -2695,9 +2691,10 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         selectionBarHtml() +
         '<div class="ov-head"><h2>执行日志</h2><span class="ov-head-note" id="exec-status"></span></div>'+
         '<pre class="cmd-out exec-log" id="exec-log" hidden></pre>'+
+        panel("dupes","重复文件","四级渐进哈希 · 已排除硬链接与 .git · 报告只读，处理需人工决策", renderDupesInner(), true) +
       '</div>'+
       '<div class="view" id="view-apps" style="display:none">'+
-        '<div class="ov-head"><h2>应用卸载</h2>'+
+        '<div class="ov-head"><h2>系统</h2>'+
           '<span class="ov-head-note" id="apps-meta"></span>'+
           '<button type="button" class="btn" id="apps-rescan" style="height:26px;font-size:11px" title="重新扫描已安装应用">重新扫描</button>'+
         '</div>'+
@@ -2714,15 +2711,12 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '<div class="app-list-shell"><div id="apps-list"><div class="empty">加载中…</div></div></div>'+
         '<pre class="cmd-out" id="apps-out" hidden></pre>'+
         '<div class="apps-after" id="apps-after" hidden><button type="button" class="btn" id="apps-goto-history">↺ 查看操作历史并还原</button><span class="c-slate" style="font-size:11px">已卸载的整包（含残留配置）保存在废纸篓隔离区，可随时一键还原</span></div>'+
+        panel("launch","启动项",'<span id="launch-count"></span>第三方 LaunchAgents/Daemons · 只读', renderLaunchInner(), true) +
+        panel("snapshots","TM 快照","本地快照 · 删除需强确认", renderSnapshotsInner(), true) +
       '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
         panel("ops","操作与执行记录","清理/卸载统一时间线 · 可还原项带一键还原 · 看板触发的运行可展开日志", renderOperationsInner(), true) +
         panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
-      '</div>'+
-      '<div class="view" id="view-reports" style="display:none">'+
-        panel("launch","启动项",'<span id="launch-count"></span>第三方 LaunchAgents/Daemons · 只读', renderLaunchInner(), true) +
-        panel("snapshots","TM 快照","本地快照 · 删除需强确认", renderSnapshotsInner(), true) +
-        panel("dupes","重复文件","四级渐进哈希 · 已排除硬链接与 .git", renderDupesInner(), true) +
       '</div>'+
       '<div class="view" id="view-schedule" style="display:none">'+
         '<div class="ov-head"><h2>计划任务</h2>'+
@@ -2738,7 +2732,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         settingsHtml() +
         panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
       '</div>';
-    ["overview","clean","apps","history","reports","schedule","settings"].forEach(applyViewOrder);
+    ["overview","clean","apps","history","schedule","settings"].forEach(applyViewOrder);
     bindTable();
     bindOverview();
     bindSettings();
