@@ -769,7 +769,7 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
     </button>
     <button class="nav-item" data-nav="history">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
-      操作历史
+      还原
     </button>
     <button class="nav-item" data-nav="reports">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
@@ -1023,7 +1023,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // ---- unified collapsible panels ----
   // Collapse state is remembered across sessions via localStorage.
   var PANEL_DEFAULTS = { summary:true, risk:true, cat:true, treemap:true, tools:true,
-    disk:true, table:true, cleanup:true, exechist:true, ops:true, settings:true,
+    disk:true, table:true, cleanup:true, ops:true, settings:true,
     launch:true, snapshots:true, dupes:true,
     "sched-clean-safe":true, "sched-scan":true, "sched-notes":true };
   var PANELS = Object.assign({}, PANEL_DEFAULTS);
@@ -2459,25 +2459,62 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     return '<div id="ops-list"><div class="empty">加载中…</div></div>';
   }
 
+  // Unified timeline: restorable operations (manifests, any source) interleaved
+  // with dashboard-triggered runs (status + logs) in one list — the user no
+  // longer has to guess which panel holds "what happened to my last cleanup".
   function renderOperations(){
     var el=$("ops-list"); if(!el) return;
-    if(!OPERATIONS.length){ el.innerHTML='<div class="empty">暂无操作记录 — 卸载应用、执行清理后，所有可还原的操作都会出现在这里</div>'; return; }
-    el.innerHTML=OPERATIONS.slice(0,15).map(function(op,i){
-      var t=op.timestamp?op.timestamp.replace("T"," ").slice(0,16):"";
+    var items=[];
+    (OPERATIONS||[]).forEach(function(op,i){
+      var t=op.timestamp ? (Date.parse(String(op.timestamp).replace(" ","T"))/1000 || 0) : 0;
+      items.push({kind:"op", idx:i, sort:t});
+    });
+    if(EH.data){
+      if(EH.data.running) items.push({kind:"run", key:"live", sort:EH.data.running.started||0});
+      (EH.data.past||[]).forEach(function(rec,i){
+        items.push({kind:"run", key:String(i), sort:rec.started||0});
+      });
+    }
+    if(!items.length){
+      el.innerHTML='<div class="empty">暂无记录 — 卸载应用、执行清理（看板 / 命令行 / 定时）后都会出现在这里；<br><span class="c-slate">可还原的操作带「一键还原」按钮，看板触发的运行可展开实时日志</span></div>';
+      return;
+    }
+    items.sort(function(a,b){ return b.sort-a.sort; });
+    el.innerHTML=items.slice(0,25).map(function(it){
+      if(it.kind==="run"){
+        var rec = it.key==="live" ? EH.data.running : EH.data.past[+it.key];
+        var badge = it.key==="live" ? '<span class="tag tag-manual">运行中</span>'
+          : rec.exit_code===0 ? '<span class="tag tag-safe">成功</span>'
+          : '<span class="tag tag-aggressive">exit '+rec.exit_code+'</span>';
+        var dur = rec.finished ? fmtClock(rec.finished-rec.started) : fmtClock(Date.now()/1000-rec.started);
+        return '<div class="ops-item">'+
+          '<div class="ops-row" data-eh="'+it.key+'">'+
+            badge+
+            '<span class="tag tag-scanonly">看板执行</span>'+
+            '<span class="ops-time">'+fmtWhen(rec.started)+'</span>'+
+            '<span class="ops-count">'+rec.ids+' 项</span>'+
+            '<span class="ops-size">'+esc(MODE_ZH[rec.mode]||rec.mode)+' · '+dur+'</span>'+
+            '<button type="button" class="eh-toggle ops-toggle">展开日志</button>'+
+          '</div>'+
+          '<pre class="cmd-out eh-log" hidden></pre>'+
+        '</div>';
+      }
+      var op=OPERATIONS[it.idx];
+      var t=op.timestamp?String(op.timestamp).replace("T"," ").slice(0,16):"";
       var modeLabel=MODE_ZH[op.mode]||op.mode;
       var entries=(op.entries||[]).map(function(p){ return '<div class="ops-entry">'+esc(p)+'</div>'; }).join("");
       var more=(op.entry_count||0)>(op.entries||[]).length?'<div class="ops-entry c-slate">…共 '+(op.entry_count||0)+' 项</div>':"";
       return '<div class="ops-item">'+
-        '<div class="ops-row" data-ops="'+i+'">'+
+        '<div class="ops-row" data-ops="'+it.idx+'">'+
           '<span class="ops-time">'+esc(t)+'</span>'+
           '<span class="tag tag-'+(op.mode==="clean-safe"?"safe":(op.mode==="uninstall"?"manual":"aggressive"))+'">'+esc(modeLabel)+'</span>'+
           '<span class="ops-count">'+op.entry_count+' 项</span>'+
           '<span class="ops-size">'+fmtSize(op.total_bytes)+'</span>'+
-          '<button type="button" class="btn ops-restore-btn" data-ops="'+i+'" style="height:24px;font-size:10px">一键还原</button>'+
+          '<button type="button" class="btn ops-restore-btn" data-ops="'+it.idx+'" style="height:24px;font-size:10px">一键还原</button>'+
           '<button class="ra-btn ops-restore copyable" data-copy="'+esc(op.restore_command)+'" title="复制还原命令" aria-label="复制还原命令">⧉</button>'+
-          '<button type="button" class="eh-toggle ops-toggle" data-ops="'+i+'">明细</button>'+
+          '<button type="button" class="eh-toggle ops-toggle" data-ops="'+it.idx+'">明细</button>'+
         '</div>'+
-        '<div class="ops-detail" data-ops-detail="'+i+'" hidden>'+
+        '<div class="ops-detail" data-ops-detail="'+it.idx+'" hidden>'+
           (entries||'<div class="ops-entry c-slate">（无文件明细）</div>')+more+
         '</div>'+
       '</div>';
@@ -2485,8 +2522,13 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     el.onclick=function(e){
       var tog=e.target.closest(".ops-toggle");
       if(tog){
-        var d=el.querySelector('[data-ops-detail="'+tog.getAttribute("data-ops")+'"]');
-        if(d){ d.hidden=!d.hidden; tog.textContent=d.hidden?"明细":"收起"; }
+        var row=tog.closest(".ops-item");
+        var d=row.querySelector(".ops-detail")||row.querySelector(".eh-log");
+        if(d){
+          d.hidden=!d.hidden;
+          tog.textContent = d.hidden ? (row.querySelector(".ops-detail")?"明细":"展开日志") : (row.querySelector(".ops-detail")?"收起":"收起");
+          if(!d.hidden && d.classList.contains("eh-log")) d.scrollTop=d.scrollHeight;
+        }
         return;
       }
       var rb=e.target.closest(".ops-restore-btn"); if(!rb) return;
@@ -2674,9 +2716,8 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '<div class="apps-after" id="apps-after" hidden><button type="button" class="btn" id="apps-goto-history">↺ 查看操作历史并还原</button><span class="c-slate" style="font-size:11px">已卸载的整包（含残留配置）保存在废纸篓隔离区，可随时一键还原</span></div>'+
       '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
-        panel("ops","操作历史","全部操作记录 · 卸载/清理均可一键还原", renderOperationsInner(), true) +
+        panel("ops","操作与执行记录","清理/卸载统一时间线 · 可还原项带一键还原 · 看板触发的运行可展开日志", renderOperationsInner(), true) +
         panel("trash","隔离区","废纸篓中的清理产物 · 可还原", renderTrashPanelInner(), true) +
-        panel("exechist","执行记录（仅看板触发）","只记录从本看板「执行清理」按钮发起的运行", '<div id="exec-hist"><div class="empty">加载中…</div></div>') +
       '</div>'+
       '<div class="view" id="view-reports" style="display:none">'+
         panel("launch","启动项",'<span id="launch-count"></span>第三方 LaunchAgents/Daemons · 只读', renderLaunchInner(), true) +
@@ -2709,16 +2750,9 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     renderTrash();
     bindTrashConfirm();
     renderOperations();
-    renderExecHistoryIfReady();
     renderLastCleanup();
     updateSelBar();
     route();
-  }
-
-  // renderAll rebuilds #exec-hist; if history data is already in memory just
-  // repaint, otherwise fetch once the API comes online.
-  function renderExecHistoryIfReady(){
-    if(EH.data) renderExecHistory();
   }
 
   // Only the result list is swapped. Rebuilding the whole card (as the previous
@@ -2799,45 +2833,10 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     fetch("api/clean/history",{cache:"no-store"}).then(function(r){ return r.json(); })
       .then(function(j){
         EH.data=j;
-        renderExecHistory();
+        renderOperations();  // runs are interleaved into the unified timeline
         clearTimeout(EH.timer);
         if(j.running) EH.timer=setTimeout(loadExecHistory, 2000);  // live: re-poll
       }).catch(function(){});
-  }
-  function renderExecHistory(){
-    var el=$("exec-hist"); if(!el||!EH.data) return;
-    function row(rec, key, live){
-      var badge = live ? '<span class="tag tag-manual">运行中</span>'
-        : rec.exit_code===0 ? '<span class="tag tag-safe">成功</span>'
-        : '<span class="tag tag-aggressive">exit '+rec.exit_code+'</span>';
-      var dur = rec.finished ? fmtClock(rec.finished-rec.started) : fmtClock(Date.now()/1000-rec.started);
-      return '<div class="eh-item">'+
-        '<div class="eh-row" data-eh="'+key+'">'+
-          badge+
-          '<span class="eh-when">'+fmtWhen(rec.started)+'</span>'+
-          '<span class="eh-meta">'+esc(MODE_ZH[rec.mode]||rec.mode)+' · '+rec.ids+' 项 · '+dur+
-            (rec.operation_id?(' · '+esc(rec.operation_id)):'')+'</span>'+
-          '<button type="button" class="eh-toggle">展开日志</button>'+
-        '</div>'+
-        '<pre class="cmd-out eh-log" hidden></pre>'+
-      '</div>';
-    }
-    var items=[];
-    if(EH.data.running) items.push(row(EH.data.running, "live", true));
-    (EH.data.past||[]).forEach(function(rec, i){ items.push(row(rec, String(i), false)); });
-    el.innerHTML = items.length ? items.join("")
-      : '<div class="empty">还没有看板触发的执行记录 — 在清理视图勾选候选项后点「执行清理」。<br><span class="c-slate">夜间定时清理、命令行运行和应用卸载不会出现在这里，它们的记录在上方「操作历史」。</span></div>';
-    el.onclick = function(e){
-      var btn=e.target.closest(".eh-toggle"); if(!btn) return;
-      var r=btn.closest(".eh-row");
-      var pre=r.parentElement.querySelector(".eh-log");
-      if(!pre) return;
-      if(!pre.hidden){ pre.hidden=true; btn.textContent="展开日志"; return; }
-      var rec = r.getAttribute("data-eh")==="live" ? EH.data.running : (EH.data.past||[])[+r.getAttribute("data-eh")];
-      if(rec) pre.textContent=(rec.lines||[]).join("\n") || "（无输出）";
-      pre.hidden=false; btn.textContent="收起";
-      pre.scrollTop=pre.scrollHeight;
-    };
   }
   // ---- apps view (应用卸载) ----
   var APPS = { data:null, filter:"", sort:"size", timer:null };
