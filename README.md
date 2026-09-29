@@ -50,7 +50,7 @@
 - **清理后自动回收**：`--apply` 完成后自动清空废纸篓（后台 osascript + 10 分钟轮询）并核验回收；`df` 未回补时按 SKILL.md 的对照实验判断，而不是重复删除
 - **容器只报告、不盲删**：Docker / OrbStack 的镜像与卷只做列表与人工确认（`docker container prune` 会连服务容器一起删）
 - **项目内结构整理（Project hygiene）**：除磁盘级缓存外，还能整理单个项目——清空格目录、删 AI IDE 残留（`.agents`/`.claude`/`.opencode`/`.superpowers`/`.workflow`/`.DS_Store`/`*.bak`）、把散落的 `migrate_*`/`fix_*`/`test_*`/`init_*` 脚本归位到 `scripts/`/`tests/`、合并冗余文档。全程 Git 感知（`git mv`/`git rm`），不碰源码与数据库
-- **本地 Web 控制台**：六视图（总览含磁盘树图 / 缓存 / 应用卸载 / 大文件 / 废纸篓 / 报告）+ 配置编辑 + 触发扫描；端口解析顺序 `--port` → `MDC_PORT` → `config.json: dashboard_port`（默认 8766，避让常被占用的 8765）
+- **本地 Web 控制台**：六视图（概览 = 纯只读仪表盘 / 清理 = 唯一执行域含整模式与按勾选两种范式 + 重复文件 / 系统 = 应用卸载 + 启动项 + TM 快照 / 还原 = 操作与执行统一时间线 + 废纸篓 / 计划任务 / 设置含工具自检）；服务/FDA 权限降级由顶部全局横幅统一提示；端口解析顺序 `--port` → `MDC_PORT` → `config.json: dashboard_port`（默认 8766，避让常被占用的 8765）
 - **系统废纸篓管理**：`~/.Trash` 全量清单（隔离区单列、保持可恢复）；清空需逐字确认串 `EMPTY TRASH` + API token 双重门禁，默认保留隔离区
 - **TM 本地快照管理**：列表 + 单条删除；`com.apple.os.update-*` 系统更新回滚点代码级拒绝删除，重启装完更新即自动释放
 - **启动项只读报告**：第三方 LaunchAgents/LaunchDaemons 解析（com.apple.* 过滤）；刻意不接删除，启停归 `launchctl`
