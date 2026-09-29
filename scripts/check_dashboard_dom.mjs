@@ -129,7 +129,7 @@ ok("清理隔离区区块存在", !!$("#trash-quarantine"));
 ok("系统废纸篓区块存在", !!$("#sys-trash-section"));
 ok("清空系统废纸篓按钮存在", !!$("#empty-system-trash-btn"));
 ok("强确认层默认隐藏", !!$("#sys-trash-confirm") && $("#sys-trash-confirm").hidden === true);
-ok("执行记录已并入统一时间线", !$("#exec-hist") && ($("#pbody-ops")?.textContent || "").includes("执行记录"));
+ok("执行记录已并入统一时间线", !$("#exec-hist") && ($("#panel-ops")?.textContent || "").includes("执行记录"));
 ok("统一确认层默认隐藏", !!$("#app-confirm") && $("#app-confirm").hidden === true);
 ok("清空系统废纸篓标注不可恢复", ($("#sys-trash-confirm")?.textContent || "").includes("不可恢复"));
 ok("快照删除标注不可恢复", ($("#snapshot-confirm")?.textContent || "").includes("不可恢复"));
