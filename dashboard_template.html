@@ -2331,9 +2331,10 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     }
     var items=(sys && sys.items)||[];
     if(sys && sys.available===false){
-      el.innerHTML='<div class="empty">macOS 未授权读取 ~/.Trash —— 授权两步即可：<br>'+
+      el.innerHTML='<div class="empty">macOS 未授权读取 ~/.Trash —— 授权三步即可：<br>'+
         '① 终端运行 <code>python3 scripts/mac_dev_cleanup.py service install</code> 安装常驻服务；'+
-        '② 系统设置 → 隐私与安全性 → 完全磁盘访问 → 添加 <code>/usr/bin/python3</code>，然后 <code>launchctl kickstart -k gui/$UID/'+esc("com.yancongya.mac-dev-cleanup")+'</code> 重启服务</div>'+
+        '② 在 Finder 按 <code>Cmd+Shift+G</code> 进入 <code>/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/</code>，把 <code>python3.9</code> 文件直接拖进 <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles">完全磁盘访问权限</a> 列表并打开开关（对话框里它是灰色的，只能拖拽添加；CLT 升级后需重新拖一次）；'+
+        '③ <code>launchctl kickstart -k gui/$UID/'+esc("com.yancongya.mac-dev-cleanup")+'</code> 重启服务</div>'+
         '<div class="sys-trash-actions"><button type="button" class="btn danger" id="empty-system-trash-btn" disabled title="读取被 macOS 权限阻止">清空系统废纸篓</button></div>';
       return;
     }

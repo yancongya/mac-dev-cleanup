@@ -78,4 +78,10 @@ python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地
 
 若 `df` 未及时回血，先用**对照实验**区分「记账失灵」与「清理没生效」：往 `/tmp` 写一个 512M 文件看 `df` 是否变化，再删掉看是否回补——写降删不回补是记账问题（多见于有待装系统更新），写降删也回补则说明腾出的块被其它进程占用，两种都不该重复删。切勿因 `df` 未变就误判清理失败（验证用 `df -h ~`，而非 `df /`）。详见 SKILL.md 的「APFS snapshots」章节。
 
-另注意：`~/.Trash` 与 `~/Library/Application Support/MobileSync` 受 macOS TCC 保护。若 Web 控制台的「系统废纸篓」显示不可用、或扫描报告里没有 iOS 备份类别，把运行 `web_server.py` / 清理脚本的上下文（终端 App 或 launchd）加入「完全磁盘访问权限」即可，无需其它配置。
+另注意：`~/.Trash`、`~/Library/Application Support/MobileSync` 与 Safari 缓存受 macOS TCC 保护，crontab 读写也跟随同一权限。若 Web 控制台的「系统废纸篓」显示不可用、或扫描报告里没有 iOS 备份类别，需给服务进程授予「完全磁盘访问权限」，要点如下（2026-09-29 实证）：
+
+1. **授权对象是解释器实体，不是 `/usr/bin/python3`**——那只是个 shim，exec 后进程实体变成 CLT 解释器，TCC 只认后者：
+   `/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9`
+2. **该文件在 FDA 添加对话框里是灰色的**（Launch Services 把版本号 `.9` 误判为扩展名），「前往文件夹」对隐藏路径/软链也不跳转。唯一可靠方法：在 Finder 按 `Cmd+Shift+G` 进入上述目录，把 `python3.9` 文件**直接拖到「完全磁盘访问权限」列表上**，再打开开关。切勿经 Yoink/Dropover 等拖拽暂存工具——会给文件打隔离标记，导致服务进程被 SIGKILL。
+3. 授权后 `launchctl kickstart -k gui/$(id -u)/com.yancongya.mac-dev-cleanup` 重启服务生效。
+4. **Xcode CLT 升级后授权静默失效**（TCC 按实体路径 + ad-hoc 签名匹配），症状是废纸篓/crontab 又变「未授权」——重复一次拖拽即可。

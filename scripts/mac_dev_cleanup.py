@@ -2627,12 +2627,19 @@ def cmd_service(action: str) -> int:
         # "Input/output error" regardless of plist validity — the bootstrap
         # must come from a real login shell (Terminal).
         print(f"plist written : {SERVICE_PLIST}")
-        print("launchd 未加载 —— 当前宿主环境被 macOS 拒绝执行 bootstrap（正常现象，Terminal 不受影响）。")
-        print("请在 Terminal.app 里执行一次：")
+        print("launchd 未加载。请先检查是否其实已加载过（重复 bootstrap 会报")
+        print("\"Bootstrap failed: 5: Input/output error\"，这是误导性报错，不代表 plist 有问题）：")
+        print(f"  launchctl print gui/{uid}/{SERVICE_LABEL}   # 有输出 = 已加载，跳过 bootstrap")
+        print("若确认未加载，请在 Terminal.app 里执行：")
         print(f"  launchctl bootstrap gui/{uid} {SERVICE_PLIST}")
         print(f"之后用 `python3 {Path(__file__).resolve()} service --service-action status` 验证。")
     print("--- 最后一步（必需，授权完全磁盘访问）---")
-    print(f"系统设置 → 隐私与安全性 → 完全磁盘访问 → 添加「{SERVICE_PYTHON}」（「+ 其他」里选它），")
+    print("TCC 认实际执行的二进制，即 CLT 解释器实体（/usr/bin/python3 只是 shim）：")
+    print("  /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9")
+    print("注意：添加对话框中它会显示为灰色（Launch Services 把版本号误判为扩展名），")
+    print("正确做法：在 Finder 里 Cmd+Shift+G 打开上述目录，把 python3.9 文件")
+    print("直接拖到「完全磁盘访问权限」列表上松手，再打开开关。")
+    print("警告：CLT 升级后该授权会失效，需重新拖拽一次。")
     print(f"然后运行: launchctl kickstart -k gui/{uid}/{SERVICE_LABEL}")
     print("授权后系统废纸篓 / iOS 备份 / Safari 缓存全部可用；crontab 计划任务在服务加载后立即可用。")
     return 0 if loaded else 1
