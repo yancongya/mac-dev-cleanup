@@ -99,6 +99,7 @@ ok("工具自检格子", doc.querySelectorAll(".tool-cell").length > 0);
 ok("工具自检位于设置视图", !!$("#view-settings #panel-tools"));
 ok("面板系统已渲染", doc.querySelectorAll(".panel").length >= 8, doc.querySelectorAll(".panel").length);
 ok("toast 容器存在", !!$("#toast"));
+ok("全局降级横幅默认隐藏", !!$("#svc-banner") && $("#svc-banner").hidden === true);
 
 // --- i18n ---
 ok("标题已汉化", doc.title.includes("清理控制台"), doc.title);

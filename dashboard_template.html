@@ -752,6 +752,8 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
   </div>
 </header>
 
+<div class="sched-warn" id="svc-banner" hidden style="max-width:1240px;margin:12px auto 0;padding-left:24px;padding-right:24px"></div>
+
 <div class="shell">
   <nav class="sidenav" id="sidenav" aria-label="主导航">
     <button class="nav-item active" data-nav="overview" aria-current="page">
@@ -1824,6 +1826,24 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       ids.map(function(id){ return "--candidate-id "+id; }).join(" ")+
       " --apply";
   }
+  // Selection survives page reloads: ids persist in localStorage and are
+  // re-validated against the current candidate inventory on boot (stale ids
+  // from an earlier scan simply drop out).
+  var SEL_KEY="mdc.selection.v1";
+  function saveSel(){
+    try{ localStorage.setItem(SEL_KEY, JSON.stringify(Object.keys(state.selected))); }catch(e){}
+  }
+  function loadSel(){
+    try{
+      var ids=JSON.parse(localStorage.getItem(SEL_KEY)||"[]");
+      if(!Array.isArray(ids) || !ids.length) return;
+      var map={};
+      (DATA.candidates||[]).forEach(function(c){
+        if(ids.indexOf(c.id)>=0 && c.risk!=="manual") map[c.id]=c;
+      });
+      state.selected=map;
+    }catch(e){}
+  }
   function toggleCandidate(id, on){
     if(!id) return;
     if(on){
@@ -1832,17 +1852,18 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     } else {
       delete state.selected[id];
     }
+    saveSel();
     updateSelBar();
   }
   function selectAllVisible(){
     filtered().forEach(function(c){
       if(c.risk!=="manual") state.selected[c.id]=c;
     });
-    refreshList(); updateSelBar();
+    saveSel(); refreshList(); updateSelBar();
   }
   function clearSelection(){
     state.selected={};
-    refreshList(); updateSelBar();
+    saveSel(); refreshList(); updateSelBar();
   }
   function selectionBarHtml(){
     return '<div class="selbar idle" id="selbar">'+
@@ -2234,6 +2255,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           Object.assign(DATA, j.state);
           if(j.state.config) Object.assign(CONFIG, j.state.config);
           state.selected={};  // candidate ids change with a fresh scan
+          saveSel();
           loadForm();
           renderMeta();
           renderAll();
@@ -2268,7 +2290,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   function loadTrash(){
     if(typeof fetch!=="function") return;
     fetch("api/trash",{cache:"no-store"}).then(function(r){return r.json();})
-      .then(function(j){ TRASH=j; renderTrash(); })
+      .then(function(j){ TRASH=j; renderTrash(); updateSvcBanner(); })
       .catch(function(){});
   }
   function clearTrash(){
@@ -2363,10 +2385,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     }
     var items=(sys && sys.items)||[];
     if(sys && sys.available===false){
-      el.innerHTML='<div class="empty">macOS 未授权读取 ~/.Trash —— 授权三步即可：<br>'+
-        '① 终端运行 <code>python3 scripts/mac_dev_cleanup.py service install</code> 安装常驻服务；'+
-        '② 在 Finder 按 <code>Cmd+Shift+G</code> 进入 <code>/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/</code>，把 <code>python3.9</code> 文件直接拖进 <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles">完全磁盘访问权限</a> 列表并打开开关（对话框里它是灰色的，只能拖拽添加；CLT 升级后需重新拖一次）；'+
-        '③ <code>launchctl kickstart -k gui/$UID/'+esc("com.yancongya.mac-dev-cleanup")+'</code> 重启服务</div>'+
+      el.innerHTML='<div class="empty">macOS 未授权读取 ~/.Trash —— 授权步骤见页面顶部的全局指引横幅，授权后此面板自动恢复</div>'+
         '<div class="sys-trash-actions"><button type="button" class="btn danger" id="empty-system-trash-btn" disabled title="读取被 macOS 权限阻止">清空系统废纸篓</button></div>';
       return;
     }
@@ -2723,7 +2742,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           '<span class="ov-head-note" id="sched-meta"></span>'+
         '</div>'+
         '<p class="ov-sub">定时执行只读扫描与安全清理（底层为 crontab 中由本工具托管的条目）。</p>'+
-        '<div class="sched-warn" id="sched-cron-warn" hidden>当前服务进程无法访问 crontab —— 在终端运行 <code>python3 scripts/mac_dev_cleanup.py service install</code> 安装常驻服务后即可配置（服务上下文拥有 crontab 权限）</div>'+
+        '<div class="sched-warn" id="sched-cron-warn" hidden>当前服务进程无法访问 crontab —— 授权步骤见页面顶部的全局指引横幅，授权后即可在此配置定时任务</div>'+
         panel("sched-clean-safe","每日安全清理","safe 级别 · 先进废纸篓可还原", scheduleCardHtml("clean-safe")) +
         panel("sched-scan","每周只读扫描","只读 · 刷新看板数据", scheduleCardHtml("scan")) +
         panel("sched-notes","安全说明","逐条必读", renderScheduleNotesInner()) +
@@ -3012,7 +3031,28 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         if(!j || !j.ok) return;
         SCHED.data=j;
         renderSchedule();
+        updateSvcBanner();
       }).catch(function(){});
+  }
+
+  // ---- global degradation banner (服务/FDA 根因唯一提示) ----
+  // One root cause (service not installed / interpreter lacks Full Disk Access)
+  // used to be explained differently in 3+ panels; now the long how-to lives
+  // here exactly once, panels only show their local disabled state.
+  function svcDegraded(){
+    if(!state.apiOnline) return false;
+    var trashBad = !!(TRASH.system && TRASH.system.available===false);
+    var cronBad = !!(SCHED.data && SCHED.data.crontab_available===false);
+    return trashBad || cronBad;
+  }
+  function updateSvcBanner(){
+    var b=$("svc-banner"); if(!b) return;
+    if(!svcDegraded()){ b.hidden=true; b.innerHTML=""; return; }
+    b.innerHTML='<b>服务权限未就绪</b> —— 系统废纸篓 / iOS 备份 / 定时任务暂不可用，三步授权：'+
+      '① 终端运行 <code>python3 scripts/mac_dev_cleanup.py service install</code> 安装常驻服务；'+
+      '② Finder 按 <code>Cmd+Shift+G</code> 进入 <code>/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/</code>，把 <code>python3.9</code> 拖进 <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles">完全磁盘访问权限</a> 列表并开启（对话框里它是灰色的，只能拖拽；CLT 升级后需重拖）；'+
+      '③ <code>launchctl kickstart -k gui/$UID/'+esc("com.yancongya.mac-dev-cleanup")+'</code> 重启服务';
+    b.hidden=false;
   }
   // 未配置过的任务（null）给默认值：clean-safe 03:30 关闭；scan 周日 04:00 关闭
   function schedJob(job){
@@ -3363,6 +3403,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
       .then(function(s){
         state.selected={};
+        saveSel();
         Object.assign(DATA, s);
         if(s.config) Object.assign(CONFIG, s.config);
         renderMeta(); renderAll(); loadOperations(); loadTrash();
@@ -3377,7 +3418,20 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
               else if(x.exit_code!=null) st.textContent="已结束 (exit "+x.exit_code+")";
             }
           }).catch(function(){});
-        if(!repoll && s.timestamp){ setTimeout(function(){ refreshAfterClean(true); }, 6000); }
+        // Event-driven re-poll: the server fires a follow-up full scan after a
+        // filtered clean; poll until state.json's timestamp actually moves
+        // (2 s × up to 15 tries ≈ 30 s) instead of sleeping a magic 6 s.
+        if(!repoll && s.timestamp){
+          var ts=s.timestamp, tries=0;
+          (function waitScan(){
+            tries++;
+            fetch("api/state",{cache:"no-store"}).then(function(r){ return r.json(); })
+              .then(function(n){
+                if((n && n.timestamp!==ts) || tries>=15){ refreshAfterClean(true); return; }
+                setTimeout(waitScan, 2000);
+              }).catch(function(){ setTimeout(waitScan, 2000); });
+          })();
+        }
       }).catch(function(){ location.reload(); });
   }
   function runSelection(btnId){
@@ -3610,6 +3664,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     })();
     window.addEventListener("hashchange", route);
     if(!DATA){ renderAll(); return; }
+    loadSel();  // restore cross-reload selection (validated against inventory)
     loadForm();
     renderMeta();
     renderAll();
