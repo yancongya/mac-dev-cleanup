@@ -2593,8 +2593,20 @@ def cmd_service(action: str) -> int:
                   f"{uid}/{SERVICE_LABEL}` 重启服务")
         return 0
     if action == "uninstall":
-        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
-                       capture_output=True, text=True)
+        # Only bootout the label the plist itself declares (and only when it is
+        # actually loaded). A patched/foreign plist without our Label — as used
+        # by the unit tests — must never touch the production LaunchAgent.
+        try:
+            declared = plistlib.loads(SERVICE_PLIST.read_bytes()).get("Label") if SERVICE_PLIST.is_file() else None
+        except Exception:
+            declared = None
+        if declared:
+            loaded = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/{declared}"],
+                capture_output=True, text=True).returncode == 0
+            if loaded:
+                subprocess.run(["launchctl", "bootout", f"gui/{uid}/{declared}"],
+                               capture_output=True, text=True)
         if SERVICE_PLIST.exists():
             SERVICE_PLIST.unlink()
             print(f"removed {SERVICE_PLIST}")

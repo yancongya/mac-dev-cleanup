@@ -1196,6 +1196,33 @@ class P2ReportTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(plist.exists())
 
+    def test_service_uninstall_foreign_plist_never_touches_launchctl(self) -> None:
+        # Regression: uninstalling a patched/foreign plist (no Label key) used to
+        # bootout the REAL production LaunchAgent, silently killing the service
+        # whenever the test suite ran. launchctl must not be called at all here.
+        tmp = Path(tempfile.mkdtemp(prefix="mdc-svc-"))
+        plist = tmp / "svc.plist"
+        plist.write_text("<plist/>")
+        with patch.object(cleanup, "SERVICE_PLIST", plist), \
+             patch.object(cleanup.subprocess, "run",
+                          side_effect=AssertionError("launchctl must not be called")):
+            rc = cleanup.cmd_service("uninstall")
+        self.assertEqual(rc, 0)
+        self.assertFalse(plist.exists())
+
+    def test_service_uninstall_uses_declared_label_only_when_loaded(self) -> None:
+        plist_bytes = (f"<plist><dict><key>Label</key><string>{cleanup.SERVICE_LABEL}</string></dict></plist>").encode()
+        with patch.object(cleanup, "SERVICE_PLIST",
+                          Path(tempfile.mkdtemp(prefix="mdc-svc-")) / "svc.plist") as plist, \
+             patch.object(cleanup.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0)) as run:
+            plist.write_bytes(plist_bytes)
+            # first call = launchctl print (loaded) → second call = bootout
+            rc = cleanup.cmd_service("uninstall")
+        self.assertEqual(rc, 0)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("bootout", run.call_args_list[1][0][0][0])
+
     def test_service_status_reports_down(self) -> None:
         with patch.object(cleanup, "SERVICE_PLIST",
                           Path(tempfile.mkdtemp(prefix="mdc-svc-")) / "none.plist"), \
