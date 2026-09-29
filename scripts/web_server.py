@@ -226,6 +226,14 @@ def prune_orphan_icons() -> int:
     return removed
 
 
+CONFIRM_CLEAR_QUARANTINE = "CLEAR QUARANTINE"
+
+
+def trash_clear_confirmed(payload: object) -> bool:
+    """Pure guard for POST /api/trash/clear (unit-tested)."""
+    return isinstance(payload, dict) and payload.get("confirm") == CONFIRM_CLEAR_QUARANTINE
+
+
 def collect_trash_status() -> dict:
     """Read-only inventory of the quarantine area and the system Trash.
 
@@ -606,7 +614,7 @@ class Handler(SimpleHTTPRequestHandler):
                 SCAN_LOCK.release()
             return
         if path == "/api/trash/clear":
-            self._handle_trash_clear()
+            self._handle_trash_clear(payload if isinstance(payload, dict) else None)
             return
         if path == "/api/trash/empty-system":
             self._handle_trash_empty_system(payload if isinstance(payload, dict) else {})
@@ -847,8 +855,17 @@ class Handler(SimpleHTTPRequestHandler):
         threading.Thread(target=worker, daemon=True).start()
         self.send_json(200, {"ok": True, "started": True, "mode": mode, "count": len(ids), "apply": apply})
 
-    def _handle_trash_clear(self) -> None:
-        """Delete all quarantine directories under ~/.Trash/mac-dev-cleanup/."""
+    def _handle_trash_clear(self, payload: object = None) -> None:
+        """Delete all quarantine directories under ~/.Trash/mac-dev-cleanup/.
+
+        Clearing the quarantine destroys the payload behind every「一键还原」
+        button in the operations list, so it is gated like the system-trash
+        wipe: token plus a literal confirmation string echoed by the UI.
+        """
+        if not trash_clear_confirmed(payload):
+            self.send_json(400, {"ok": False,
+                                 "error": "confirm must be the exact string 'CLEAR QUARANTINE'"})
+            return
         if not QUARANTINE_DIR.is_dir():
             self.send_json(200, {"ok": True, "deleted": 0, "freed_bytes": 0})
             return

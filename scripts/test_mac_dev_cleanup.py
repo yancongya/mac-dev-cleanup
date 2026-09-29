@@ -832,6 +832,17 @@ class WebTrashStatusTests(unittest.TestCase):
         src = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
         self.assertIn('payload.get("confirm") != "EMPTY TRASH"', src)
 
+    def test_trash_clear_requires_exact_confirm_string(self) -> None:
+        # Clearing the quarantine destroys every restorable operation, so it
+        # is gated the same way as the system-trash wipe (literal confirm).
+        self.assertFalse(web_server.trash_clear_confirmed(None))
+        self.assertFalse(web_server.trash_clear_confirmed({}))
+        self.assertFalse(web_server.trash_clear_confirmed({"confirm": "clear quarantine"}))
+        self.assertFalse(web_server.trash_clear_confirmed({"confirm": "EMPTY TRASH"}))
+        self.assertTrue(web_server.trash_clear_confirmed({"confirm": "CLEAR QUARANTINE"}))
+        src = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
+        self.assertIn("trash_clear_confirmed(payload)", src)
+
 
 class AppPruneTests(unittest.TestCase):
     """apps.json self-healing: stale records + icon-cache orphans."""

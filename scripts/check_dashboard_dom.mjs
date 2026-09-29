@@ -128,6 +128,9 @@ ok("清理隔离区区块存在", !!$("#trash-quarantine"));
 ok("系统废纸篓区块存在", !!$("#sys-trash-section"));
 ok("清空系统废纸篓按钮存在", !!$("#empty-system-trash-btn"));
 ok("强确认层默认隐藏", !!$("#sys-trash-confirm") && $("#sys-trash-confirm").hidden === true);
+ok("统一确认层默认隐藏", !!$("#app-confirm") && $("#app-confirm").hidden === true);
+ok("清空系统废纸篓标注不可恢复", ($("#sys-trash-confirm")?.textContent || "").includes("不可恢复"));
+ok("快照删除标注不可恢复", ($("#snapshot-confirm")?.textContent || "").includes("不可恢复"));
 
 // --- reports view: launch items / TM snapshots / duplicate files ---
 window.location.hash = "reports";
@@ -166,6 +169,11 @@ ok("清理日志路径说明存在", schedNotes.includes("cron-*.log"));
 const cronLines = doc.querySelectorAll("#pbody-sched-clean-safe .sched-cron, #pbody-sched-scan .sched-cron");
 ok("两卡片显示 crontab 行小字", cronLines.length === 2 && [...cronLines].every((e) => e.getAttribute("title")));
 ok("crontab 不可用提示默认隐藏", !!$("#sched-cron-warn") && $("#sched-cron-warn").hidden === true);
+
+// --- clean view: 整模式 vs 勾选模式 semantics (P0 decoupling) ---
+ok("整模式清理面板存在", !!$("#panel-cleanup") && !!$("#pbody-cleanup"));
+ok("整模式语义已标注", ($("#pbody-cleanup")?.textContent || "").includes("忽略勾选"));
+ok("提供按勾选精确清理入口", !!$("#cc-pick-mode"));
 
 // --- i18n (candidate table lives in the clean view) ---
 const reasonCells = [...doc.querySelectorAll("td.reason")].map((e) => e.textContent);

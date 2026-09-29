@@ -789,6 +789,17 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+<div class="modal-mask" id="app-confirm" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="app-confirm-title">
+    <h3 id="app-confirm-title"></h3>
+    <div id="app-confirm-body"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" id="app-confirm-cancel">取消</button>
+      <button type="button" class="btn danger" id="app-confirm-ok"></button>
+    </div>
+  </div>
+</div>
+
 <div id="boot-error">
   <h2>仪表盘数据缺失</h2>
   <p>未能读取扫描数据。请先在终端运行一次扫描以生成数据。</p>
@@ -925,6 +936,25 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     el.className = "toast show" + (kind ? " " + kind : "");
     if(toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(function(){ el.className = "toast" + (kind ? " " + kind : ""); }, 2600);
+  }
+
+  // ---- shared confirm modal (统一确认组件) ----
+  // openConfirm({title, body, confirmText, onConfirm}) — one singleton layer
+  // (#app-confirm) for every strong confirmation that is NOT already served by
+  // a dedicated modal (system-trash / snapshot keep their own richer layers).
+  // body may contain HTML; callers are responsible for escaping dynamic text.
+  var confirmOnOk = null;
+  function openConfirm(opts){
+    var mask=$("app-confirm"); if(!mask) return;
+    $("app-confirm-title").textContent = opts.title || "确认操作";
+    $("app-confirm-body").innerHTML = opts.body || "";
+    $("app-confirm-ok").textContent = opts.confirmText || "确认";
+    confirmOnOk = opts.onConfirm || null;
+    mask.hidden = false;
+  }
+  function hideAppConfirm(){
+    var mask=$("app-confirm"); if(mask) mask.hidden = true;
+    confirmOnOk = null;
   }
   function copyText(text, okMsg, fallbackSel){
     var done=function(){ toast(okMsg || "已复制到剪贴板", "ok"); };
@@ -2252,10 +2282,22 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       .catch(function(){});
   }
   function clearTrash(){
-    if(!confirm("确定要清空废纸篓中的所有隔离文件？\n清空后无法通过操作历史还原。")) return;
+    // Quarantine dirs ARE the restore payload: clearing them silently kills
+    // every「一键还原」button in 操作历史. Say so, with the actual counts.
+    var n=(OPERATIONS||[]).length;
+    openConfirm({
+      title: "清空清理隔离区？",
+      body: '<p>即将永久删除废纸篓中本工具的全部隔离文件'+(n?('（对应 '+n+' 条操作记录）'):'')+'。</p>'+
+        '<p class="modal-note">⚠️ 此操作不可恢复 —— 清空后，操作历史中的所有「一键还原」按钮将失效。</p>',
+      confirmText: "确认清空（放弃还原能力）",
+      onConfirm: doClearTrash
+    });
+  }
+  function doClearTrash(){
     var btn=$("clear-trash-btn");
     if(btn){ btn.disabled=true; btn.textContent="清空中…"; }
-    fetch("api/trash/clear",{method:"POST",headers:postHeaders(),body:"{}"})
+    fetch("api/trash/clear",{method:"POST",headers:postHeaders(),
+        body:JSON.stringify({confirm:"CLEAR QUARANTINE"})})
       .then(function(r){return r.json();})
       .then(function(j){
         if(j.ok){
@@ -2288,7 +2330,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       // strong-confirm layer — opened by 清空系统废纸篓, request only fires on 确认清空
       '<div class="modal-mask" id="sys-trash-confirm" hidden>'+
         '<div class="modal" role="dialog" aria-modal="true" aria-label="确认清空系统废纸篓">'+
-          '<h3>确认清空系统废纸篓？</h3>'+
+          '<h3>确认清空系统废纸篓？ <span class="tag tag-manual">不可恢复</span></h3>'+
           '<p id="sys-trash-confirm-text"></p>'+
           '<p class="modal-note">默认保留 mac-dev-cleanup 隔离区（可恢复的清理记录）。</p>'+
           '<div class="modal-actions">'+
@@ -2490,17 +2532,21 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     var aggrBytes=fmtSize(DATA.aggressive_bytes);
     var safeCmd="python3 scripts/mac_dev_cleanup.py clean-safe --apply";
     var aggrCmd="python3 scripts/mac_dev_cleanup.py clean-aggressive --apply";
+    var safeCount=(DATA.candidates||[]).filter(function(c){return c.risk==="safe";}).length;
+    var aggrCount=(DATA.candidates||[]).filter(function(c){return c.risk==="aggressive";}).length;
     var safeHtml='<div class="cleanup-cmd">'+
-      '<div class="cc-header"><span class="tag tag-safe">安全清理</span><span class="cc-est">预估回收 '+safeBytes+'</span></div>'+
+      '<div class="cc-header"><span class="tag tag-safe">整模式 · 安全清理</span><span class="cc-est">预估回收 '+safeBytes+'</span></div>'+
       '<div class="cc-body"><code>'+esc(safeCmd)+'</code>'+
       (state.apiOnline?'<button class="btn cc-copy" data-copy="'+esc(safeCmd)+'">复制命令</button>':'')+'</div>'+
-      '<div class="cc-hint">仅清理 safe 级别候选项，文件移入废纸篓可还原</div></div>';
+      '<div class="cc-hint">整模式执行：忽略勾选，一次清理全部 safe 候选（当前 '+safeCount+' 项）；文件移入废纸篓可还原</div></div>';
     var aggrHtml=(DATA.aggressive_bytes||0)>0?'<div class="cleanup-cmd cc-warn">'+
-      '<div class="cc-header"><span class="tag tag-aggressive">深度清理</span><span class="cc-est">预估回收 '+aggrBytes+'</span></div>'+
+      '<div class="cc-header"><span class="tag tag-aggressive">整模式 · 深度清理</span><span class="cc-est">预估回收 '+aggrBytes+'</span></div>'+
       '<div class="cc-body"><code>'+esc(aggrCmd)+'</code>'+
       (state.apiOnline?'<button class="btn cc-copy" data-copy="'+esc(aggrCmd)+'">复制命令</button>':'')+'</div>'+
-      '<div class="cc-hint">⚠️ 包含谨慎级别，删除后重建成本较高</div></div>':'';
-    return safeHtml+aggrHtml;
+      '<div class="cc-hint">⚠️ 整模式执行：清理全部 aggressive 候选（当前 '+aggrCount+' 项），包含谨慎级别，删除后重建成本较高</div></div>':'';
+    var switcher='<div class="cc-pick-link" style="padding:10px 16px">'+
+      '<button type="button" class="lnk" id="cc-pick-mode">只要清理勾选的部分？改用下方候选表的按勾选精确清理 ↓</button></div>';
+    return safeHtml+aggrHtml+switcher;
   }
 
   function renderLastCleanup(){
@@ -2634,7 +2680,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         panel("tools","工具自检",(DATA.missing_tools||[]).length?("缺失 "+(DATA.missing_tools||[]).length+" 项"):"全部就绪", renderToolsInner(), true) +
       '</div>'+
       '<div class="view" id="view-clean" style="display:none">'+
-        panel("cleanup","一键清理","整体模式 · 复制到终端执行", renderCleanupGuideInner()) +
+        panel("cleanup","整模式清理","忽略勾选 · 清理该级别全部候选 · 复制到终端执行", renderCleanupGuideInner()) +
         panel("table","候选项","勾选后生成精确清理命令 · 点击路径复制", renderTableInner(), true) +
         selectionBarHtml() +
         '<div class="ov-head"><h2>执行日志</h2><span class="ov-head-note" id="exec-status"></span></div>'+
@@ -3209,7 +3255,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       // strong-confirm layer — opened by per-item 删除, request only fires on 确认删除
       '<div class="modal-mask" id="snapshot-confirm" hidden>'+
         '<div class="modal" role="dialog" aria-modal="true" aria-label="确认删除本地快照">'+
-          '<h3>确认删除本地快照？</h3>'+
+          '<h3>确认删除本地快照？ <span class="tag tag-manual">不可恢复</span></h3>'+
           '<p id="snapshot-confirm-text"></p>'+
           '<p class="modal-note">将执行 tmutil deletelocalsnapshots，删除后该时间点不可回滚。</p>'+
           '<div class="modal-actions">'+
@@ -3426,6 +3472,11 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   function bindTable(){
     var si = $("search-input");
     if(si) si.addEventListener("input", function(e){ state.search=e.target.value; refreshList(); });
+    var pick = $("cc-pick-mode");
+    if(pick) pick.addEventListener("click", function(){
+      var t=$("panel-table");
+      if(t) t.scrollIntoView({behavior:"smooth", block:"start"});
+    });
     var chips = $("chips");
     if(chips) chips.addEventListener("click", function(e){
       var b=e.target.closest("[data-risk]"); if(!b) return;
@@ -3585,6 +3636,16 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   function boot(){
     bindPanels();  // event delegation — must be called once, before any render
     bindNav();
+    // shared confirm layer — bound once, outside the re-rendered #app
+    (function(){
+      var mask=$("app-confirm"); if(!mask) return;
+      $("app-confirm-cancel").addEventListener("click", hideAppConfirm);
+      mask.addEventListener("click", function(e){ if(e.target===mask) hideAppConfirm(); });
+      $("app-confirm-ok").addEventListener("click", function(){
+        var fn=confirmOnOk; hideAppConfirm();
+        if(fn) fn();
+      });
+    })();
     window.addEventListener("hashchange", route);
     if(!DATA){ renderAll(); return; }
     loadForm();
