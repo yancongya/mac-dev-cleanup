@@ -23,8 +23,9 @@ node scripts/check_dashboard_dom.mjs dashboard.html   # DOM 结构
 - [ ] 模板一致性 `[OK]`（生成物与模板逐字节一致）
 - [ ] GET 端点巡检全部 200：`health / state / config / apps / trash / launch / snapshots / dupes / schedule / operations / clean/history / app/icon`（icon 用 apps 列表首个应用名验证，PNG 魔数）
 - [ ] POST 门禁抽查：`empty-system` 错误 confirm → 400；`snapshot/delete` 传 `com.apple.os.update-*` 名 → 400；`schedule` 传 `clean-aggressive` → 400；`trash/clear` 错误 confirm → 400（CLEAR QUARANTINE 字面量守卫）
-- [ ] TCC 降级抽查：无完全磁盘访问的上下文中 `/api/trash` 返回 `system.available:false`（非 500）、`/api/snapshots` 正常、scan 不中断
+- [ ] TCC 降级抽查：在**确实无 FDA 的隔离上下文**（临时撤销授权 / 独立无 FDA 用户）中 `/api/trash` 返回 `system.available:false`（非 500）、`/api/snapshots` 正常、scan 不中断。**注意**：agent/IDE 内置终端自身通常无 FDA，用它跑 `stat ~/.Trash` 会假阴性——这验证的是工具环境而非服务授权；权威验证须 `launchctl kickstart -k` 后在浏览器/真实 Terminal 查 `/api/trash` 的 `available` 字段
 - [ ] **跑测试套件不卸载生产服务**：套件跑完后 `launchctl print gui/501/com.yancongya.mac-dev-cleanup` 仍有输出（2026-09-30 修复项，有回归测试锁定）
+- [ ] **重启服务后若仍 `available:false`，先查孤儿进程再判授权**：`lsof -nP -iTCP:8766 -sTCP:LISTEN` 看 PID 启动时间是否早于授权时刻；若是 pre-FDA 占端口（`kill` + `launchctl kickstart -k` 修复，详见 SKILL.md「Diagnosing `available: false`」），勿直接重做 Finder 拖拽授权
 
 ## 1. 概览视图（纯只读仪表盘，对标 CleanMyMac Smart Scan 布局 + DaisyDisk 可视化）
 
