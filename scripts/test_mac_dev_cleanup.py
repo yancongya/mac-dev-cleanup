@@ -1150,8 +1150,10 @@ class P2ReportTests(unittest.TestCase):
                 "RunAtLoad": True, "KeepAlive": True}
         apple = {"Label": "com.apple.thing", "Program": "/usr/bin/x"}
         bad = b"not a plist at all"
-        plistlib.dump(good, (base / "com.foo.helper.plist").open("wb"))
-        plistlib.dump(apple, (base / "com.apple.thing.plist").open("wb"))
+        with (base / "com.foo.helper.plist").open("wb") as stream:
+            plistlib.dump(good, stream)
+        with (base / "com.apple.thing.plist").open("wb") as stream:
+            plistlib.dump(apple, stream)
         (base / "broken.plist").write_bytes(bad)
         (base / "readme.txt").write_text("ignored")
         with patch.object(cleanup, "LAUNCH_DIRS", (("test", base),)):
