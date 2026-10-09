@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "source": "mac-dev-cleanup",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "sha256": "982541dec954dea83264083cfd93176f0e810ab517155ede107f9c51ad39793d"
+    },
+    {
+      "path": "dashboard_template.html",
+      "sha256": "a2ea877f3dcc4f367f3b3a0f944853ee9ea9815c5075ffd7e7f8c68151b1eefd"
+    },
+    {
+      "path": "agents/openai.yaml",
+      "sha256": "e142c0f08ea7929ceacaefb03f49ab377b0bc3a052c305b6638986bad3279632"
+    },
+    {
+      "path": "scripts/mac_dev_cleanup.py",
+      "sha256": "007d1d3e09900bfd58012d7fded591ab99f8b9dbf28ea3a760176dce6b4b0451"
+    },
+    {
+      "path": "scripts/web_server.py",
+      "sha256": "3e8c6aa7fd85d5d785d9ec00b0c5fa57177bf305bc6d87ccbcf3e78066162772"
+    },
+    {
+      "path": "scripts/check_skill_routing.py",
+      "sha256": "363052bee845090cffcdbb8e0bbeab49430fc1381cb8d8d0dccc34ca0be206fb"
+    }
+  ],
+  "runtimeFiles": [
+    "dashboard.html",
+    "dashboard_data.js",
+    "config_data.js"
+  ]
+}

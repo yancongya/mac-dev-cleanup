@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt  # noqa: F401  (kept for parity with production imports)
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import plistlib
@@ -537,6 +538,52 @@ class RecoveryTests(unittest.TestCase):
                 self.assertTrue((original / "cache.bin").exists())
                 manifest = json.loads((operations / "test-op.json").read_text())
                 self.assertEqual(manifest["entries"][0]["status"], "restored")
+
+
+class ExecutionModeTests(unittest.TestCase):
+    """The default cleanup command must report candidates without moving them."""
+
+    def _run_clean(self, mode: str, apply: bool, candidate: cleanup.Candidate) -> tuple[str, MagicMock]:
+        argv = ["mac_dev_cleanup.py", mode]
+        if apply:
+            argv.append("--apply")
+        output = io.StringIO()
+        move = MagicMock(return_value=(True, "quarantined", None))
+        with patch("sys.argv", argv), patch("sys.stdout", output), \
+                patch.object(cleanup, "collect", return_value=[candidate]), \
+                patch.object(cleanup, "get_free_space", return_value="test"), \
+                patch.object(cleanup, "command_exists", return_value=True), \
+                patch.object(cleanup, "write_state", return_value=Path("state.json")), \
+                patch.object(cleanup, "move_to_quarantine", move), \
+                patch.object(cleanup, "PRUNE_PATHS", []), \
+                patch.object(cleanup, "EXCLUDE_PATHS", []), \
+                patch.object(cleanup, "PROTECTED_PROJECTS", []), \
+                patch.object(cleanup, "EXCLUDE_GLOBS", ()), \
+                patch.object(cleanup, "PROTECTED_CATEGORIES", set()):
+            self.assertEqual(cleanup.main(), 0)
+        return output.getvalue(), move
+
+    def test_default_clean_is_dry_run_and_apply_is_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / ".pytest_cache"
+            path.mkdir()
+            candidate = cleanup.Candidate(path, 1, "project-generated", "safe", "test")
+
+            scan, move = self._run_clean("scan", False, candidate)
+            self.assertIn("apply: False", scan)
+            self.assertIn("scan only", scan)
+            move.assert_not_called()
+            self.assertTrue(path.is_dir())
+
+            dry_run, move = self._run_clean("clean-safe", False, candidate)
+            self.assertIn("apply: False", dry_run)
+            self.assertIn("would delete", dry_run)
+            move.assert_not_called()
+            self.assertTrue(path.is_dir())
+
+            applied, move = self._run_clean("clean-safe", True, candidate)
+            self.assertIn("apply: True", applied)
+            move.assert_called_once_with(candidate, unittest.mock.ANY)
 
 
 class AppUninstallTests(unittest.TestCase):

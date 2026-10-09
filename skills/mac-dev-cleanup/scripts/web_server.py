@@ -1,0 +1,977 @@
+#!/usr/bin/env python3
+"""Local control plane for mac-dev-cleanup.
+
+Binds to loopback only. The dashboard may read state/config, atomically update the
+validated config, trigger a read-only scan, view operation history, clear the
+quarantine trash, and execute per-candidate cleanup (quarantine only, restorable).
+
+All POST endpoints require an X-MDC-Token header whose value is a random token
+regenerated at every server start and served via GET /api/health. Cross-origin
+pages can neither read that response (no CORS headers are ever sent) nor attach
+the custom header without passing a preflight this server never answers, so a
+malicious website cannot drive the API from a victim's browser.
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import hashlib
+import json
+import os
+import plistlib
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "mac_dev_cleanup.py"
+STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "state.json"
+OPERATIONS_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "operations"
+EXEC_LOG_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "exec-logs"
+QUARANTINE_DIR = Path.home() / ".Trash" / "mac-dev-cleanup"
+TRASH_DIR = Path.home() / ".Trash"
+MAX_BODY = 256 * 1024
+SCAN_LOCK = threading.Lock()
+
+# Regenerated per server start; the page reads it from /api/health (same-origin
+# only) and echoes it back on every POST. See the module docstring for why a
+# cross-origin page cannot obtain or use it.
+API_TOKEN = secrets.token_hex(16)
+CAND_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+
+# Live state of the at-most-one background cleanup. The CLI first does a full
+# scan before cleaning, which can take minutes — that is why execution is
+# async: POST /api/clean only starts it, GET /api/clean/status returns the
+# captured output so the dashboard can stream progress.
+EXEC_MUX = threading.Lock()
+EXEC_STATE = {"running": False, "mode": "", "ids": 0, "started": 0.0,
+              "lines": [], "operation_id": None, "exit_code": None}
+
+# Past executions (most recent first, cap 20), mirrored to EXEC_LOG_DIR as
+# JSON so records survive server restarts. Loaded lazily on first history GET.
+EXEC_HISTORY: list[dict] = []
+EXEC_HISTORY_LOADED = False
+EXEC_HISTORY_CAP = 20
+
+# Installed-apps listing: the CLI `apps` subcommand walks every bundle and its
+# related Library files (slow, minutes) and writes APPS_STATE_PATH. The server
+# runs it as a background job on first request and serves the JSON afterwards.
+APPS_STATE_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "apps.json"
+APPS_MUX = threading.Lock()
+APPS_BUILDING = False
+ICON_CACHE_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "icon-cache"
+
+
+def _record_filename(started: float) -> str:
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime(started)) + ".json"
+
+
+def _persist_exec_record(rec: dict) -> None:
+    try:
+        EXEC_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        (EXEC_LOG_DIR / _record_filename(rec["started"])).write_text(
+            json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass  # history is best-effort; cleanup itself must not fail on it
+
+
+def _load_exec_history() -> list[dict]:
+    """Load persisted execution records, newest first."""
+    try:
+        files = sorted(EXEC_LOG_DIR.glob("*.json"), reverse=True)[:EXEC_HISTORY_CAP]
+        out = []
+        for f in files:
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                if isinstance(rec, dict) and rec.get("started"):
+                    out.append(rec)
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+        return out
+    except OSError:
+        return []
+
+sys.path.insert(0, str(SCRIPT.parent))
+import mac_dev_cleanup as cleanup  # noqa: E402
+
+# The CLI module owns the policy path; never re-derive it here. It resolves to
+# LOG_DIR/config.json (outside the Skill directory), so a `skilldo update` that
+# rebuilds the Skill directory cannot reset the panel's policy.
+CONFIG_PATH = cleanup.CONFIG_PATH
+
+# Duplicate-file report state (path owned by the CLI module) and the
+# at-most-one background build, mirroring the apps-listing pattern.
+DUPES_STATE_PATH = cleanup.DUPES_STATE_PATH
+DUPES_MUX = threading.Lock()
+DUPES_BUILDING = False
+
+
+def _app_icon_png(rec: dict) -> Path | None:
+    """Extract an app bundle's icns to a cached PNG via sips.
+
+    Returns the cache path, or None when the bundle/plist/icon is unavailable
+    (the dashboard then falls back to a letter avatar). The cache key is a hash
+    of the bundle path so same-named apps in /Applications and ~/Applications
+    don't collide; the cache refreshes when the icns is newer.
+    """
+    bundle = Path(str(rec.get("path", "")))
+    if not bundle.is_dir():
+        return None
+    try:
+        with (bundle / "Contents" / "Info.plist").open("rb") as fh:
+            info = plistlib.load(fh)
+    except Exception:  # noqa: BLE001 — corrupt plist: fall back to the letter avatar
+        return None
+    if not isinstance(info, dict):
+        return None
+    icon = info.get("CFBundleIconFile") or info.get("CFBundleIconName")
+    if not isinstance(icon, str) or not icon:
+        return None
+    if not icon.endswith(".icns"):
+        icon += ".icns"
+    icns = bundle / "Contents" / "Resources" / icon
+    if not icns.is_file():
+        return None  # asset-catalog-only icons have no standalone icns
+    key = hashlib.md5(str(bundle).encode("utf-8")).hexdigest()
+    try:
+        ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        out = ICON_CACHE_DIR / (key + ".png")
+        if not out.is_file() or out.stat().st_mtime < icns.stat().st_mtime:
+            r = subprocess.run(["/usr/bin/sips", "-s", "format", "png", str(icns),
+                                "--out", str(out)], capture_output=True, timeout=30)
+            if r.returncode != 0 or not out.is_file():
+                return None
+        return out
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def read_json(path: Path, fallback: object) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fallback
+
+
+def prune_stale_app_records(only_name: str | None = None) -> int:
+    """Drop apps.json records whose bundle has vanished and rewrite the file.
+
+    Self-healing for uninstalls (via this tool or elsewhere — Finder, another
+    cleaner): the listing used to keep serving deleted apps forever because a
+    present-but-stale apps.json short-circuits the rebuild path. When
+    *only_name* is given, records of other apps are kept untouched and only
+    that app's vanished bundle is removed (the post-uninstall fast path — no
+    need to stat the whole library). The icon-cache PNG keyed by the bundle
+    path is removed along with each dropped record. Returns records removed;
+    the file is rewritten only when something changed.
+    """
+    data = read_json(APPS_STATE_PATH, None)
+    if not (isinstance(data, dict) and isinstance(data.get("apps"), list)):
+        return 0
+    kept: list[object] = []
+    removed = 0
+    for a in data["apps"]:
+        if not isinstance(a, dict):
+            kept.append(a)
+            continue
+        if only_name is not None and a.get("name") != only_name:
+            kept.append(a)
+            continue
+        if Path(str(a.get("path", ""))).is_dir():
+            kept.append(a)
+            continue
+        removed += 1
+        key = hashlib.md5(str(a.get("path", "")).encode("utf-8")).hexdigest()
+        try:
+            (ICON_CACHE_DIR / (key + ".png")).unlink(missing_ok=True)
+        except OSError:
+            pass
+    if removed:
+        data["apps"] = kept
+        try:
+            APPS_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False),
+                                       encoding="utf-8")
+        except OSError:
+            pass
+    return removed
+
+
+def prune_orphan_icons() -> int:
+    """Delete icon-cache PNGs whose bundle is no longer in apps.json.
+
+    Runs after a full apps rebuild; the cache is keyed by md5(bundle path),
+    so uninstalled bundles leave orphans behind unless swept.
+    """
+    data = read_json(APPS_STATE_PATH, None)
+    apps = data.get("apps", []) if isinstance(data, dict) else []
+    valid = {hashlib.md5(str(a.get("path", "")).encode("utf-8")).hexdigest()
+             for a in apps if isinstance(a, dict)}
+    removed = 0
+    if ICON_CACHE_DIR.is_dir():
+        for f in ICON_CACHE_DIR.glob("*.png"):
+            if f.stem not in valid:
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    return removed
+
+
+CONFIRM_CLEAR_QUARANTINE = "CLEAR QUARANTINE"
+
+
+def trash_clear_confirmed(payload: object) -> bool:
+    """Pure guard for POST /api/trash/clear (unit-tested)."""
+    return isinstance(payload, dict) and payload.get("confirm") == CONFIRM_CLEAR_QUARANTINE
+
+
+def collect_trash_status() -> dict:
+    """Read-only inventory of the quarantine area and the system Trash.
+
+    ~/.Trash is TCC-protected: a server started from a context without
+    Files-and-Folders/Full Disk Access gets PermissionError on iterdir.
+    That must degrade to available:false instead of a 500 — the quarantine
+    block is best-effort too and reported separately.
+    """
+    quarantine: dict = {"total_bytes": 0, "operations": [], "available": True}
+    try:
+        if QUARANTINE_DIR.is_dir():
+            for d in sorted(QUARANTINE_DIR.iterdir()):
+                if d.is_dir():
+                    dir_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                    quarantine["operations"].append({"operation_id": d.name, "bytes": dir_bytes})
+                    quarantine["total_bytes"] += dir_bytes
+    except OSError:
+        quarantine = {"total_bytes": 0, "operations": [], "available": False}
+
+    system: dict = {"total_bytes": 0, "count": 0, "items": [], "available": True}
+    try:
+        items: list[dict] = []
+        if TRASH_DIR.is_dir():
+            for entry in TRASH_DIR.iterdir():
+                if entry.name == QUARANTINE_DIR.name:
+                    continue  # reported separately above, restorable
+                is_dir = entry.is_dir()
+                mtime = 0
+                try:
+                    st = entry.stat()
+                    mtime = int(st.st_mtime)
+                    if is_dir:
+                        item_bytes = sum(f.stat().st_size for f in entry.rglob("*")
+                                         if f.is_file())
+                    else:
+                        item_bytes = st.st_size
+                except OSError:
+                    item_bytes = 0
+                items.append({"name": entry.name, "path": str(entry),
+                              "bytes": item_bytes, "is_dir": is_dir,
+                              "mtime": mtime})
+        system["count"] = len(items)
+        system["total_bytes"] = sum(i["bytes"] for i in items)
+        items.sort(key=lambda i: i["bytes"], reverse=True)
+        system["items"] = items[:100]
+    except OSError:
+        system = {"total_bytes": 0, "count": 0, "items": [], "available": False}
+    return {
+        # Legacy top-level keys (quarantine only) kept for compatibility.
+        "total_bytes": quarantine["total_bytes"],
+        "operations": quarantine["operations"],
+        "quarantine": quarantine,
+        "system": system,
+        "grand_total_bytes": quarantine["total_bytes"] + system["total_bytes"],
+    }
+
+
+class Handler(SimpleHTTPRequestHandler):
+    server_version = "mac-dev-cleanup/2.0"
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        print(f"[web] {self.address_string()} {fmt % args}")
+
+    def send_json(self, status: int, payload: object) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def read_body(self) -> object:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("invalid Content-Length") from exc
+        if length <= 0 or length > MAX_BODY:
+            raise ValueError("request body is empty or too large")
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid JSON: {exc}") from exc
+
+    def do_GET(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if path == "/api/config":
+            self.send_json(200, read_json(CONFIG_PATH, cleanup.DEFAULT_CONFIG))
+            return
+        if path == "/api/state":
+            state = read_json(STATE_PATH, None)
+            self.send_json(200 if state else 404, state or {"error": "state unavailable; run a scan first"})
+            return
+        if path == "/api/health":
+            self.send_json(200, {
+                "ok": True, "service": "mac-dev-cleanup",
+                "destructive_http_actions": True, "token": API_TOKEN,
+            })
+            return
+        if path == "/api/clean/status":
+            with EXEC_MUX:
+                snap = {k: (list(v) if isinstance(v, list) else v) for k, v in EXEC_STATE.items()}
+            self.send_json(200, snap)
+            return
+        if path == "/api/clean/history":
+            global EXEC_HISTORY, EXEC_HISTORY_LOADED
+            running = None
+            with EXEC_MUX:
+                if EXEC_STATE["running"]:
+                    running = {"mode": EXEC_STATE["mode"], "ids": EXEC_STATE["ids"],
+                               "apply": True, "started": EXEC_STATE["started"],
+                               "finished": None, "exit_code": None, "operation_id": None,
+                               "lines": list(EXEC_STATE["lines"])}
+            if not EXEC_HISTORY_LOADED:
+                EXEC_HISTORY = _load_exec_history()
+                EXEC_HISTORY_LOADED = True
+            with EXEC_MUX:
+                past = [dict(r, lines=list(r["lines"])) for r in EXEC_HISTORY]
+            self.send_json(200, {"running": running, "past": past})
+            return
+        if path == "/api/operations":
+            self._handle_operations_get()
+            return
+        if path == "/api/apps":
+            self._handle_apps_get()
+            return
+        if path == "/api/app/icon":
+            self._handle_app_icon()
+            return
+        if path == "/api/trash":
+            self._handle_trash_get()
+            return
+        if path == "/api/launch":
+            self.send_json(200, {"ok": True, "items": cleanup.launch_items()})
+            return
+        if path == "/api/snapshots":
+            self.send_json(200, cleanup.tmutil_snapshots())
+            return
+        if path == "/api/dupes":
+            self._handle_dupes_get()
+            return
+        if path == "/api/schedule":
+            self._handle_schedule_get()
+            return
+        super().do_GET()
+
+    # --- scheduled execution (crontab entries managed via marker lines) ---
+
+    @staticmethod
+    def _read_crontab() -> str | None:
+        """Current user crontab, or None when crontab is unavailable."""
+        try:
+            r = subprocess.run(["/usr/bin/crontab", "-l"],
+                               capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if r.returncode != 0:
+            # "no crontab for user" is an empty crontab, not an error
+            if "no crontab" in (r.stderr or "").lower():
+                return ""
+            return None
+        return r.stdout
+
+    @staticmethod
+    def _write_crontab(text: str) -> bool:
+        try:
+            r = subprocess.run(["/usr/bin/crontab", "-"], input=text,
+                               capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return r.returncode == 0
+
+    def _schedule_payload(self, crontab_text: str | None) -> dict:
+        managed = cleanup.parse_managed_crontab(crontab_text or "")
+        jobs: dict[str, object] = {}
+        for job in ("scan", "clean-safe"):
+            rec = managed.get(job)
+            jobs[job] = ({"enabled": rec["enabled"], "hour": rec["hour"],
+                          "minute": rec["minute"], "dow": rec["dow"],
+                          "line": rec["line"]} if rec else None)
+        return {"ok": True, "crontab_available": crontab_text is not None,
+                "jobs": jobs}
+
+    def _handle_schedule_get(self) -> None:
+        self.send_json(200, self._schedule_payload(self._read_crontab()))
+
+    def _handle_schedule_post(self, payload: dict) -> None:
+        job = payload.get("job")
+        if job not in cleanup.CRON_LOG_PATHS:
+            self.send_json(400, {
+                "ok": False,
+                "error": ("job must be 'scan' or 'clean-safe'; "
+                          "clean-aggressive is deliberately not schedulable")})
+            return
+        hour, minute = payload.get("hour"), payload.get("minute")
+        dow = payload.get("dow")
+        enabled = payload.get("enabled", True)
+        if not isinstance(enabled, bool):
+            self.send_json(400, {"ok": False, "error": "enabled must be a boolean"})
+            return
+        try:
+            line = cleanup.build_managed_cron_line(
+                job, hour if isinstance(hour, int) else -1,
+                minute if isinstance(minute, int) else -1,
+                dow if isinstance(dow, int) else None, enabled)
+        except ValueError as exc:
+            self.send_json(400, {"ok": False, "error": str(exc)})
+            return
+        current = self._read_crontab()
+        if current is None:
+            self.send_json(503, {"ok": False,
+                                 "error": "crontab unavailable from this process"})
+            return
+        # Drop every existing managed line for this job, then append the new one.
+        kept = [ln for ln in current.splitlines()
+                if not (f"{cleanup.MDC_CRON_MARKER}:{job}" in ln
+                        and (ln.find(cleanup.MDC_CRON_MARKER + ":") > 0))]
+        new_text = "\n".join(kept + [line]).rstrip("\n") + "\n"
+        if not self._write_crontab(new_text):
+            self.send_json(503, {"ok": False, "error": "failed to write crontab"})
+            return
+        self.send_json(200, self._schedule_payload(new_text))
+
+    def _handle_apps_get(self) -> None:
+        """Serve the installed-apps listing, building it in the background on
+        first access (the CLI walks every bundle — takes a while)."""
+        global APPS_BUILDING
+        prune_stale_app_records()  # self-heal: drop bundles deleted elsewhere
+        data = read_json(APPS_STATE_PATH, None)
+        if isinstance(data, dict) and isinstance(data.get("apps"), list):
+            self.send_json(200, {"ok": True, "building": False,
+                                 "timestamp": data.get("timestamp", ""),
+                                 "apps": data["apps"]})
+            return
+        with APPS_MUX:
+            if not APPS_BUILDING:
+                APPS_BUILDING = True
+
+        def worker() -> None:
+            global APPS_BUILDING
+            try:
+                subprocess.run([sys.executable, str(SCRIPT), "apps"], cwd=ROOT,
+                               text=True, capture_output=True, timeout=1800)
+                prune_orphan_icons()
+            except Exception:  # noqa: BLE001 — background job
+                pass
+            finally:
+                with APPS_MUX:
+                    APPS_BUILDING = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.send_json(200, {"ok": True, "building": True, "apps": [], "timestamp": ""})
+
+    def _handle_app_icon(self) -> None:
+        """Serve a PNG icon extracted from an installed app bundle.
+
+        The lookup key is the exact app name from apps.json — the bundle path
+        always comes from the scan state, never from the request, so there is
+        no path traversal surface. 404 makes the dashboard use its fallback.
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        name = (qs.get("name") or [""])[0]
+        data = read_json(APPS_STATE_PATH, None)
+        apps = data.get("apps", []) if isinstance(data, dict) else []
+        rec = next((a for a in apps
+                    if isinstance(a, dict) and a.get("name") == name), None)
+        png = _app_icon_png(rec) if rec else None
+        if png is None:
+            self.send_json(404, {"ok": False, "error": "icon unavailable"})
+            return
+        body = png.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_operations_get(self) -> None:
+        """Return operation history from the operations directory."""
+        ops = []
+        if OPERATIONS_DIR.is_dir():
+            for f in sorted(OPERATIONS_DIR.glob("*.json"), reverse=True):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    entries = data.get("entries", [])
+                    total_bytes = sum(e.get("size", 0) for e in entries)
+                    ops.append({
+                        "operation_id": data.get("operation_id", f.stem),
+                        "timestamp": data.get("timestamp", ""),
+                        "mode": data.get("mode", ""),
+                        "entry_count": len(entries),
+                        "total_bytes": total_bytes,
+                        # Preview for the expandable row (paths only, capped).
+                        "entries": [str(e.get("original_path") or e.get("path") or "")
+                                    for e in entries[:20]],
+                        "restore_command": f"python3 scripts/mac_dev_cleanup.py --restore {data.get('operation_id', f.stem)}",
+                    })
+                except (OSError, json.JSONDecodeError):
+                    continue
+        self.send_json(200, {"operations": ops})
+
+    def _handle_operations_restore(self, payload: dict) -> None:
+        """One-click restore: move a whole quarantined operation back in place."""
+        op_id = str(payload.get("operation_id", "")).strip()
+        if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", op_id):
+            self.send_json(400, {"ok": False, "error": "invalid operation_id"})
+            return
+        if not (OPERATIONS_DIR / f"{op_id}.json").is_file():
+            self.send_json(404, {"ok": False, "error": f"operation not found: {op_id}"})
+            return
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT), "--restore", op_id],
+                cwd=ROOT, text=True, capture_output=True, timeout=1800)
+        except subprocess.TimeoutExpired:
+            self.send_json(504, {"ok": False, "error": "restore timed out"})
+            return
+        out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        m = re.search(r"^restored:\s*(\d+)", out, re.M)
+        self.send_json(200 if proc.returncode == 0 else 500,
+                       {"ok": proc.returncode == 0, "operation_id": op_id,
+                        "restored": int(m.group(1)) if m else 0, "output": out[-4000:]})
+
+    def _handle_trash_get(self) -> None:
+        """Quarantine status plus a read-only inventory of the system Trash."""
+        self.send_json(200, collect_trash_status())
+
+    def _authorized(self) -> bool:
+        if self.headers.get("X-MDC-Token") != API_TOKEN:
+            self.send_json(403, {"ok": False, "error": "missing or invalid token"})
+            return False
+        return True
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if not self._authorized():
+            return
+        try:
+            payload = self.read_body()
+        except ValueError as exc:
+            self.send_json(400, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/config":
+            try:
+                normalized = cleanup.validate_config(payload)
+                cleanup.save_config(normalized)
+            except (ValueError, OSError) as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+                return
+            self.send_json(200, {"ok": True, "config": normalized})
+            return
+        if path == "/api/scan":
+            if not SCAN_LOCK.acquire(blocking=False):
+                self.send_json(409, {"ok": False, "error": "scan already running"})
+                return
+            try:
+                mode = payload.get("mode", "scan") if isinstance(payload, dict) else "scan"
+                if mode != "scan":
+                    self.send_json(400, {"ok": False, "error": "HTTP control plane only permits read-only scan"})
+                    return
+                proc = subprocess.run(
+                    [sys.executable, str(SCRIPT), "scan", "--limit", "0"],
+                    cwd=ROOT, text=True, capture_output=True, timeout=300,
+                )
+                if proc.returncode != 0:
+                    self.send_json(500, {"ok": False, "error": proc.stderr.strip() or proc.stdout.strip()})
+                    return
+                self.send_json(200, {"ok": True, "state": read_json(STATE_PATH, {}), "output": proc.stdout})
+            except subprocess.TimeoutExpired:
+                self.send_json(504, {"ok": False, "error": "scan timed out"})
+            finally:
+                SCAN_LOCK.release()
+            return
+        if path == "/api/trash/clear":
+            self._handle_trash_clear(payload if isinstance(payload, dict) else None)
+            return
+        if path == "/api/trash/empty-system":
+            self._handle_trash_empty_system(payload if isinstance(payload, dict) else {})
+            return
+        if path == "/api/clean":
+            self._handle_clean(payload if isinstance(payload, dict) else {})
+            return
+        if path == "/api/apps/refresh":
+            self._handle_apps_refresh()
+            return
+        if path == "/api/dupes/refresh":
+            self._handle_dupes_refresh()
+            return
+        if path == "/api/snapshot/delete":
+            self._handle_snapshot_delete(payload if isinstance(payload, dict) else {})
+            return
+        if path == "/api/operations/restore":
+            self._handle_operations_restore(payload if isinstance(payload, dict) else {})
+            return
+        if path == "/api/uninstall":
+            self._handle_uninstall(payload if isinstance(payload, dict) else {})
+            return
+        if path == "/api/schedule":
+            self._handle_schedule_post(payload if isinstance(payload, dict) else {})
+            return
+        self.send_json(404, {"ok": False, "error": "unknown API endpoint"})
+
+    def _handle_apps_refresh(self) -> None:
+        """Force a rebuild of the installed-apps listing (background job)."""
+        global APPS_BUILDING
+        with APPS_MUX:
+            if APPS_BUILDING:
+                self.send_json(409, {"ok": False, "error": "apps listing is already being rebuilt"})
+                return
+            APPS_BUILDING = True
+
+        def worker() -> None:
+            global APPS_BUILDING
+            try:
+                subprocess.run([sys.executable, str(SCRIPT), "apps"], cwd=ROOT,
+                               text=True, capture_output=True, timeout=1800)
+                prune_orphan_icons()
+            except Exception:  # noqa: BLE001 — background job
+                pass
+            finally:
+                with APPS_MUX:
+                    APPS_BUILDING = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.send_json(200, {"ok": True, "building": True})
+
+    def _handle_dupes_get(self) -> None:
+        """Serve the duplicate-file report, building it in the background on
+        first access (full hashing of big trees takes minutes)."""
+        global DUPES_BUILDING
+        data = read_json(DUPES_STATE_PATH, None)
+        if isinstance(data, dict) and isinstance(data.get("groups"), list):
+            self.send_json(200, {"ok": True, "building": False, "report": data})
+            return
+        self._start_dupes_build()
+        self.send_json(200, {"ok": True, "building": True, "report": None})
+
+    def _start_dupes_build(self) -> None:
+        global DUPES_BUILDING
+        with DUPES_MUX:
+            if DUPES_BUILDING:
+                return
+            DUPES_BUILDING = True
+
+        def worker() -> None:
+            global DUPES_BUILDING
+            try:
+                subprocess.run([sys.executable, str(SCRIPT), "dupes"], cwd=ROOT,
+                               text=True, capture_output=True, timeout=3600)
+            except Exception:  # noqa: BLE001 — background job
+                pass
+            finally:
+                with DUPES_MUX:
+                    DUPES_BUILDING = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_dupes_refresh(self) -> None:
+        global DUPES_BUILDING
+        with DUPES_MUX:
+            if DUPES_BUILDING:
+                self.send_json(409, {"ok": False, "error": "duplicate scan already running"})
+                return
+        self._start_dupes_build()
+        self.send_json(200, {"ok": True, "building": True})
+
+    def _handle_snapshot_delete(self, payload: dict) -> None:
+        """Delete ONE Time Machine local snapshot by exact date name.
+
+        The name must match the strict date pattern — `com.apple.os.update-*`
+        rollback points never do and are refused by code, not by convention.
+        Deletion is single-snapshot, confirm-gated, and the API is read-only
+        about everything else.
+        """
+        name = payload.get("name")
+        if not isinstance(name, str) or not cleanup.SNAPSHOT_NAME_RE.match(name):
+            self.send_json(400, {"ok": False,
+                                 "error": "name must be a snapshot date like 2026-09-27-030000 "
+                                          "(update rollback points are never deletable here)"})
+            return
+        if payload.get("confirm") != "DELETE SNAPSHOT":
+            self.send_json(400, {"ok": False,
+                                 "error": "confirm must be the exact string 'DELETE SNAPSHOT'"})
+            return
+        try:
+            proc = subprocess.run(["/usr/bin/tmutil", "deletelocalsnapshots", name],
+                                  capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.send_json(500, {"ok": False, "error": str(exc)})
+            return
+        ok = proc.returncode == 0
+        self.send_json(200 if ok else 422, {
+            "ok": ok, "name": name,
+            "output": ((proc.stdout or "") + (proc.stderr or "")).strip()[-2000:],
+        })
+
+    def _handle_uninstall(self, payload: dict) -> None:
+        """Uninstall one app via the CLI: quarantine the bundle and its related
+        Library leftovers, restorable through the standard operation flow.
+        Synchronous — a same-volume move is fast."""
+        app = payload.get("app")
+        if not isinstance(app, str) or not cleanup.APP_NAME_RE.match(app):
+            self.send_json(400, {"ok": False, "error": "app must be a bundle name like 'Foo.app'"})
+            return
+        apply = payload.get("apply", True)
+        if not isinstance(apply, bool):
+            apply = True
+        if not APPS_MUX.acquire(blocking=False):
+            self.send_json(409, {"ok": False, "error": "another apps operation is running"})
+            return
+        try:
+            argv = [sys.executable, str(SCRIPT), "uninstall", "--app-name", app]
+            if apply:
+                argv.append("--apply")
+            proc = subprocess.run(argv, cwd=ROOT, text=True, capture_output=True,
+                                  timeout=900, env=dict(os.environ, PYTHONUNBUFFERED="1"))
+            out = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+            m = re.search(r"^operation_id:\s*(\S+)", out, re.M)
+            ok = proc.returncode == 0
+            if ok and apply:
+                # Drop the uninstalled app from apps.json (and its icon cache)
+                # right away: the listing otherwise keeps serving it until a
+                # full rebuild, which never triggers while the file exists.
+                prune_stale_app_records(only_name=app)
+            self.send_json(200 if ok else 422, {
+                "ok": ok, "exit_code": proc.returncode,
+                "operation_id": m.group(1) if m else None,
+                "output": out[-4000:],
+            })
+        except subprocess.TimeoutExpired:
+            self.send_json(504, {"ok": False, "error": "uninstall timed out"})
+        finally:
+            APPS_MUX.release()
+
+    def _handle_clean(self, payload: dict) -> None:
+        """Start per-candidate cleanup through the CLI (quarantine, restorable).
+
+        Accepts only validated candidate ids and one of the two clean modes; the
+        CLI's own safety rules (WeChat running, require_quit apps, path guards)
+        apply unchanged because execution is a plain subprocess of the same
+        binary the terminal uses. Runs async — progress streams via
+        GET /api/clean/status.
+        """
+        mode = payload.get("mode")
+        if mode not in ("clean-safe", "clean-aggressive"):
+            self.send_json(400, {"ok": False, "error": "mode must be clean-safe or clean-aggressive"})
+            return
+        ids = payload.get("candidate_ids")
+        if (not isinstance(ids, list) or not ids or len(ids) > 500
+                or not all(isinstance(i, str) and CAND_ID_RE.match(i) for i in ids)):
+            self.send_json(400, {"ok": False, "error": "candidate_ids must be a non-empty list of valid candidate ids"})
+            return
+        apply = payload.get("apply", True)
+        if not isinstance(apply, bool):
+            apply = True
+        with EXEC_MUX:
+            if EXEC_STATE["running"]:
+                self.send_json(409, {"ok": False, "error": "another operation is running"})
+                return
+            EXEC_STATE.update(running=True, mode=mode, ids=len(ids), started=time.time(),
+                              lines=[], operation_id=None, exit_code=None)
+        argv = [sys.executable, str(SCRIPT), mode]
+        for cid in ids:
+            argv += ["--candidate-id", cid]
+        if apply:
+            argv.append("--apply")
+
+        def worker() -> None:
+            try:
+                # PYTHONUNBUFFERED: the child's stdout is a pipe, so CPython
+                # would block-buffer it (4-8 KiB) and the live log would sit
+                # empty for a long time — the exact "button did nothing" bug.
+                child_env = dict(os.environ, PYTHONUNBUFFERED="1")
+                proc = subprocess.Popen(argv, cwd=ROOT, text=True, env=child_env,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        bufsize=1)
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    with EXEC_MUX:
+                        EXEC_STATE["lines"].append(line.rstrip("\n"))
+                        if len(EXEC_STATE["lines"]) > 800:
+                            del EXEC_STATE["lines"][:200]
+                code = proc.wait(timeout=600)
+                joined = "\n".join(EXEC_STATE["lines"])
+                m = re.search(r"^operation_id:\s*(\S+)", joined, re.M)
+                with EXEC_MUX:
+                    EXEC_STATE["exit_code"] = code
+                    EXEC_STATE["operation_id"] = m.group(1) if m else None
+                    EXEC_STATE["running"] = False
+                    rec = {"mode": EXEC_STATE["mode"], "ids": EXEC_STATE["ids"],
+                           "apply": True, "started": EXEC_STATE["started"],
+                           "finished": time.time(), "exit_code": code,
+                           "operation_id": EXEC_STATE["operation_id"],
+                           "lines": list(EXEC_STATE["lines"])}
+                    EXEC_HISTORY.insert(0, rec)
+                    del EXEC_HISTORY[EXEC_HISTORY_CAP:]
+                _persist_exec_record(rec)
+                # A filtered clean never rewrites state.json (see the CLI), so
+                # the inventory would keep listing already-cleaned items. Fire
+                # a full read-only scan afterwards to refresh it in place.
+                if code == 0 and apply:
+                    try:
+                        subprocess.run([sys.executable, str(SCRIPT), "scan", "--limit", "0"],
+                                       cwd=ROOT, text=True, capture_output=True, timeout=600)
+                    except Exception:  # noqa: BLE001 — best-effort refresh
+                        pass
+            except Exception as exc:  # noqa: BLE001 — background thread, report anything
+                with EXEC_MUX:
+                    EXEC_STATE["exit_code"] = -1
+                    EXEC_STATE["lines"].append(f"[server error] {exc}")
+                    EXEC_STATE["running"] = False
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.send_json(200, {"ok": True, "started": True, "mode": mode, "count": len(ids), "apply": apply})
+
+    def _handle_trash_clear(self, payload: object = None) -> None:
+        """Delete all quarantine directories under ~/.Trash/mac-dev-cleanup/.
+
+        Clearing the quarantine destroys the payload behind every「一键还原」
+        button in the operations list, so it is gated like the system-trash
+        wipe: token plus a literal confirmation string echoed by the UI.
+        """
+        if not trash_clear_confirmed(payload):
+            self.send_json(400, {"ok": False,
+                                 "error": "confirm must be the exact string 'CLEAR QUARANTINE'"})
+            return
+        if not QUARANTINE_DIR.is_dir():
+            self.send_json(200, {"ok": True, "deleted": 0, "freed_bytes": 0})
+            return
+        deleted = 0
+        freed = 0
+        for d in QUARANTINE_DIR.iterdir():
+            if d.is_dir():
+                dir_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                shutil.rmtree(d, ignore_errors=True)
+                if not d.exists():
+                    deleted += 1
+                    freed += dir_bytes
+        self.send_json(200, {"ok": True, "deleted": deleted, "freed_bytes": freed})
+
+    def _handle_trash_empty_system(self, payload: dict) -> None:
+        """Empty the system Trash (~/.Trash), minus the quarantine directory
+        unless the caller explicitly asks to include it.
+
+        Gated twice: the API token plus a literal confirmation string the UI
+        must echo ("EMPTY TRASH") — no accidental single-click wipes. This is
+        a real deletion (not quarantine): Trash contents are already discarded
+        data, and moving them to our quarantine inside the same Trash would be
+        circular. Individual item failures are skipped and reported.
+        """
+        if payload.get("confirm") != "EMPTY TRASH":
+            self.send_json(400, {"ok": False,
+                                 "error": "confirm must be the exact string 'EMPTY TRASH'"})
+            return
+        include_quarantine = payload.get("include_quarantine", False) is True
+        if not TRASH_DIR.is_dir():
+            self.send_json(200, {"ok": True, "deleted": 0, "freed_bytes": 0,
+                                 "failed": 0})
+            return
+        try:
+            entries = list(TRASH_DIR.iterdir())
+        except OSError as exc:
+            self.send_json(503, {"ok": False,
+                                 "error": f"cannot read Trash (macOS permission?): {exc}"})
+            return
+        deleted = 0
+        freed = 0
+        failed = 0
+        for entry in entries:
+            if entry.name == QUARANTINE_DIR.name and not include_quarantine:
+                continue
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    item_bytes = sum(f.stat().st_size for f in entry.rglob("*")
+                                     if f.is_file())
+                    shutil.rmtree(entry)
+                else:
+                    item_bytes = entry.stat().st_size
+                    entry.unlink()
+            except OSError:
+                failed += 1
+                continue
+            if not entry.exists():
+                deleted += 1
+                freed += item_bytes
+            else:
+                failed += 1
+        self.send_json(200, {"ok": True, "deleted": deleted,
+                             "freed_bytes": freed, "failed": failed,
+                             "quarantine_preserved": not include_quarantine})
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+
+def resolve_port(cli_port: int | None) -> int:
+    """Pick the dashboard port: --port, then MDC_PORT, then the policy file.
+
+    8765 is a common neighbour (a Codex auto-resume daemon already listens there
+    on this machine), so the default lives in `config.json: dashboard_port`
+    rather than being hardcoded here.
+    """
+    if cli_port is not None:
+        return cli_port
+    env = os.environ.get("MDC_PORT", "").strip()
+    if env.isdigit():
+        return int(env)
+    return int(cleanup.CONFIG.get("dashboard_port", 8766))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Serve the mac-dev-cleanup dashboard and safe local API.")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="override the port (default: MDC_PORT env var, else config.json dashboard_port)",
+    )
+    args = parser.parse_args()
+    port = resolve_port(args.port)
+    server = LoopbackServer(("127.0.0.1", port), Handler)
+    print(f"mac-dev-cleanup dashboard: http://127.0.0.1:{port}/dashboard.html")
+    print("HTTP actions: read state/config, update validated config, read-only scan, per-candidate cleanup (quarantine only, token-guarded).")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

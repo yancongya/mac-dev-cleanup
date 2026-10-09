@@ -1,0 +1,2852 @@
+#!/usr/bin/env python3
+"""Scan and clean common macOS developer-generated files.
+
+Default behavior is dry-run. Deletion only happens with --apply.
+The `manual` risk level is reported but never auto-deleted; it exists so the
+user can review large dirs, screenshots, archives, etc. before acting.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fnmatch
+import hashlib
+import json
+import os
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+
+
+HOME = Path.home()
+LOG_DIR = HOME / ".codex" / "logs" / "mac-dev-cleanup"
+STATE_PATH = LOG_DIR / "state.json"
+HISTORY_PATH = LOG_DIR / "history.jsonl"
+
+
+def _norm_mount_point(raw: str) -> str:
+    """Normalize a mount point path for pure string comparison.
+
+    macOS reports /tmp as /private/tmp in the mount table, so strip the
+    /private prefix to make "/tmp/nas-mount" and "/private/tmp/nas-mount"
+    compare equal.
+    """
+    return raw[len("/private"):] if raw.startswith("/private/") else raw
+
+
+def _load_mount_points() -> frozenset[str]:
+    """Collect active mount points from the system mount table.
+
+    Walkers must never descend into a mount point: a stale network share
+    (dead SMB/NFS export) blocks forever on the first stat() inside it,
+    which hangs the whole scan. Reading the mount table is pure string
+    work, so this probe can never block.
+    """
+    points: set[str] = set()
+    try:
+        table = subprocess.run(["mount"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    for line in table.splitlines():
+        marker = line.find(" on ")
+        if marker == -1:
+            continue
+        tail = line[marker + 4:]
+        close = tail.find(" (")
+        if close == -1:
+            continue
+        point = tail[:close]
+        if point.startswith("/"):
+            points.add(_norm_mount_point(point))
+    return frozenset(points)
+
+
+MOUNT_POINTS = _load_mount_points()
+
+
+def is_mount_point(path: Path) -> bool:
+    """True when *path* is an active mount point (string compare, no stat)."""
+    return _norm_mount_point(path.as_posix()) in MOUNT_POINTS
+
+
+def safe_walk(top, topdown: bool = True):
+    """os.walk that prunes mount points before descending into them.
+
+    Prevents the scanner from blocking on stale network mounts (see
+    _load_mount_points) while adding no extra filesystem I/O.
+    """
+    for current, dirs, files in os.walk(top, topdown=topdown):
+        if topdown:
+            base = Path(current)
+            dirs[:] = [d for d in dirs if not is_mount_point(base / d)]
+        yield current, dirs, files
+OPERATIONS_DIR = LOG_DIR / "operations"
+TRASH_ROOT = HOME / ".Trash" / "mac-dev-cleanup"
+DASHBOARD_PATH = Path(__file__).resolve().parents[1] / "dashboard.html"
+# MDC_CONFIG lets tests (and alternate setups) point at a different policy file
+# without touching the installed config.json.
+CONFIG_PATH = (
+    Path(os.environ["MDC_CONFIG"]).expanduser()
+    if os.environ.get("MDC_CONFIG")
+    else LOG_DIR / "config.json"
+)
+# config.json is this machine's policy, so it must not live inside the Skill
+# directory: SkillDo manages that directory as a content-only mirror, and
+# `skilldo update` rebuilds it from the repository, deleting every file the repo
+# does not track — config.json among them. Policy kept there would be silently
+# reset to defaults by the next update, so it lives in LOG_DIR (beside
+# state.json) and pre-migration installs are adopted once, just below.
+LEGACY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+
+
+def adopt_legacy_config(legacy: Path | None = None, target: Path | None = None) -> bool:
+    """Move a pre-migration in-Skill config.json to its new home in LOG_DIR.
+
+    Returns True when a config was adopted. Explicit paths keep this testable;
+    the module-level call below is skipped while MDC_CONFIG is set, so tests
+    pointing at a scratch policy file never touch the installed one.
+    """
+    source = LEGACY_CONFIG_PATH if legacy is None else legacy
+    dest = CONFIG_PATH if target is None else target
+    if source == dest or dest.exists() or not source.exists():
+        return False
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+    except OSError:
+        return False
+    try:
+        source.unlink()
+    except OSError:
+        pass  # adopted; the legacy copy stays behind, harmless and gitignored
+    return True
+
+
+if not os.environ.get("MDC_CONFIG") and adopt_legacy_config():
+    print(f"note: adopted config.json into {CONFIG_PATH}", file=sys.stderr)
+
+# Trees that are never walked: live app data, containers, media libraries, and
+# package caches holding user-visible state. Declared before DEFAULT_CONFIG
+# because config validation requires an app-support whitelist root to sit
+# inside one of these — otherwise the whitelist would become a way to reach
+# arbitrary app data. Containment is checked as a string comparison (no I/O).
+PRUNE_PATHS = [
+    HOME / "Library" / "Application Support",
+    HOME / "Library" / "Containers",
+    HOME / "Library" / "Group Containers",
+    HOME / "Library" / "Mobile Documents",
+    HOME / "Music",
+    HOME / "Movies",
+    HOME / ".Trash",
+    HOME / ".pub-cache",
+    HOME / "go" / "pkg" / "mod",
+]
+
+# Default config written to config.json on first run. Web dashboard edits this
+# file; the script reads it on every run. System-level safety sets
+# (GLOBAL_SAFE_PATHS, PRUNE_PATHS, SAFE_DIR_NAMES, MODEL_SUFFIXES, etc.) stay
+# hardcoded — they are safety boundaries, not user preferences.
+DEFAULT_CONFIG = {
+    "stale_days": 90,
+    "thresholds": {
+        "app_cache_min_mb": 50,
+        "app_log_min_mb": 10,
+        "large_dir_mb": 100,
+        "large_file_mb": 50,
+    },
+    "scan_roots": [
+        "~/工作/开发",
+        "~/Desktop/OH-WorkSpace",
+        "~/Documents",
+        "~/Developer",
+        "~/dev",
+        "~/workspace",
+    ],
+    "personal_roots": [
+        "~/Desktop",
+        "~/Pictures",
+        "~/Downloads",
+    ],
+    "exclude_paths": [],
+    "exclude_globs": [],
+    "protected_projects": [],
+    "protected_categories": [],
+    "trash_retention_days": 30,
+    "wechat_media_keep_months": 1,
+    # Loopback port for `web_server.py`. The conventional 8765 is frequently
+    # already taken (on this machine a Codex auto-resume daemon holds it), and a
+    # collision means the dashboard silently fails to start, so the default is
+    # deliberately off that number. Override per-run with `--port`, or per-shell
+    # with the MDC_PORT environment variable.
+    "dashboard_port": 8766,
+    # Build by-product rules are user policy, not a hard safety boundary, so
+    # they are configurable. Everything here is ADDITIVE on top of the built-in
+    # SAFE_DIR_NAMES / AGGRESSIVE_DIR_NAMES sets, which can never be shrunk.
+    "build_artifacts": {
+        # Directory names appended to the built-in safe / aggressive sets.
+        "safe_dirs": [".vite-temp"],
+        "aggressive_dirs": ["dist-ssr"],
+        # Filename globs (fnmatch, matched against the basename) for throwaway
+        # files a bundler writes on every run.
+        "safe_file_globs": ["vite.config.*.timestamp-*.mjs", "vite.config.*.timestamp-*.js"],
+        # Tauri workspace shapes: <tauri_parent>/<gen_dir> is safe,
+        # <tauri_parent>/<build_dir> is aggressive. Anchored on the parent so a
+        # generic name like `gen` can never match an unrelated directory.
+        "tauri_parents": ["src-tauri"],
+        "tauri_gen_dirs": ["gen"],
+        "tauri_build_dirs": ["target"],
+        # Packaged installers are deliverables: when one of these appears under
+        # a Tauri build dir, the whole tree is demoted to `manual`. Falling back
+        # to the built-in list when emptied keeps that protection unbreakable.
+        "bundle_markers": [".dmg", ".app", ".msi", ".exe", ".deb", ".rpm", ".AppImage"],
+    },
+    # App-support trees are pruned wholesale because they hold live app data.
+    # This is a SHAPE whitelist mirroring the WeChat rule, but the shape list
+    # lives here instead of being hardcoded: only the exact relative paths named
+    # under a known root are ever exempted, so an app's databases, settings,
+    # and licences can never match. `safe` entries are rebuildable temp / crash
+    # / log data; `manual` entries are user-visible data that is only reported.
+    # `require_quit` names a process that, while running, turns the entry's
+    # `safe` paths into live state — cleanup then skips them rather than moving
+    # a file the app is still writing (e.g. a recording in progress).
+    "app_support_whitelist": [
+        {
+            "name": "PixPin",
+            "root": "~/Library/Application Support/PixPin",
+            "safe": ["Temp/RecordingRecovery", "Crashpad", "pixpin.log"],
+            "manual": ["History"],
+            "require_quit": "PixPin.app/Contents/MacOS/PixPin",
+        },
+    ],
+}
+
+BUILD_ARTIFACT_KEYS = tuple(DEFAULT_CONFIG["build_artifacts"])
+# Protection that must survive any config edit.
+FALLBACK_BUNDLE_MARKERS = tuple(DEFAULT_CONFIG["build_artifacts"]["bundle_markers"])
+
+
+def _expand(path_str: str) -> Path:
+    return Path(path_str).expanduser()
+
+
+def _validate_build_artifacts(value: object) -> dict:
+    """Normalize the `build_artifacts` policy block.
+
+    Every field is additive user policy, so the only hard rule is shape: lists
+    of non-empty strings, unknown keys rejected. Emptying `bundle_markers`
+    falls back to the built-in list — that field is protection, not preference.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("build_artifacts must be an object")
+    unknown = set(value) - set(BUILD_ARTIFACT_KEYS)
+    if unknown:
+        raise ValueError(f"unknown build_artifacts key: {sorted(unknown)[0]}")
+    merged = {k: list(v) for k, v in DEFAULT_CONFIG["build_artifacts"].items()}
+    for key, raw in value.items():
+        if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+            raise ValueError(f"build_artifacts.{key} must be an array of strings")
+        cleaned = list(dict.fromkeys(v.strip() for v in raw if v.strip()))
+        if key == "bundle_markers" and not cleaned:
+            cleaned = list(FALLBACK_BUNDLE_MARKERS)
+        merged[key] = cleaned
+    return merged
+
+
+APP_SUPPORT_ENTRY_KEYS = ("name", "root", "safe", "manual", "require_quit")
+
+
+def _prune_root_texts() -> tuple[str, ...]:
+    """PRUNE_PATHS as normalized strings, for I/O-free containment checks."""
+    return tuple(p.as_posix().rstrip("/") for p in PRUNE_PATHS)
+
+
+def _validate_app_support_whitelist(value: object) -> list:
+    """Normalize the app-support shape whitelist.
+
+    Safety rules that no config edit can relax:
+    - an entry's root must live inside a hard-coded PRUNE_PATHS root, so the
+      whitelist can only ever carve into an already-pruned app tree;
+    - relative paths must be plain children (not absolute, no `..`), so an
+      edit cannot escape the root;
+    - the same path may not be listed as both safe and manual.
+    """
+    if not isinstance(value, list):
+        raise ValueError("app_support_whitelist must be an array")
+    prune_roots = _prune_root_texts()
+
+    def clean_rel(raw: object, field: str, idx: int) -> list[str]:
+        if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+            raise ValueError(f"app_support_whitelist[{idx}].{field} must be an array of strings")
+        out: list[str] = []
+        for item in raw:
+            bare = item.strip()
+            rel = bare.strip("/")
+            if not rel:
+                continue
+            if os.path.isabs(bare) or bare.startswith("~") or ".." in Path(rel).parts:
+                raise ValueError(
+                    f"app_support_whitelist[{idx}].{field} must be relative to the entry root and free of '..'"
+                )
+            if rel not in out:
+                out.append(rel)
+        return out
+
+    merged: list[dict] = []
+    for idx, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise ValueError(f"app_support_whitelist[{idx}] must be an object")
+        unknown = set(entry) - set(APP_SUPPORT_ENTRY_KEYS)
+        if unknown:
+            raise ValueError(f"unknown app_support_whitelist key: {sorted(unknown)[0]}")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"app_support_whitelist[{idx}].name must be a non-empty string")
+        root = entry.get("root")
+        if not isinstance(root, str) or not root.strip():
+            raise ValueError(f"app_support_whitelist[{idx}].root must be a non-empty string")
+        root_text = _expand(root).as_posix().rstrip("/")
+        if not any(root_text == p or root_text.startswith(p + "/") for p in prune_roots):
+            raise ValueError(f"app_support_whitelist[{idx}].root must live under a pruned path")
+        safe = clean_rel(entry.get("safe", []), "safe", idx)
+        manual = clean_rel(entry.get("manual", []), "manual", idx)
+        if not safe and not manual:
+            raise ValueError(f"app_support_whitelist[{idx}] lists neither safe nor manual paths")
+        shared = set(safe) & set(manual)
+        if shared:
+            raise ValueError(f"app_support_whitelist[{idx}]: {sorted(shared)[0]} is both safe and manual")
+        require_quit = entry.get("require_quit", "")
+        if not isinstance(require_quit, str):
+            raise ValueError(f"app_support_whitelist[{idx}].require_quit must be a string")
+        merged.append({
+            "name": name.strip(),
+            "root": root.strip(),
+            "safe": safe,
+            "manual": manual,
+            "require_quit": require_quit.strip(),
+        })
+    return merged
+
+
+def load_config() -> dict:
+    """Read config.json, merging onto defaults. Writes defaults if missing."""
+    cfg = {k: (v.copy() if isinstance(v, (dict, list)) else v) for k, v in DEFAULT_CONFIG.items()}
+    if CONFIG_PATH.exists():
+        try:
+            loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            for k, v in loaded.items():
+                if k in ("thresholds", "build_artifacts") and isinstance(v, dict):
+                    # Nested policy objects merge key-by-key so a partial
+                    # override does not silently drop sibling defaults.
+                    cfg[k].update(v)
+                elif k in cfg and isinstance(cfg[k], list) and isinstance(v, list):
+                    cfg[k] = list(v)
+                else:
+                    cfg[k] = v
+        except (OSError, json.JSONDecodeError):
+            pass
+    return cfg
+
+
+def validate_config(cfg: dict) -> dict:
+    """Validate and normalize user-editable config without weakening hard safety boundaries."""
+    if not isinstance(cfg, dict):
+        raise ValueError("config must be a JSON object")
+    merged = {k: (v.copy() if isinstance(v, (dict, list)) else v) for k, v in DEFAULT_CONFIG.items()}
+    for key, value in cfg.items():
+        if key not in DEFAULT_CONFIG:
+            raise ValueError(f"unknown config key: {key}")
+        if key == "thresholds":
+            if not isinstance(value, dict):
+                raise ValueError("thresholds must be an object")
+            unknown = set(value) - set(DEFAULT_CONFIG["thresholds"])
+            if unknown:
+                raise ValueError(f"unknown threshold: {sorted(unknown)[0]}")
+            merged["thresholds"].update(value)
+        elif key == "build_artifacts":
+            merged[key] = _validate_build_artifacts(value)
+        elif key == "app_support_whitelist":
+            merged[key] = _validate_app_support_whitelist(value)
+        else:
+            merged[key] = value
+    for key in ("scan_roots", "personal_roots", "exclude_paths", "exclude_globs", "protected_projects", "protected_categories"):
+        if not isinstance(merged[key], list) or not all(isinstance(v, str) for v in merged[key]):
+            raise ValueError(f"{key} must be an array of strings")
+        merged[key] = list(dict.fromkeys(v.strip() for v in merged[key] if v.strip()))
+    for key in ("stale_days", "trash_retention_days"):
+        if not isinstance(merged[key], int) or merged[key] < 0:
+            raise ValueError(f"{key} must be a non-negative integer")
+    if not isinstance(merged["wechat_media_keep_months"], int) or merged["wechat_media_keep_months"] < 1:
+        raise ValueError("wechat_media_keep_months must be an integer >= 1")
+    # Unprivileged range only: binding below 1024 would need root, and anything
+    # above 65535 is not a port.
+    if not isinstance(merged["dashboard_port"], int) or not (1024 <= merged["dashboard_port"] <= 65535):
+        raise ValueError("dashboard_port must be an integer between 1024 and 65535")
+    for key, value in merged["thresholds"].items():
+        if not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"thresholds.{key} must be a non-negative number")
+    # Re-normalize even an untouched default so the returned structure never
+    # shares mutable objects with DEFAULT_CONFIG.
+    merged["app_support_whitelist"] = _validate_app_support_whitelist(merged["app_support_whitelist"])
+    return merged
+
+
+def save_config(cfg: dict) -> Path:
+    normalized = validate_config(cfg)
+    # CONFIG_PATH now lives in LOG_DIR, which the first run may not have created.
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp = CONFIG_PATH.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, CONFIG_PATH)
+    return CONFIG_PATH
+
+
+try:
+    CONFIG = validate_config(load_config())
+except ValueError as exc:
+    print(f"warning: invalid config ignored: {exc}", file=sys.stderr)
+    CONFIG = validate_config(DEFAULT_CONFIG)
+
+CORE_TOOL_CHECKS = [
+    "python3",
+    "df",
+]
+
+OPTIONAL_TOOL_CHECKS = [
+    "brew",
+    "ncdu",
+    "docker",
+    "node",
+    "npm",
+    "pnpm",
+    "bun",
+    "python3",
+    "pip3",
+    "dart",
+    "flutter",
+    "cargo",
+    "rustup",
+]
+
+PROJECT_ROOTS = [_expand(p) for p in CONFIG.get("scan_roots", [])]
+PERSONAL_ROOTS = [_expand(p) for p in CONFIG.get("personal_roots", [])]
+EXCLUDE_PATHS = [_expand(p) for p in CONFIG.get("exclude_paths", [])]
+EXCLUDE_GLOBS = tuple(CONFIG.get("exclude_globs", []))
+PROTECTED_PROJECTS = [_expand(p) for p in CONFIG.get("protected_projects", [])]
+PROTECTED_CATEGORIES = set(CONFIG.get("protected_categories", []))
+
+GLOBAL_SAFE_PATHS = [
+    HOME / ".npm" / "_npx",
+    HOME / ".npm" / "_cacache",
+    HOME / ".cache" / "uv",
+    HOME / ".cargo" / "registry" / "cache",
+    HOME / ".cargo" / "registry" / "src",
+    HOME / ".cargo" / "git" / "checkouts",
+    HOME / ".cargo" / "git" / "db",
+    HOME / ".rustup" / "downloads",
+    HOME / ".rustup" / "tmp",
+    HOME / "Library" / "Caches" / "pip",
+    HOME / "Library" / "Caches" / "ms-playwright",
+    HOME / "Library" / "Caches" / "ms-playwright-go",
+    HOME / "Library" / "Caches" / "node-gyp",
+    HOME / "Library" / "Caches" / "electron",
+    HOME / "Library" / "Caches" / "Blender",
+]
+
+GLOBAL_AGGRESSIVE_PATHS = [
+    HOME / ".cache" / "codex-runtimes",
+    HOME / "Library" / "Caches" / "com.openai.codex",
+    HOME / "Library" / "Caches" / "Codex",
+    HOME / "Library" / "Caches" / "Trae",
+    HOME / ".bun" / "install" / "cache",
+    HOME / ".local" / "share" / "uv",
+]
+
+# --- P0 expansion: Xcode toolchain, global dev caches, AI tool caches ---
+# Archives and simulator Devices are manual on purpose: release dSYMs and
+# simulator state are lost for good once quarantined away from a live Xcode.
+XCODE_SAFE_PATHS = [
+    HOME / "Library" / "Caches" / "com.apple.dt.Xcode",
+    HOME / "Library" / "Developer" / "CoreSimulator" / "Caches",
+    HOME / "Library" / "Caches" / "org.swift.swiftpm",
+    HOME / "Library" / "org.swift.swiftpm",
+    HOME / "Library" / "Developer" / "Xcode" / "UserData" / "Previews",
+]
+XCODE_AGGRESSIVE_PATHS = [
+    HOME / "Library" / "Developer" / "Xcode" / "DerivedData",
+    HOME / "Library" / "Developer" / "Xcode" / "iOS DeviceSupport",
+    HOME / "Library" / "Developer" / "Xcode" / "tvOS DeviceSupport",
+    HOME / "Library" / "Developer" / "Xcode" / "watchOS DeviceSupport",
+    HOME / "Library" / "Developer" / "Xcode" / "macOS DeviceSupport",
+    HOME / "Library" / "Developer" / "XCTestDevices",
+]
+XCODE_MANUAL_PATHS = [
+    HOME / "Library" / "Developer" / "Xcode" / "Archives",
+    HOME / "Library" / "Developer" / "CoreSimulator" / "Devices",
+]
+
+# Global dev-tool caches (parity: Mole dev.sh / Pearcleaner development view).
+# Stores re-resolve from registries on demand; Homebrew downloads re-fetch.
+DEV_GLOBAL_SAFE_PATHS = [
+    HOME / "Library" / "Caches" / "Homebrew" / "downloads",
+    HOME / "Library" / "Logs" / "Homebrew",
+    HOME / "Library" / "pnpm" / "store",
+    HOME / ".cache" / "go-build",
+    HOME / "go" / "pkg" / "mod" / "cache" / "download",
+    HOME / "Library" / "Caches" / "mise",
+]
+DEV_GLOBAL_AGGRESSIVE_PATHS = [
+    HOME / "go" / "pkg" / "mod",
+    HOME / ".conda" / "pkgs",
+]
+
+# AI tool caches (parity: Mole AI section / PureMac AI apps). Model blobs are
+# manual: re-download means gigabytes, never auto-clean them.
+AI_SAFE_PATHS = [
+    HOME / ".ollama" / "logs",
+    HOME / ".lmstudio" / "server-logs",
+]
+AI_AGGRESSIVE_PATHS = [
+    HOME / "Library" / "Caches" / "ollama",
+]
+AI_MANUAL_PATHS = [
+    HOME / ".ollama" / "models",
+]
+CLAUDE_VERSIONS_DIR = HOME / ".local" / "share" / "claude" / "versions"
+
+# System caches / app data roots scanned at top level for large entries.
+APP_CACHES_ROOT = HOME / "Library" / "Caches"
+APP_LOGS_ROOT = HOME / "Library" / "Logs"
+
+_th = CONFIG.get("thresholds", {})
+APP_CACHE_MIN_SIZE = _th.get("app_cache_min_mb", 50) * 1024 * 1024
+APP_LOG_MIN_SIZE = _th.get("app_log_min_mb", 10) * 1024 * 1024
+LARGE_DIR_THRESHOLD = _th.get("large_dir_mb", 100) * 1024 * 1024
+LARGE_FILE_THRESHOLD = _th.get("large_file_mb", 50) * 1024 * 1024
+
+SAFE_DIR_NAMES = {
+    "playwright-report",
+    "test-results",
+    "blob-report",
+    ".nyc_output",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    "__pycache__",
+    ".turbo",
+    ".vite",
+    "coverage",
+    "__snapshots__",
+    "__image_snapshots__",
+    ".cypress-cache",
+    ".parcel-cache",
+    "storybook-static",
+}
+
+SAFE_FILE_NAMES = {
+    ".coverage",
+}
+
+SAFE_FILE_SUFFIXES = {
+    ".trace.zip",
+    ".har",
+    ".tmp",
+    ".temp",
+}
+
+SAFE_FILE_EXACT_PREFIXES = {
+    "junit",
+    "test-results",
+}
+
+AGGRESSIVE_DIR_NAMES = {
+    "node_modules",
+    ".venv",
+    "venv",
+    "target",
+    ".next",
+    "build",
+    "dist",
+    "out",
+    ".svelte-kit",
+    ".dart_tool",
+    ".gradle",
+    ".angular",
+}
+
+# --- Tauri / desktop build by-products (config-driven) ---------------------
+# Tauri keeps its Rust workspace in `<project>/src-tauri`. Two directory shapes
+# are matched, always anchored on the `src-tauri` parent so a generic name like
+# `gen` can never hit an unrelated directory elsewhere in a project:
+#
+#   src-tauri/gen     -> tauri-build generated capability schemas (safe:
+#                        regenerated on every `cargo build`, seconds to rebuild)
+#   src-tauri/target  -> Rust/cargo build tree (aggressive: expensive to
+#                        rebuild; only removed in aggressive mode)
+#
+# All names come from `config.json: build_artifacts`. Custom entries are UNIONED
+# onto the built-in sets below; they can never remove a built-in entry.
+BA = CONFIG.get("build_artifacts", {})
+CUSTOM_SAFE_DIRS = set(BA.get("safe_dirs", []))
+CUSTOM_AGGRESSIVE_DIRS = set(BA.get("aggressive_dirs", []))
+CUSTOM_SAFE_FILE_GLOBS = tuple(BA.get("safe_file_globs", []))
+TAURI_PARENT_NAMES = set(BA.get("tauri_parents", []))
+TAURI_GEN_DIR_NAMES = set(BA.get("tauri_gen_dirs", []))
+TAURI_BUILD_DIR_NAMES = set(BA.get("tauri_build_dirs", []))
+
+# Packaged installers are deliverables, not caches. When they exist under a
+# Tauri build dir, the whole tree is demoted to `manual` so an aggressive run
+# cannot silently wipe a built .dmg/.app/.msi.
+TAURI_BUNDLE_MARKERS = tuple(BA.get("bundle_markers", ())) or FALLBACK_BUNDLE_MARKERS
+TAURI_BUNDLE_MAX_DEPTH = 4
+
+# Effective rule sets used by the walkers: built-ins plus user additions.
+EFFECTIVE_SAFE_DIRS = SAFE_DIR_NAMES | CUSTOM_SAFE_DIRS
+EFFECTIVE_AGGRESSIVE_DIRS = AGGRESSIVE_DIR_NAMES | CUSTOM_AGGRESSIVE_DIRS
+
+# Project-side log directories and log file patterns.
+LOG_DIR_NAMES = {
+    "logs",
+    "log",
+    "npm-debug",
+    ".npm-cache",
+}
+
+LOG_FILE_PATTERNS = (".log", ".log.")
+
+# Screenshot roots (macOS default + common Chinese names).
+SCREENSHOT_DIRS = [
+    HOME / "Desktop" / "Screenshots",
+    HOME / "Desktop" / "屏幕快照",
+    HOME / "Desktop" / "截图",
+    HOME / "Pictures" / "Screenshots",
+    HOME / "Pictures" / "屏幕快照",
+    HOME / "Pictures" / "截图",
+    HOME / "Pictures" / "Photos Library.photoslibrary",  # flagged manual, never auto-deleted
+]
+
+SCREENSHOT_FILE_KEYWORDS = (
+    "screenshot",
+    "screen shot",
+    "屏幕快照",
+    "截图",
+    "截屏",
+    "屏幕截图",
+)
+
+SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg", ".heic"}
+
+# Archive / dump file patterns (reported as manual, never auto-deleted).
+ARCHIVE_SUFFIXES = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".dmg", ".iso"}
+DUMP_SUFFIXES = {".core", ".heapdump", ".prof", ".db-wal", ".db-shm"}
+
+# Model / weight file suffixes (reported as stale-model when in idle projects).
+MODEL_SUFFIXES = {".pth", ".safetensors", ".onnx", ".bin", ".pt", ".gguf", ".ckpt", ".tflite", ".ot"}
+
+# A project whose newest source/git activity is older than this is considered stale.
+STALE_DAYS_DEFAULT = int(CONFIG.get("stale_days", 90))
+
+# Source code extensions used to gauge real development activity (mtime of these
+# files, plus the last git commit, define "last active"; .DS_Store / build info /
+# tool metadata are ignored so they don't masquerade as activity).
+CODE_EXTENSIONS = {
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rs", ".go", ".dart",
+    ".swift", ".java", ".kt", ".kts", ".rb", ".php", ".vue", ".svelte", ".css",
+    ".scss", ".less", ".html", ".htm", ".toml", ".yaml", ".yml", ".md", ".sh",
+    ".bash", ".zsh", ".sql", ".proto", ".lua", ".r", ".jl", ".ex", ".exs", ".clj",
+    ".cljs", ".hs", ".ml", ".fs", ".cs", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp",
+    ".m", ".mm", ".gradle",
+}
+CODE_FILE_NAMES = {"Dockerfile", "Makefile", "Gemfile", "Rakefile"}
+LOCK_FILE_NAMES = {
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock",
+    "uv.lock", "composer.lock", "Gemfile.lock", "go.sum", "go.mod", "pubspec.lock",
+}
+# Tool-generated metadata dirs whose mtime does NOT reflect human development.
+NOISE_DIR_NAMES = {
+    ".workbuddy", ".planning", ".wrangler", ".playwright-cli", ".system-monitor",
+    ".agents", "crashinfo", ".vscode", ".idea", ".DS_Store",
+}
+
+PRUNE_NAMES = {
+    ".git",
+    ".svn",
+    ".hg",
+    "node_modules",   # handled explicitly, avoid double walk
+    ".venv",
+    "venv",
+}
+
+# --- WeChat (com.tencent.xinWeChat) whitelist cleanup ----------------------
+# The whole container is pruned by default. These are the ONLY paths ever
+# exempted, and the exemption is shape-checked at runtime: message databases,
+# account config, favorites, and backups can never match.
+WECHAT_CONTAINER = HOME / "Library" / "Containers" / "com.tencent.xinWeChat"
+WECHAT_DATA = WECHAT_CONTAINER / "Data"
+WECHAT_APP_DATA = WECHAT_DATA / "Documents" / "app_data"
+WECHAT_FILES = WECHAT_DATA / "Documents" / "xwechat_files"
+# Pure caches: rebuilt by WeChat, contain no user data.
+WECHAT_CACHE_DIRS = {
+    WECHAT_APP_DATA / "radium": "WeChat applet runtime cache (radium); rebuilt on demand",
+    WECHAT_APP_DATA / "log": "WeChat runtime logs; no user data",
+    WECHAT_APP_DATA / "crashinfo": "WeChat crash reports; no user data",
+    WECHAT_DATA / "Library" / "Caches": "WeChat container Caches; rebuilt on demand",
+}
+# Chat media month dirs (YYYY-MM) eligible for month-window cleanup:
+#   <account>/msg/{video,file}/YYYY-MM
+#   <account>/msg/attach/<32-hex>/YYYY-MM
+#   <account>/cache/YYYY-MM          (thumbnail/media cache, rolling months)
+MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+WECHAT_CATEGORIES = ("wechat-cache", "wechat-media")
+
+
+def wechat_month_key(name: str) -> tuple[int, int] | None:
+    """Parse a strict YYYY-MM directory name; None for anything else."""
+    if not MONTH_RE.match(name):
+        return None
+    return (int(name[:4]), int(name[5:7]))
+
+
+def _wechat_cutoff(keep_months: int) -> tuple[int, int]:
+    """First (year, month) retained. keep_months=1 keeps only the current month."""
+    today = dt.date.today()
+    keep = max(1, int(keep_months))
+    index = today.year * 12 + (today.month - 1) - (keep - 1)
+    return (index // 12, index % 12 + 1)
+
+
+def wechat_media_month(path: Path) -> tuple[int, int] | None:
+    """Return (year, month) iff path is an exact YYYY-MM media/cache dir inside
+    a wxid_* account. Every other shape inside the container returns None."""
+    try:
+        rel = path.resolve().relative_to(WECHAT_FILES.resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if not parts or not parts[0].startswith("wxid_"):
+        return None
+    if len(parts) == 4 and parts[1] == "msg" and parts[2] in ("video", "file"):
+        return wechat_month_key(parts[3])
+    if (len(parts) == 5 and parts[1] == "msg" and parts[2] == "attach"
+            and len(parts[3]) == 32 and all(c in "0123456789abcdef" for c in parts[3].lower())):
+        return wechat_month_key(parts[4])
+    if len(parts) == 3 and parts[1] == "cache":
+        return wechat_month_key(parts[2])
+    return None
+
+
+def wechat_exempt(path: Path) -> bool:
+    """Whether `path` may bypass the Containers prune rule (whitelist only)."""
+    text = path.as_posix()
+    container = WECHAT_CONTAINER.as_posix()
+    if not text.startswith(container + "/"):
+        return False
+    for root in WECHAT_CACHE_DIRS:
+        if is_under(path, root):
+            return True
+    return wechat_media_month(path) is not None
+
+
+# --- App-support whitelist (config-driven, shape-checked) ------------------
+# `~/Library/Application Support` is pruned wholesale, so an app that parks a
+# multi-GB temp / recording-recovery / crash cache there is invisible to every
+# scan. This mirrors the WeChat rule with the shape list coming from config:
+# only the exact relative paths named in an entry are ever exempted.
+APP_SUPPORT_CACHE_CATEGORY = "app-support-cache"
+APP_SUPPORT_MANUAL_CATEGORY = "app-support-manual"
+APP_SUPPORT_CATEGORIES = (APP_SUPPORT_CACHE_CATEGORY, APP_SUPPORT_MANUAL_CATEGORY)
+
+
+@dataclass(frozen=True)
+class AppSupportEntry:
+    name: str
+    root: Path
+    safe: tuple[str, ...]
+    manual: tuple[str, ...]
+    require_quit: str = ""
+
+    def prefix_for(self, rel: str) -> str:
+        return self.root.as_posix().rstrip("/") + "/" + rel.strip("/")
+
+    @property
+    def prefixes(self) -> tuple[str, ...]:
+        return tuple(self.prefix_for(rel) for rel in self.safe + self.manual)
+
+
+APP_SUPPORT_ENTRIES: tuple[AppSupportEntry, ...] = tuple(
+    AppSupportEntry(
+        name=raw.get("name", ""),
+        root=_expand(raw.get("root", "~")),
+        safe=tuple(raw.get("safe", [])),
+        manual=tuple(raw.get("manual", [])),
+        require_quit=raw.get("require_quit", ""),
+    )
+    for raw in CONFIG.get("app_support_whitelist", [])
+)
+
+
+def app_support_owner(path: Path) -> AppSupportEntry | None:
+    """The whitelist entry covering `path`, or None. Pure string comparison."""
+    text = path.as_posix()
+    for entry in APP_SUPPORT_ENTRIES:
+        for prefix in entry.prefixes:
+            if text == prefix or text.startswith(prefix + "/"):
+                return entry
+    return None
+
+
+def app_support_exempt(path: Path) -> bool:
+    """Whether `path` may bypass the Application Support prune rule."""
+    return app_support_owner(path) is not None
+
+
+def process_running(pattern: str) -> bool:
+    code, _ = run(["pgrep", "-f", pattern])
+    return code == 0
+
+
+def process_running_exact(name: str) -> bool:
+    """Match the process name exactly (pgrep -x) — avoids -f substring false
+    positives like 'Xcode' matching XcodeHelper or a file path argument."""
+    code, _ = run(["pgrep", "-x", name])
+    return code == 0
+
+
+@dataclass(frozen=True)
+class Candidate:
+    path: Path
+    size: int
+    category: str
+    risk: str
+    reason: str
+
+
+def run(cmd: list[str]) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        return proc.returncode, proc.stdout.strip()
+    except Exception as exc:  # noqa: BLE001
+        return 127, str(exc)
+
+
+def command_exists(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def get_free_space() -> str:
+    code, out = run(["df", "-h", HOME.as_posix()])
+    return out if code == 0 else "df unavailable"
+
+
+def size_bytes(path: Path) -> int:
+    try:
+        if path.is_symlink():
+            return 0
+        if path.is_file():
+            return path.stat().st_size
+        total = 0
+        for root, dirs, files in safe_walk(path, topdown=True):
+            dirs[:] = [d for d in dirs if d not in PRUNE_NAMES]
+            for name in files:
+                p = Path(root) / name
+                try:
+                    if not p.is_symlink():
+                        total += p.stat().st_size
+                except OSError:
+                    continue
+        return total
+    except OSError:
+        return 0
+
+
+def is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# Credential/sensitive roots protected by code, not config. Deleting anything
+# under these breaks logins or loses secrets; scanners skip them entirely.
+IMMUNE_PATHS = (
+    HOME / ".ssh",
+    HOME / ".aws",
+    HOME / ".gnupg",
+    HOME / ".kube",
+    HOME / ".docker",
+    HOME / "Library" / "Keychains",
+    HOME / "Library" / "Cookies",
+    HOME / "Library" / "Mail",
+)
+
+
+def excluded(path: Path, category: str | None = None) -> bool:
+    """User-level protection applied in addition to immutable system prune rules."""
+    expanded = path.expanduser()
+    if category and category in PROTECTED_CATEGORIES:
+        return True
+    # Code-level immune zone: credential stores and sensitive user data are
+    # never proposed by any scanner and never pass quarantine, regardless of
+    # config (parity: PureMac deniedUserRoots).
+    if any(is_under(expanded, p) for p in IMMUNE_PATHS):
+        return True
+    if any(is_under(expanded, p) for p in EXCLUDE_PATHS + PROTECTED_PROJECTS):
+        return True
+    text = expanded.as_posix()
+    home_text = "~" + text[len(HOME.as_posix()):] if text.startswith(HOME.as_posix()) else text
+    return any(fnmatch.fnmatch(text, pattern) or fnmatch.fnmatch(home_text, pattern) for pattern in EXCLUDE_GLOBS)
+
+
+def pruned(path: Path, category: str | None = None) -> bool:
+    exempt = wechat_exempt(path) or app_support_exempt(path)
+    if not exempt and any(is_under(path, p) for p in PRUNE_PATHS if p.exists()):
+        return True
+    return excluded(path, category)
+
+
+def add_path(
+    candidates: dict[Path, Candidate],
+    path: Path,
+    category: str,
+    risk: str,
+    reason: str,
+    skip_prune: bool = False,
+) -> None:
+    if not path.exists():
+        return
+    if excluded(path, category) or (not skip_prune and pruned(path, category)):
+        return
+    resolved = path.resolve()
+    if resolved in candidates:
+        return
+    candidates[resolved] = Candidate(resolved, size_bytes(resolved), category, risk, reason)
+
+
+def discover_global() -> dict[Path, Candidate]:
+    candidates: dict[Path, Candidate] = {}
+    for path in GLOBAL_SAFE_PATHS:
+        add_path(candidates, path, "global-cache", "safe", "Rebuildable developer cache")
+    for path in GLOBAL_AGGRESSIVE_PATHS:
+        add_path(candidates, path, "global-cache", "aggressive", "Tool/app runtime cache; may require re-download")
+    return candidates
+
+
+def scan_app_roots() -> dict[Path, Candidate]:
+    """Large app cache / app log directories under ~/Library (top level only)."""
+    candidates: dict[Path, Candidate] = {}
+    if APP_CACHES_ROOT.exists():
+        for entry in APP_CACHES_ROOT.iterdir():
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+            resolved = entry.resolve()
+            # Skip anything already enumerated explicitly above.
+            if any(resolved == p.resolve() for p in GLOBAL_SAFE_PATHS + GLOBAL_AGGRESSIVE_PATHS if p.exists()):
+                continue
+            sz = size_bytes(resolved)
+            if sz >= APP_CACHE_MIN_SIZE:
+                candidates[resolved] = Candidate(resolved, sz, "app-cache", "aggressive",
+                                                  "Large application cache under ~/Library/Caches")
+    if APP_LOGS_ROOT.exists():
+        for entry in APP_LOGS_ROOT.iterdir():
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+            resolved = entry.resolve()
+            sz = size_bytes(resolved)
+            if sz >= APP_LOG_MIN_SIZE:
+                candidates[resolved] = Candidate(resolved, sz, "app-log", "aggressive",
+                                                "Application log directory under ~/Library/Logs")
+    return candidates
+
+
+def is_log_file(name: str) -> bool:
+    lower = name.lower()
+    return any(lower.endswith(pat) for pat in LOG_FILE_PATTERNS) or lower in {"npm-debug.log", "yarn-error.log"}
+
+
+def is_build_artifact_file(name: str) -> bool:
+    """Match throwaway bundler files, e.g. `vite.config.ts.timestamp-1756-abc123.mjs`.
+
+    Patterns come from `build_artifacts.safe_file_globs` (fnmatch on basename).
+    """
+    return any(fnmatch.fnmatch(name, pattern) for pattern in CUSTOM_SAFE_FILE_GLOBS)
+
+
+def is_tauri_child(path: Path, name: str, allowed: set[str]) -> bool:
+    """True when `path/name` is a Tauri directory shape (`.../src-tauri/<name>`)."""
+    return name in allowed and path.name in TAURI_PARENT_NAMES
+
+
+def tauri_bundle_present(target_dir: Path) -> bool:
+    """True when a Tauri `target/` tree already holds packaged installers.
+
+    Shallow by design: only `release/bundle/**` is inspected, a few levels deep,
+    so a multi-GB target tree is never fully walked just to answer this.
+    """
+    bundle = target_dir / "release" / "bundle"
+    if not bundle.is_dir():
+        return False
+    base_depth = len(bundle.parts)
+    try:
+        for current, dirs, files in safe_walk(bundle, topdown=True):
+            if len(Path(current).parts) - base_depth >= TAURI_BUNDLE_MAX_DEPTH:
+                dirs[:] = []
+                continue
+            for name in files + dirs:
+                if name.endswith(TAURI_BUNDLE_MARKERS):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def scan_projects(include_aggressive: bool) -> dict[Path, Candidate]:
+    candidates: dict[Path, Candidate] = {}
+    roots = [p for p in PROJECT_ROOTS if p.exists()]
+    for root in roots:
+        depth0_dirs: list[Path] = []
+        for current, dirs, files in safe_walk(root, topdown=True):
+            current_path = Path(current)
+            depth = len(current_path.parts) - len(root.parts)
+            if depth == 0:
+                depth0_dirs = [current_path / d for d in dirs]
+            dirs[:] = [d for d in dirs if d not in PRUNE_NAMES]
+            keep_dirs: list[str] = []
+            for d in dirs:
+                p = current_path / d
+                if pruned(p):
+                    continue
+                if d in EFFECTIVE_SAFE_DIRS:
+                    add_path(candidates, p, "project-generated", "safe", f"Generated test/cache directory: {d}")
+                    continue
+                if is_tauri_child(current_path, d, TAURI_GEN_DIR_NAMES):
+                    add_path(candidates, p, "project-generated", "safe",
+                             f"Tauri generated tree (regenerated by cargo build): {current_path.name}/{d}")
+                    continue
+                if d in LOG_DIR_NAMES:
+                    add_path(candidates, p, "log-file", "safe", f"Project log directory: {d}")
+                    continue
+                if d in EFFECTIVE_AGGRESSIVE_DIRS:
+                    if include_aggressive:
+                        if is_tauri_child(current_path, d, TAURI_BUILD_DIR_NAMES) and tauri_bundle_present(p):
+                            add_path(candidates, p, "large-dir", "manual",
+                                     f"Tauri build tree holds packaged installers under "
+                                     f"{d}/release/bundle; review before removing")
+                        elif is_tauri_child(current_path, d, TAURI_BUILD_DIR_NAMES):
+                            add_path(candidates, p, "project-generated", "aggressive",
+                                     f"Tauri/Rust build directory: {current_path.name}/{d}")
+                        else:
+                            add_path(candidates, p, "project-generated", "aggressive",
+                                     f"Rebuildable dependency/build directory: {d}")
+                    continue
+                keep_dirs.append(d)
+            dirs[:] = keep_dirs
+
+            for name in files:
+                p = current_path / name
+                if name in SAFE_FILE_NAMES:
+                    add_path(candidates, p, "test-artifact", "safe", f"Generated test artifact: {name}")
+                    continue
+                if is_log_file(name):
+                    add_path(candidates, p, "log-file", "safe", f"Project log file: {name}")
+                    continue
+                if is_build_artifact_file(name):
+                    add_path(candidates, p, "project-generated", "safe", f"Vite temporary config copy: {name}")
+                    continue
+                lower = name.lower()
+                if any(lower.endswith(suffix) for suffix in SAFE_FILE_SUFFIXES):
+                    add_path(candidates, p, "temp-file", "safe", f"Temporary/generated file: {name}")
+                    continue
+                if any(name.startswith(prefix) for prefix in SAFE_FILE_EXACT_PREFIXES) and (
+                    lower.endswith(".xml") or lower.endswith(".json")
+                ):
+                    add_path(candidates, p, "test-artifact", "safe", f"Generated test result file: {name}")
+                    continue
+                # Large single file inside a project (archives, dumps, big logs, videos).
+                try:
+                    fsize = p.stat().st_size
+                except OSError:
+                    fsize = 0
+                if fsize >= LARGE_FILE_THRESHOLD:
+                    if any(lower.endswith(s) for s in ARCHIVE_SUFFIXES):
+                        add_path(candidates, p, "large-file", "manual", f"Large archive ({fsize // 1048576}M): {name}")
+                    elif any(lower.endswith(s) for s in DUMP_SUFFIXES):
+                        add_path(candidates, p, "large-file", "manual", f"Core/dump file ({fsize // 1048576}M): {name}")
+                    elif is_log_file(name):
+                        add_path(candidates, p, "large-file", "manual", f"Large log file ({fsize // 1048576}M): {name}")
+                    else:
+                        add_path(candidates, p, "large-file", "manual", f"Large file ({fsize // 1048576}M): {name}")
+
+        # Large top-level project directories not already classified.
+        for d in depth0_dirs:
+            if not d.exists() or pruned(d):
+                continue
+            resolved = d.resolve()
+            if resolved in candidates:
+                continue
+            name = d.name
+            if name in EFFECTIVE_SAFE_DIRS or name in EFFECTIVE_AGGRESSIVE_DIRS or name in LOG_DIR_NAMES:
+                continue
+            sz = size_bytes(resolved)
+            if sz >= LARGE_DIR_THRESHOLD:
+                candidates[resolved] = Candidate(resolved, sz, "large-dir", "manual",
+                                                  f"Large project directory ({sz // 1048576}M): {name}")
+    return candidates
+
+
+def scan_temp() -> dict[Path, Candidate]:
+    candidates: dict[Path, Candidate] = {}
+    temp_roots = [Path("/tmp"), Path("/var/folders")]
+    prefixes = ("playwright-", "playwright_", "puppeteer-", "chrome-profile")
+    for root in temp_roots:
+        if not root.exists():
+            continue
+        for current, dirs, files in safe_walk(root, topdown=True):
+            depth = len(Path(current).parts) - len(root.parts)
+            if depth > 5:
+                dirs[:] = []
+                continue
+            current_path = Path(current)
+            if "node_modules" in current_path.parts or ".venv" in current_path.parts or "venv" in current_path.parts:
+                dirs[:] = []
+                continue
+            keep_dirs: list[str] = []
+            for d in dirs:
+                p = current_path / d
+                if d == "node_modules" or d in {".venv", "venv"}:
+                    continue
+                if d.startswith(prefixes):
+                    add_path(candidates, p, "temp-browser", "safe", "Browser automation temporary directory")
+                    continue
+                keep_dirs.append(d)
+            dirs[:] = keep_dirs
+            for name in files:
+                lower = name.lower()
+                if "playwright" in lower or lower.endswith(".trace.zip"):
+                    add_path(candidates, current_path / name, "temp-browser", "safe", "Browser automation temporary file")
+    return candidates
+
+
+def scan_wechat(keep_months: int) -> dict[Path, Candidate]:
+    """WeChat (com.tencent.xinWeChat) caches and expired chat media.
+
+    Whitelist-only, two scopes:
+    - `wechat-cache` (aggressive): pure caches that WeChat rebuilds — applet
+      runtime (radium), logs, crash reports, container Caches.
+    - `wechat-media` (aggressive): chat media month dirs (YYYY-MM) older than
+      the keep window under msg/attach, msg/video, msg/file, plus account
+      cache months. Only strict YYYY-MM dirs inside wxid_* accounts match;
+      message databases, config, favorites, backups never match.
+
+    Both run under clean-aggressive only; clean-safe never touches WeChat.
+    """
+    # Field-tested 2026-09-24: with WeChat running, opendir() into the sandboxed
+    # container BLOCKS INDEFINITELY (not EPERM — a kernel-level wait), hanging
+    # the whole collect() phase. The nightly clean-safe once hung 7.5h this way.
+    # The apply phase already skips WeChat candidates while it runs; the scan
+    # phase must not even walk the container in that state.
+    if wechat_running():
+        return {}
+    candidates: dict[Path, Candidate] = {}
+    for root, reason in WECHAT_CACHE_DIRS.items():
+        if root.is_dir():
+            resolved = root.resolve()
+            candidates[resolved] = Candidate(
+                resolved, size_bytes(resolved), "wechat-cache", "aggressive", reason)
+    if WECHAT_FILES.is_dir():
+        cutoff = _wechat_cutoff(keep_months)
+        for account in WECHAT_FILES.iterdir():
+            if not account.is_dir() or not account.name.startswith("wxid_"):
+                continue
+            month_parents: list[tuple[Path, str]] = [
+                (account / "msg" / "video", "wechat-media"),
+                (account / "msg" / "file", "wechat-media"),
+                (account / "cache", "wechat-cache"),
+            ]
+            for parent, category in month_parents:
+                if not parent.is_dir():
+                    continue
+                for month_dir in parent.iterdir():
+                    key = wechat_media_month(month_dir)
+                    if key is not None and key < cutoff:
+                        resolved = month_dir.resolve()
+                        candidates[resolved] = Candidate(
+                            resolved, size_bytes(resolved), category, "aggressive",
+                            f"WeChat chat media older than {keep_months}-month window: {month_dir.name}")
+            attach_root = account / "msg" / "attach"
+            if attach_root.is_dir():
+                for hash_dir in attach_root.iterdir():
+                    if not hash_dir.is_dir():
+                        continue
+                    for month_dir in hash_dir.iterdir():
+                        key = wechat_media_month(month_dir)
+                        if key is not None and key < cutoff:
+                            resolved = month_dir.resolve()
+                            candidates[resolved] = Candidate(
+                                resolved, size_bytes(resolved), "wechat-media", "aggressive",
+                                f"WeChat chat media older than {keep_months}-month window: {month_dir.name}")
+    return candidates
+
+
+def wechat_running() -> bool:
+    return process_running("WeChat.app/Contents/MacOS/WeChat")
+
+
+def scan_app_support() -> dict[Path, Candidate]:
+    """Whitelisted paths inside otherwise-pruned app-support directories.
+
+    Safe entries are rebuildable temp / crash / log data the app recreates on
+    demand; manual entries are user-visible data (e.g. a screenshot history)
+    that is reported for review but never auto-deleted.
+    """
+    candidates: dict[Path, Candidate] = {}
+    for entry in APP_SUPPORT_ENTRIES:
+        # Same indefinite-opendir hazard as the WeChat container: while the
+        # app named by require_quit is running its whitelisted paths may be
+        # live state, and the apply phase skips them anyway — do not walk.
+        if entry.require_quit and process_running(entry.require_quit):
+            continue
+        for rel in entry.safe:
+            add_path(candidates, entry.root / rel, APP_SUPPORT_CACHE_CATEGORY, "safe",
+                     f"{entry.name} rebuildable cache/temp: {rel}")
+        for rel in entry.manual:
+            add_path(candidates, entry.root / rel, APP_SUPPORT_MANUAL_CATEGORY, "manual",
+                     f"{entry.name} user data; review before deleting: {rel}")
+    return candidates
+
+
+def scan_screenshots() -> dict[Path, Candidate]:
+    """Screenshot directories and loose screenshot files. Always manual risk."""
+    candidates: dict[Path, Candidate] = {}
+    for d in SCREENSHOT_DIRS:
+        if not d.exists():
+            continue
+        resolved = d.resolve()
+        if resolved in candidates:
+            continue
+        if not d.is_dir():
+            continue
+        # Photos Library is huge and personal; flag but do not size-walk fully (skip to avoid stalls).
+        if d.name.endswith(".photoslibrary"):
+            candidates[resolved] = Candidate(resolved, -1, "screenshot", "manual",
+                                             "Apple Photos library; personal media, do not auto-delete")
+            continue
+        sz = size_bytes(resolved)
+        candidates[resolved] = Candidate(resolved, sz, "screenshot", "manual",
+                                         "Screenshot directory; personal files, review before deleting")
+    # Loose screenshot files in personal root tops.
+    for root in PERSONAL_ROOTS:
+        if not root.exists():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                continue
+            lower = entry.name.lower()
+            if not any(lower.endswith(s) for s in SCREENSHOT_SUFFIXES):
+                continue
+            if any(kw in entry.name.lower() for kw in SCREENSHOT_FILE_KEYWORDS):
+                add_path(candidates, entry, "screenshot", "manual",
+                         "Screenshot file; personal file, review before deleting", skip_prune=True)
+    return candidates
+
+
+def scan_personal_large() -> dict[Path, Candidate]:
+    """Large top-level dirs/files in Desktop / Pictures / Downloads. Always manual."""
+    candidates: dict[Path, Candidate] = {}
+    for root in PERSONAL_ROOTS:
+        if not root.exists():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            resolved = entry.resolve()
+            if resolved in candidates:
+                continue
+            if pruned(entry) and not is_under(entry, root):
+                continue
+            if entry.is_dir():
+                # Skip screenshot dirs already captured.
+                if any(resolved == sd.resolve() for sd in SCREENSHOT_DIRS if sd.exists()):
+                    continue
+                sz = size_bytes(resolved)
+                if sz >= LARGE_DIR_THRESHOLD:
+                    candidates[resolved] = Candidate(resolved, sz, "large-dir", "manual",
+                                                     f"Large directory in {root.name} ({sz // 1048576}M): {entry.name}")
+            else:
+                try:
+                    fsize = entry.stat().st_size
+                except OSError:
+                    fsize = 0
+                if fsize >= LARGE_FILE_THRESHOLD:
+                    lower = entry.name.lower()
+                    if any(lower.endswith(s) for s in ARCHIVE_SUFFIXES):
+                        candidates[resolved] = Candidate(resolved, fsize, "large-file", "manual",
+                                                        f"Large archive in {root.name} ({fsize // 1048576}M): {entry.name}")
+                    else:
+                        candidates[resolved] = Candidate(resolved, fsize, "large-file", "manual",
+                                                        f"Large file in {root.name} ({fsize // 1048576}M): {entry.name}")
+    return candidates
+
+
+def git_last_commit_epoch(project: Path) -> float:
+    """Last commit timestamp from .git/logs/HEAD (no subprocess). 0 if unknown."""
+    logf = project / ".git" / "logs" / "HEAD"
+    if not logf.exists():
+        return 0.0
+    try:
+        with logf.open("rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            data = b""
+            while pos > 0 and data.count(b"\n") < 3:
+                step = min(4096, pos)
+                pos -= step
+                f.seek(pos)
+                data = f.read(step) + data
+        lines = [ln for ln in data.decode("utf-8", "ignore").splitlines() if ln.strip()]
+        if not lines:
+            return 0.0
+        head = lines[-1].split("\t", 1)[0].split()
+        # fields: old new author email <timestamp> tz
+        if len(head) >= 5:
+            try:
+                return float(head[-2])
+            except ValueError:
+                return 0.0
+    except OSError:
+        return 0.0
+    return 0.0
+
+
+def scan_stale_projects(stale_days: int) -> dict[Path, Candidate]:
+    """Identify dependencies and model files inside long-idle projects.
+
+    A project is stale when its newest source file or .git activity is older
+    than `stale_days`. For stale projects, dependency/build dirs become
+    `stale-deps` (aggressive) and model/weight files become `stale-model`
+    (manual). Runs before scan_projects so the stale-prefixed entries win
+    deduplication.
+    """
+    candidates: dict[Path, Candidate] = {}
+    if stale_days <= 0:
+        return candidates
+    now = time.time()
+    threshold = stale_days * 86400
+    for root in PROJECT_ROOTS:
+        if not root.exists():
+            continue
+        try:
+            projects = [p for p in root.iterdir() if p.is_dir() and not p.is_symlink()]
+        except OSError:
+            continue
+        for project in projects:
+            latest = 0.0
+            deps_found: list[tuple[Path, str]] = []
+            models_found: list[tuple[Path, int]] = []
+            for current, dirs, files in safe_walk(project, topdown=True):
+                cp = Path(current)
+                keep: list[str] = []
+                for d in dirs:
+                    if d in EFFECTIVE_AGGRESSIVE_DIRS:
+                        # A Tauri target holding packaged installers was demoted
+                        # to `manual` by scan_projects; the stale pass must not
+                        # promote it back to aggressive.
+                        if is_tauri_child(cp, d, TAURI_BUILD_DIR_NAMES) and tauri_bundle_present(cp / d):
+                            continue
+                        deps_found.append((cp / d, d))
+                        continue
+                    if d in PRUNE_NAMES or d in EFFECTIVE_SAFE_DIRS or d in LOG_DIR_NAMES or d in NOISE_DIR_NAMES:
+                        continue
+                    keep.append(d)
+                dirs[:] = keep
+                for name in files:
+                    p = cp / name
+                    lower = name.lower()
+                    # Record model files regardless of activity.
+                    if any(lower.endswith(suf) for suf in MODEL_SUFFIXES):
+                        try:
+                            models_found.append((p, p.stat().st_size))
+                        except OSError:
+                            pass
+                    # Only source files count as development activity.
+                    if name in LOCK_FILE_NAMES or name == ".DS_Store":
+                        continue
+                    ext = p.suffix.lower()
+                    if ext not in CODE_EXTENSIONS and name not in CODE_FILE_NAMES:
+                        continue
+                    try:
+                        st = p.stat()
+                    except OSError:
+                        continue
+                    if st.st_mtime > latest:
+                        latest = st.st_mtime
+            commit_t = git_last_commit_epoch(project)
+            if commit_t > latest:
+                latest = commit_t
+            if latest == 0:
+                continue
+            idle_days = int((now - latest) / 86400)
+            if now - latest < threshold:
+                continue
+            reason = f"stale project {project.name} ({idle_days}d idle)"
+            for dpath, dname in deps_found:
+                add_path(candidates, dpath, "stale-deps", "aggressive",
+                         f"{reason}: rebuildable {dname}")
+            for mpath, msize in models_found:
+                resolved = mpath.resolve()
+                if resolved in candidates:
+                    continue
+                candidates[resolved] = Candidate(resolved, msize, "stale-model", "manual",
+                                                 f"{reason}: model {mpath.name}")
+    return candidates
+
+
+def scan_xcode() -> dict[Path, Candidate]:
+    """Xcode toolchain artifacts. Skipped entirely while Xcode runs — deleting
+    DerivedData/index stores under a live IDE corrupts its build state."""
+    if process_running("/Applications/Xcode.app"):
+        return {}
+    candidates: dict[Path, Candidate] = {}
+    for p in XCODE_SAFE_PATHS:
+        add_path(candidates, p, "xcode", "safe", "Rebuildable Xcode cache")
+    for p in XCODE_AGGRESSIVE_PATHS:
+        add_path(candidates, p, "xcode", "aggressive", "Regenerable Xcode toolchain data")
+    for p in XCODE_MANUAL_PATHS:
+        add_path(candidates, p, "xcode", "manual", "Archives/simulator data — review before removing")
+    return candidates
+
+
+def scan_dev_global() -> dict[Path, Candidate]:
+    """Global dev-tool caches (Homebrew/pnpm/go/gradle/conda/mise). Gradle
+    caches are skipped while a daemon is live; go caches while a go process
+    builds — deleting a store mid-build breaks the running build."""
+    candidates: dict[Path, Candidate] = {}
+    gradle_live = process_running_exact("GradleDaemon")
+    go_live = process_running_exact("go") or process_running_exact("gopls")
+
+    def guarded(p: Path) -> bool:
+        """True when a live process owns this store and it must be skipped."""
+        parts = {part.lower() for part in p.parts}
+        if gradle_live and "gradle" in parts:
+            return True
+        if go_live and "go" in parts:
+            return True
+        return False
+
+    for p in DEV_GLOBAL_SAFE_PATHS:
+        if not guarded(p):
+            add_path(candidates, p, "dev-cache", "safe", "Rebuildable developer cache")
+    for p in DEV_GLOBAL_AGGRESSIVE_PATHS:
+        if not guarded(p):
+            add_path(candidates, p, "dev-cache", "aggressive", "Tool store; re-resolves from registry on demand")
+    return candidates
+
+
+def _version_sort_key(name: str) -> tuple:
+    return tuple(int(x) if x.isdigit() else 0 for x in re.findall(r"\d+", name)) + (name,)
+
+
+def scan_ai_caches() -> dict[Path, Candidate]:
+    """AI tool caches. Model blobs stay manual (re-download = gigabytes).
+    Claude Code: keep the newest version, flag superseded ones only."""
+    candidates: dict[Path, Candidate] = {}
+    for p in AI_SAFE_PATHS:
+        add_path(candidates, p, "ai-cache", "safe", "Rebuildable AI tool log/cache")
+    for p in AI_AGGRESSIVE_PATHS:
+        add_path(candidates, p, "ai-cache", "aggressive", "AI tool cache; may require re-download")
+    for p in AI_MANUAL_PATHS:
+        add_path(candidates, p, "ai-cache", "manual", "AI model files — review before removing")
+    if CLAUDE_VERSIONS_DIR.is_dir():
+        try:
+            children = [c for c in CLAUDE_VERSIONS_DIR.iterdir() if c.is_dir() and not c.is_symlink()]
+        except OSError:
+            children = []
+        children.sort(key=lambda c: _version_sort_key(c.name))
+        for old in children[:-1]:
+            add_path(candidates, old, "ai-cache", "aggressive", "Superseded Claude Code version")
+    return candidates
+
+
+# --- Browser profile caches (P1 #9, Mole-parity) ----------------------------
+# ~/Library/Caches/<Browser> is already covered generically by app-cache, but
+# ~/Library/Application Support is pruned wholesale — so the Chromium profile
+# caches living there are invisible without this dedicated pass. Only the
+# exact subdirectories listed below are ever proposed; Service Worker
+# CacheStorage/ScriptCache, Sessions, cookies and everything else are site
+# data and stay untouched. A browser that is running skips its whole group.
+BROWSER_PROFILE_CACHES = ("Application Cache", "Code Cache", "GPUCache",
+                          "DawnCache", "GrShaderCache", "GraphiteDawnCache")
+BROWSER_ROOT_CACHES = ("ShaderCache", "GrShaderCache", "GraphiteDawnCache",
+                       "component_crx_cache", "extensions_crx_cache")
+BROWSER_MODEL_STORES = ("OptGuideOnDeviceModel", "OptGuideOnDeviceClassifierModel",
+                        "optimization_guide_model_store")
+
+BROWSERS: tuple[tuple[str, Path, tuple[str, ...]], ...] = (
+    ("Google Chrome", HOME / "Library/Application Support/Google/Chrome",
+     ("Google Chrome", "Google Chrome Helper")),
+    ("Microsoft Edge", HOME / "Library/Application Support/Microsoft/Edge",
+     ("Microsoft Edge",)),
+    ("Brave", HOME / "Library/Application Support/BraveSoftware/Brave-Browser",
+     ("Brave Browser",)),
+    ("Vivaldi", HOME / "Library/Application Support/Vivaldi", ("Vivaldi",)),
+    ("Arc", HOME / "Library/Application Support/Arc", ("Arc",)),
+)
+FIREFOX_PROFILES_ROOT = HOME / "Library/Application Support/Firefox/Profiles"
+
+
+def _flag_browser_cache_dir(candidates: dict[Path, Candidate], base: Path) -> None:
+    """Flag cache subdirs under one Chromium base dir (root or User Data)."""
+    for sub in BROWSER_ROOT_CACHES:
+        add_path(candidates, base / sub, "browser-cache", "safe",
+                 "browser-profile-cache", skip_prune=True)
+    for sub in BROWSER_MODEL_STORES:
+        add_path(candidates, base / sub, "browser-cache", "aggressive",
+                 "browser-model-store", skip_prune=True)
+    if not base.is_dir():
+        return
+    for profile in base.iterdir():
+        if not profile.is_dir() or profile.is_symlink():
+            continue
+        for sub in BROWSER_PROFILE_CACHES:
+            add_path(candidates, profile / sub, "browser-cache", "safe",
+                     "browser-profile-cache", skip_prune=True)
+        add_path(candidates, profile / "Crashpad" / "completed", "browser-cache",
+                 "safe", "browser-profile-cache", skip_prune=True)
+
+
+def scan_browser_caches() -> dict[Path, Candidate]:
+    """Chromium/Firefox profile caches under Application Support. Safe-tier
+    entries rebuild during normal browsing; on-device model stores may
+    re-download gigabytes, so they are aggressive. Whole browser skipped
+    while its process is running."""
+    candidates: dict[Path, Candidate] = {}
+    for _label, root, processes in BROWSERS:
+        if not root.is_dir():
+            continue
+        if any(process_running_exact(p) for p in processes):
+            continue
+        for base in (root, root / "User Data"):
+            _flag_browser_cache_dir(candidates, base)
+    if not (process_running_exact("firefox") or process_running_exact("Firefox")):
+        if FIREFOX_PROFILES_ROOT.is_dir():
+            for profile in FIREFOX_PROFILES_ROOT.iterdir():
+                add_path(candidates, profile / "cache2", "browser-cache", "safe",
+                         "browser-profile-cache", skip_prune=True)
+    return candidates
+
+
+# --- Installer sweep (P1 #10, Mole installer parity, scoped) ----------------
+# Mole also walks Desktop/Documents/Public/Shared/iCloud; this tool stays in
+# Downloads (the natural install-packet graveyard) to keep the personal-file
+# surface minimal. Depth 2 catches "Downloads/子目录/x.dmg". Always manual.
+INSTALLER_SCAN_ROOT = HOME / "Downloads"
+INSTALLER_EXTS = (".dmg", ".pkg", ".mpkg", ".iso", ".xip")
+INSTALLER_MAX_DEPTH = 2
+INSTALLER_ZIP_MAX_ENTRIES = 50
+INSTALLER_MAX_ITEMS = 100
+
+
+def _zip_has_installer_payload(path: Path) -> bool:
+    """True when the first N zip entries contain an .app/.pkg/.dmg/.xip
+    payload — the Mole installer heuristic, without spawning a subprocess."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()[:INSTALLER_ZIP_MAX_ENTRIES]
+    except (OSError, zipfile.BadZipFile, RuntimeError):
+        return False
+    return any(re.search(r"\.(app|pkg|dmg|xip)(/|$)", name) for name in names)
+
+
+def scan_installers() -> dict[Path, Candidate]:
+    """Leftover installer files in Downloads: .dmg/.pkg/.mpkg/.iso/.xip plus
+    ZIPs whose payload is an app package. Manual risk — these sit in the
+    user's personal folder and are never auto-selected."""
+    if not INSTALLER_SCAN_ROOT.is_dir():
+        return {}
+    hits: list[tuple[int, Path, str]] = []
+    for current, dirs, files in safe_walk(INSTALLER_SCAN_ROOT):
+        depth = len(Path(current).relative_to(INSTALLER_SCAN_ROOT).parts)
+        if depth >= INSTALLER_MAX_DEPTH:
+            dirs[:] = []  # find -maxdepth semantics: stop descending AND stop listing
+            continue
+        base = Path(current)
+        for name in files:
+            path = base / name
+            if path.is_symlink():
+                continue
+            lower = name.lower()
+            if lower.endswith(INSTALLER_EXTS):
+                reason = "installer-package"
+            elif lower.endswith(".zip"):
+                if not _zip_has_installer_payload(path):
+                    continue
+                reason = "installer-zip"
+            else:
+                continue
+            if excluded(path, "installer"):
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            hits.append((size, path, reason))
+    hits.sort(key=lambda item: item[0], reverse=True)
+    candidates: dict[Path, Candidate] = {}
+    for size, path, reason in hits[:INSTALLER_MAX_ITEMS]:
+        candidates[path.resolve()] = Candidate(path.resolve(), size, "installer",
+                                               "manual", reason)
+    return candidates
+
+
+# --- iOS device backup report (P1 #11) ---------------------------------------
+# ~/Library/Application Support/MobileSync/Backup/<UDID> — a full restore
+# point (photos, messages, health data). Read-only inventory: manual risk,
+# quarantine-then-restore is the only removal path, exactly like other
+# "review before touching" categories.
+IOS_BACKUP_ROOT = HOME / "Library/Application Support/MobileSync/Backup"
+
+
+def scan_ios_backups() -> dict[Path, Candidate]:
+    """Read-only inventory of device backups. MobileSync is TCC-protected:
+    without permission the listing raises, and the category degrades to
+    absent instead of aborting the whole scan."""
+    candidates: dict[Path, Candidate] = {}
+    if not IOS_BACKUP_ROOT.is_dir():
+        return candidates
+    try:
+        entries = list(IOS_BACKUP_ROOT.iterdir())
+    except OSError:
+        return candidates
+    for entry in entries:
+        add_path(candidates, entry, "ios-backup", "manual",
+                 "ios-backup", skip_prune=True)
+    return candidates
+
+
+def _norm_token(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+ORPHAN_SCAN_ROOTS = (
+    HOME / "Library" / "Caches",
+    HOME / "Library" / "Logs",
+    HOME / "Library" / "Saved Application State",
+    HOME / "Library" / "HTTPStorages",
+    HOME / "Library" / "WebKit",
+)
+# Volatile-only roots (PureMac orphan policy): preferences/containers hold
+# live user data and sandbox documents, so they are deliberately excluded.
+# Skip words: Apple system services whose cache dirs carry no com.apple
+# prefix (GeoServices/PassKit/...) plus dev-tool cache names that belong to
+# build tooling rather than any single .app (bun/gradle/...).
+ORPHAN_SKIP_WORDS = (
+    "apple", "icloud", "homebrew", "kernel", "system", ".ds_store",
+    "geoservices", "passkit", "animoji", "sharedimagecache", "cloudkit",
+    "gamecenter", "knowledge", "siri", "maps", "metalkit", "findmy",
+    "bun", "deno", "pnpm", "npm", "yarn", "cargo", "pip", "uv", "gradle",
+    "maven", "conda", "ollama", "lmstudio", "claude", "codex", "playwright",
+    "puppeteer", "electron", "node", "python", "golang", "rust", "dotnet",
+    "perl", "php", "composer", "go-build", "typescript", "swiftpm",
+)
+ORPHAN_MIN_SIZE = 1024 * 1024
+ORPHAN_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$|^[0-9a-fA-F]{32}$")
+
+
+def _installed_identifiers() -> set[str]:
+    """Normalized name/bundle-id tokens for every installed app, for reverse
+    orphan matching. Prefers the apps.json listing; falls back to a live scan."""
+    idents: set[str] = set()
+    entries: list[tuple[str, str]] = []
+    try:
+        payload = json.loads(APPS_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("apps"), list) and payload["apps"]:
+            for a in payload["apps"]:
+                if isinstance(a, dict):
+                    entries.append((str(a.get("name", "")), str(a.get("bundle_id", ""))))
+    except (OSError, json.JSONDecodeError):
+        entries = []
+    if not entries:
+        for bundle in installed_app_bundles():
+            info = app_bundle_info(bundle)
+            entries.append((bundle.name, info.get("bundle_id", "")))
+    for name, bundle_id in entries:
+        for tok in (name[:-4] if name.endswith(".app") else name, bundle_id):
+            norm = _norm_token(tok)
+            if norm:
+                idents.add(norm)
+    return idents
+
+
+def scan_orphans() -> dict[Path, Candidate]:
+    """Library entries no installed app claims (uninstall leftovers). Manual
+    risk only: reverse matching is heuristic, deletion stays a human decision."""
+    installed = _installed_identifiers()
+    candidates: dict[Path, Candidate] = {}
+    for root in ORPHAN_SCAN_ROOTS:
+        if not root.is_dir():
+            continue
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name
+            if name in {".DS_Store", ".localized"} or ORPHAN_UUID_RE.match(name):
+                continue
+            low = name.lower()
+            if any(word in low for word in ORPHAN_SKIP_WORDS):
+                continue
+            stem = low[:-6] if low.endswith(".plist") else low
+            if stem.startswith("group."):
+                stem = stem[6:]
+            norm = _norm_token(stem)
+            if len(norm) < 3:
+                continue
+            if any(len(i) >= 5 and (i in norm or norm in i) for i in installed):
+                continue
+            if excluded(entry, "orphan") or pruned(entry, "orphan"):
+                continue
+            sz = size_bytes(entry)
+            if sz < ORPHAN_MIN_SIZE:
+                continue
+            resolved = entry.resolve()
+            if resolved not in candidates:
+                candidates[resolved] = Candidate(resolved, sz, "orphan", "manual",
+                                                 "Orphan: no installed app claims this entry")
+    return candidates
+
+
+# --- Large/old files (OmniDiskSweeper-style read-only inventory) -----------
+# Individual files inside the configured scan roots that are either big or
+# big-for-their-age. Always manual risk: no clean mode ever auto-selects
+# them, removal happens only through an explicit dashboard checkbox and
+# lands in the quarantine (restorable) like everything else.
+LARGE_FILE_MIN_BYTES = 100 * 1024 * 1024  # >100 MB, any age
+LARGE_FILE_OLD_BYTES = 10 * 1024 * 1024  # >10 MB ...
+LARGE_FILE_OLD_DAYS = 365  # ... untouched for over 12 months
+LARGE_FILE_MAX_ITEMS = 200
+
+
+def scan_large_files(covered: dict[Path, Candidate] | None = None) -> dict[Path, Candidate]:
+    """Flag big or stale files across the scan roots.
+
+    `covered` holds candidates from earlier collect() passes: a file that
+    lives inside (or equals) one of those paths keeps the more specific
+    label (xcode/dev-cache/...) and is not double-reported here.
+    """
+    covered_prefixes = sorted((p.as_posix() for p in covered), reverse=True) if covered else []
+    now = time.time()
+    hits: list[tuple[int, Path, str]] = []
+    for root in PROJECT_ROOTS:
+        if not root.is_dir():
+            continue
+        for current, _dirs, files in safe_walk(root):
+            base = Path(current)
+            for name in files:
+                if name in {".DS_Store", ".localized"}:
+                    continue
+                path = base / name
+                try:
+                    if path.is_symlink():
+                        continue
+                    st = path.lstat()
+                except OSError:
+                    continue
+                size = st.st_size
+                if size > LARGE_FILE_MIN_BYTES:
+                    reason = "large-file"
+                elif (size > LARGE_FILE_OLD_BYTES
+                      and now - st.st_mtime > LARGE_FILE_OLD_DAYS * 86400):
+                    reason = "old-large-file"
+                else:
+                    continue
+                # Covered paths come from earlier passes and are resolved
+                # (dict keys everywhere in this module); /var vs /private/var
+                # on macOS means the raw walk text would never match.
+                text = path.resolve().as_posix()
+                if any(text == c or text.startswith(c + "/") for c in covered_prefixes):
+                    continue
+                if excluded(path, "large-files") or pruned(path, "large-files"):
+                    continue
+                hits.append((size, path, reason))
+    hits.sort(key=lambda item: item[0], reverse=True)
+    candidates: dict[Path, Candidate] = {}
+    for size, path, reason in hits[:LARGE_FILE_MAX_ITEMS]:
+        candidates[path.resolve()] = Candidate(
+            path.resolve(), size, "large-files", "manual", reason)
+    return candidates
+
+
+def collect(mode: str, stale_days: int = STALE_DAYS_DEFAULT) -> list[Candidate]:
+    candidates: dict[Path, Candidate] = {}
+    candidates.update(discover_global())
+    candidates.update(scan_app_roots())
+    candidates.update(scan_projects(include_aggressive=mode in {"clean-aggressive", "scan"}))
+    candidates.update(scan_temp())
+    candidates.update(scan_wechat(int(CONFIG.get("wechat_media_keep_months", 1))))
+    candidates.update(scan_app_support())
+    candidates.update(scan_screenshots())
+    candidates.update(scan_personal_large())
+    candidates.update(scan_xcode())
+    candidates.update(scan_dev_global())
+    candidates.update(scan_ai_caches())
+    candidates.update(scan_browser_caches())
+    candidates.update(scan_installers())
+    candidates.update(scan_ios_backups())
+    candidates.update(scan_orphans())
+    # large-files runs after the specific passes and skips anything already
+    # covered, so big files inside DerivedData/dev caches keep their precise
+    # label. stale still runs last and can only win on uncovered paths.
+    candidates.update(scan_large_files(covered=candidates))
+    # stale-project pass runs last so stale-deps/stale-model labels win over
+    # generic project-generated/large-file for the same paths (dict.update
+    # would otherwise let later passes overwrite the more specific stale tag).
+    candidates.update(scan_stale_projects(stale_days))
+    items = list(candidates.values())
+    # Keep -1 (unsized Photos library) sorted toward the bottom but visible.
+    return sorted(items, key=lambda c: c.size if c.size >= 0 else -1, reverse=True)
+
+
+def fmt_size(num: int) -> str:
+    if num < 0:
+        return "n/a"
+    units = ["B", "K", "M", "G", "T"]
+    value = float(num)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f}{unit}" if unit != "B" else f"{int(value)}B"
+        value /= 1024
+    return f"{num}B"
+
+
+def is_eligible(candidate: Candidate, policy: str = "clean-aggressive") -> bool:
+    """Return whether policy permits cleanup, independent of scan/apply execution state."""
+    if candidate.risk == "manual" or excluded(candidate.path, candidate.category):
+        return False
+    if policy == "clean-safe":
+        return candidate.risk == "safe"
+    return candidate.risk in {"safe", "aggressive"}
+
+
+def should_delete(candidate: Candidate, mode: str) -> bool:
+    return mode in {"clean-safe", "clean-aggressive"} and is_eligible(candidate, mode)
+
+
+def candidate_id(candidate: Candidate) -> str:
+    raw = f"{candidate.path}\0{candidate.category}\0{candidate.risk}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def fingerprint(path: Path) -> dict[str, int | str | bool]:
+    st = path.lstat()
+    return {
+        "path": str(path), "device": st.st_dev, "inode": st.st_ino,
+        "size": st.st_size, "mtime_ns": st.st_mtime_ns, "is_symlink": path.is_symlink(),
+    }
+
+
+def move_to_quarantine(candidate: Candidate, operation_id: str) -> tuple[bool, str, dict[str, object] | None]:
+    """Move a verified candidate to an operation-scoped Trash folder for recovery."""
+    try:
+        before = fingerprint(candidate.path)
+        if before["is_symlink"]:
+            return False, "refused: candidate became a symlink", None
+        if excluded(candidate.path, candidate.category) or pruned(candidate.path, candidate.category):
+            return False, "refused: candidate is protected", None
+        # TOCTOU guard (parity: PureMac identity check): re-stat right before
+        # the move; a changed device/inode means the path was swapped between
+        # scan and clean — refuse rather than quarantine the wrong file.
+        after = fingerprint(candidate.path)
+        if (after["device"], after["inode"]) != (before["device"], before["inode"]):
+            return False, "refused: path changed since scan (TOCTOU guard)", None
+        destination_dir = TRASH_ROOT / operation_id
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / f"{candidate_id(candidate)}-{candidate.path.name}"
+        if destination.exists():
+            return False, "refused: quarantine destination already exists", None
+        shutil.move(str(candidate.path), str(destination))
+        entry = {
+            "candidate_id": candidate_id(candidate), "original_path": str(candidate.path),
+            "quarantine_path": str(destination), "category": candidate.category,
+            "risk": candidate.risk, "reason": candidate.reason, "size": candidate.size,
+            "fingerprint": before, "status": "quarantined",
+        }
+        return True, "quarantined", entry
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc), None
+
+
+def save_operation(operation_id: str, mode: str, entries: list[dict[str, object]]) -> Path:
+    OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "operation_id": operation_id, "timestamp": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "mode": mode, "trash_retention_days": CONFIG["trash_retention_days"], "entries": entries,
+    }
+    path = OPERATIONS_DIR / f"{operation_id}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def restore_operation(operation_id: str) -> tuple[int, list[str]]:
+    manifest = OPERATIONS_DIR / f"{operation_id}.json"
+    if not manifest.exists():
+        raise FileNotFoundError(f"operation not found: {operation_id}")
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    restored = 0
+    messages: list[str] = []
+    for entry in payload.get("entries", []):
+        if entry.get("status") != "quarantined":
+            continue
+        source = Path(str(entry["quarantine_path"]))
+        target = Path(str(entry["original_path"]))
+        if not source.exists():
+            messages.append(f"missing quarantine item: {source}")
+            continue
+        if target.exists():
+            messages.append(f"target already exists, skipped: {target}")
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        entry["status"] = "restored"
+        entry["restored_at"] = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+        restored += 1
+    manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return restored, messages
+
+
+# ---- app uninstall (应用卸载) ----
+# Uninstall = quarantine, never rm: the .app bundle and every discovered
+# related file move into an operation folder under ~/.Trash/mac-dev-cleanup/,
+# so the standard --restore flow brings the whole app back.
+
+APP_DIRS = (Path("/Applications"), HOME / "Applications")
+APPS_STATE_PATH = LOG_DIR / "apps.json"
+
+# --- scheduled execution (dashboard 计划任务 tab) ---------------------------
+# Managed crontab entries carry a trailing "# mdc-managed:<job>" marker; only
+# those lines are ever read or rewritten, the rest of the user's crontab is
+# untouched. Only read-only/conservative jobs are schedulable by design —
+# clean-aggressive requires per-candidate human confirmation and must never
+# run unattended.
+MDC_CRON_MARKER = "# mdc-managed"
+CRON_LOG_PATHS = {
+    "scan": LOG_DIR / "cron-scan.log",
+    "clean-safe": LOG_DIR / "cron-clean-safe.log",
+}
+CRON_SCRIPT_DIR = Path(__file__).resolve().parent
+CRON_PYTHON = sys.executable or "python3"
+
+
+def build_managed_cron_line(job: str, hour: int, minute: int,
+                            dow: int | None = None,
+                            enabled: bool = True) -> str:
+    """One managed crontab line for a schedulable job.
+
+    scan is weekly (dow 0-6, Sunday=0, default Sunday); clean-safe is daily.
+    A disabled job stays in the crontab as a commented line so the configured
+    time survives a toggle. Raises ValueError on any policy violation.
+    """
+    if job not in CRON_LOG_PATHS:
+        raise ValueError(f"job must be one of {sorted(CRON_LOG_PATHS)}; "
+                         "clean-aggressive is deliberately not schedulable")
+    if not (isinstance(hour, int) and 0 <= hour <= 23
+            and isinstance(minute, int) and 0 <= minute <= 59):
+        raise ValueError("hour must be 0-23 and minute 0-59")
+    if job == "scan":
+        if dow is None:
+            dow = 0
+        if not (isinstance(dow, int) and 0 <= dow <= 6):
+            raise ValueError("scan dow must be 0-6 (Sunday=0)")
+        expr = f"{minute} {hour} * * {dow}"
+    else:
+        expr = f"{minute} {hour} * * *"
+    log = CRON_LOG_PATHS[job]
+    cmd = (f"cd {CRON_SCRIPT_DIR.parent} && {CRON_PYTHON} "
+           f"scripts/{Path(__file__).name} {job}"
+           + (" --apply" if job == "clean-safe" else "")
+           + f" >> {log} 2>&1")
+    line = f"{expr}  {cmd}  {MDC_CRON_MARKER}:{job}"
+    return f"# {line}" if not enabled else line
+
+
+def parse_managed_crontab(text: str) -> dict[str, dict[str, object]]:
+    """Extract managed jobs from crontab text -> {job: {...}}.
+
+    Lines are recognized by the trailing marker; a leading '#' (after optional
+    whitespace) marks the job disabled. Unknown job names after the marker are
+    ignored (forward compatibility).
+    """
+    jobs: dict[str, dict[str, object]] = {}
+    for raw in text.splitlines():
+        idx = raw.find(MDC_CRON_MARKER + ":")
+        if idx < 0:
+            continue
+        job = raw[idx + len(MDC_CRON_MARKER) + 1:].strip()
+        if job not in CRON_LOG_PATHS:
+            continue
+        body = raw.strip()
+        enabled = not body.startswith("#")
+        if not enabled:
+            body = body.lstrip("#").strip()
+        fields = body.split()
+        if len(fields) < 5:
+            continue
+        try:
+            minute, hour = int(fields[0]), int(fields[1])
+        except ValueError:
+            continue
+        try:
+            dow: int | None = int(fields[4])
+        except ValueError:
+            dow = None  # '*' or step/list syntax — no single weekday
+        jobs[job] = {"enabled": enabled, "hour": hour, "minute": minute,
+                     "dow": None if job == "clean-safe" else dow,
+                     "line": raw}
+    return jobs
+# Bundle names on disk may be localized (e.g. 剪映.app), so allow anything
+# except separators/NUL and a leading dot; traversal is additionally blocked
+# structurally in find_app_bundle.
+APP_NAME_RE = re.compile(r"^(?!\.)[^/\\\x00]{1,128}\.app$")
+
+
+def app_bundle_info(bundle: Path) -> dict[str, str]:
+    """Read CFBundleName / CFBundleIdentifier from the bundle's Info.plist."""
+    info: dict[str, str] = {}
+    plist_path = bundle / "Contents" / "Info.plist"
+    try:
+        with plist_path.open("rb") as fh:
+            raw = plistlib.load(fh)
+        if isinstance(raw, dict):
+            for key, target in (("CFBundleName", "name"), ("CFBundleIdentifier", "bundle_id"),
+                                ("CFBundleExecutable", "executable")):
+                value = raw.get(key)
+                if isinstance(value, str) and value:
+                    info[target] = value
+    except Exception:  # noqa: BLE001 — a corrupt Info.plist must not kill the listing
+        pass
+    return info
+
+
+def installed_app_bundles() -> list[Path]:
+    """Top-level .app bundles in user-visible Applications dirs only."""
+    found: list[Path] = []
+    for root in APP_DIRS:
+        if not root.is_dir():
+            continue
+        try:
+            for child in sorted(root.iterdir()):
+                if child.name.endswith(".app") and child.is_dir() and not child.is_symlink():
+                    found.append(child)
+        except OSError:
+            continue
+    return found
+
+
+def app_related_paths(bundle_name: str, bundle_id: str) -> list[Path]:
+    """Conventional per-app leftovers under ~/Library (existence checked later)."""
+    lib = HOME / "Library"
+    stems: list[str] = []
+    for stem in (bundle_name[:-4], bundle_id):
+        if stem and stem not in stems:
+            stems.append(stem)
+    paths: list[Path] = []
+    for stem in stems:
+        for sub in ("Application Support", "Caches", "Logs"):
+            paths.append(lib / sub / stem)
+    if bundle_id:
+        paths += [
+            lib / "Preferences" / f"{bundle_id}.plist",
+            lib / "Containers" / bundle_id,
+            lib / "Group Containers" / f"group.{bundle_id}",
+            lib / "HTTPStorages" / bundle_id,
+            lib / "Saved Application State" / f"{bundle_id}.savedState",
+            lib / "WebKit" / bundle_id,
+        ]
+    unique: list[Path] = []
+    for p in paths:
+        if p not in unique:
+            unique.append(p)
+    return unique
+
+
+def app_record(bundle: Path) -> dict[str, object]:
+    info = app_bundle_info(bundle)
+    bundle_id = info.get("bundle_id", "")
+    related = [p for p in app_related_paths(bundle.name, bundle_id) if p.exists()]
+    app_size = size_bytes(bundle)
+    related_items = [{"path": str(p), "size": size_bytes(p)} for p in related]
+    return {
+        "name": bundle.name,
+        "bundle_id": bundle_id,
+        "path": str(bundle),
+        "app_size": app_size,
+        "related": related_items,
+        "total_size": app_size + sum(item["size"] for item in related_items),
+        "running": process_running(bundle.name),
+    }
+
+
+# --- P2 reports: launch items / TM snapshots / duplicate files --------------
+
+# Launch items (read-only, third-party only — com.apple.* services are out of
+# scope and meaningless to surface). Deletion is deliberately NOT wired up:
+# disabling/removing a live agent needs launchd unload semantics that belong
+# to a dedicated review, the report is the deliverable.
+LAUNCH_DIRS: tuple[tuple[str, Path], ...] = (
+    ("user", HOME / "Library/LaunchAgents"),
+    ("local-agents", Path("/Library/LaunchAgents")),
+    ("local-daemons", Path("/Library/LaunchDaemons")),
+)
+
+
+def launch_items() -> list[dict[str, object]]:
+    """Parse every third-party .plist under the launch directories."""
+    items: list[dict[str, object]] = []
+    for scope, root in LAUNCH_DIRS:
+        if not root.is_dir():
+            continue
+        try:
+            plists = sorted(root.glob("*.plist"))
+        except OSError:
+            continue
+        for plist_path in plists:
+            try:
+                with plist_path.open("rb") as fh:
+                    raw = plistlib.load(fh)
+            except Exception:  # noqa: BLE001 — corrupt plist: skip, never die
+                continue
+            if not isinstance(raw, dict):
+                continue
+            label = raw.get("Label") or plist_path.stem
+            if isinstance(label, str) and label.startswith("com.apple."):
+                continue
+            prog = raw.get("Program")
+            if not isinstance(prog, str) or not prog:
+                args = raw.get("ProgramArguments")
+                prog = args[0] if isinstance(args, list) and args and isinstance(args[0], str) else ""
+            items.append({
+                "scope": scope,
+                "path": str(plist_path),
+                "label": label,
+                "program": prog,
+                "run_at_load": raw.get("RunAtLoad") is True,
+                "keep_alive": bool(raw.get("KeepAlive")),
+                "disabled": raw.get("Disabled") is True,
+            })
+    return items
+
+
+# Time Machine local snapshots. Read-only listing; deletion is gated twice in
+# the web layer (token + literal confirm) and structurally restricted to
+# date-named snapshots — `com.apple.os.update-*` rollback points never match
+# the date pattern and are refused by code, matching the policy that only a
+# reboot installing the update may reclaim them.
+TM_SNAPSHOT_VOLUME = "/System/Volumes/Data"
+SNAPSHOT_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{6}$")
+
+
+def tmutil_snapshots() -> dict[str, object]:
+    code, out = run(["tmutil", "listlocalsnapshots", TM_SNAPSHOT_VOLUME])
+    if code != 0:
+        return {"ok": False, "error": out or "tmutil failed", "snapshots": []}
+    # Keep only lines that are actually snapshot names: date-formatted entries
+    # or com.apple.* (os-update rollback points). tmutil prints a localized
+    # "Snapshots for disk …:" header line that must not be mistaken for one.
+    names = [line.strip() for line in out.splitlines()
+             if SNAPSHOT_NAME_RE.match(line.strip()) or line.strip().startswith("com.apple.")]
+    snapshots = [{"name": n, "deletable": bool(SNAPSHOT_NAME_RE.match(n))}
+                 for n in names]
+    return {"ok": True, "volume": TM_SNAPSHOT_VOLUME, "snapshots": snapshots,
+            "update_protected": [n for n in names if not SNAPSHOT_NAME_RE.match(n)]}
+
+
+DUPES_STATE_PATH = LOG_DIR / "dupes.json"
+DUPES_MIN_SIZE_DEFAULT = 10 * 1024 * 1024  # 10 MB: dupes below this aren't worth a report
+DUPES_HEAD_BYTES = 64 * 1024
+DUPES_MAX_GROUPS = 200
+
+
+def find_duplicates(roots: list[Path], min_size: int = DUPES_MIN_SIZE_DEFAULT,
+                    max_groups: int = DUPES_MAX_GROUPS) -> dict[str, object]:
+    """Progressive duplicate detection: group by exact size, prune by the
+    64 KB head SHA-256, confirm with a full-file SHA-256. Hard links (same
+    device+inode) are one file, never a duplicate pair. .git is skipped:
+    packfiles are content-addressed churn, not actionable duplicates."""
+    by_size: dict[int, list[Path]] = {}
+    seen_inodes: set[tuple[int, int]] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for current, dirs, files in safe_walk(root):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            base = Path(current)
+            for name in files:
+                path = base / name
+                try:
+                    if path.is_symlink():
+                        continue
+                    st = path.stat()
+                    if st.st_size < min_size:
+                        continue
+                    inode_key = (st.st_dev, st.st_ino)
+                    if inode_key in seen_inodes:
+                        continue
+                    seen_inodes.add(inode_key)
+                except OSError:
+                    continue
+                by_size.setdefault(st.st_size, []).append(path)
+
+    def file_hash(path: Path, full: bool) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            if not full:
+                digest.update(fh.read(DUPES_HEAD_BYTES))
+                return digest.hexdigest()
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    groups: list[dict[str, object]] = []
+    # pass 1: size -> head hash
+    for size, paths in by_size.items():
+        if len(paths) < 2:
+            continue
+        head_buckets: dict[str, list[Path]] = {}
+        for path in paths:
+            try:
+                head_buckets.setdefault(file_hash(path, full=False), []).append(path)
+            except OSError:
+                continue
+        # pass 2: head ties -> full hash
+        for tied in head_buckets.values():
+            if len(tied) < 2:
+                continue
+            full_buckets: dict[str, list[Path]] = {}
+            for path in tied:
+                try:
+                    full_buckets.setdefault(file_hash(path, full=True), []).append(path)
+                except OSError:
+                    continue
+            for paths_same in full_buckets.values():
+                if len(paths_same) < 2:
+                    continue
+                groups.append({
+                    "size": size,
+                    "wasted": size * (len(paths_same) - 1),
+                    "files": sorted(str(p) for p in paths_same),
+                })
+    groups.sort(key=lambda g: g["wasted"], reverse=True)
+    truncated = len(groups) > max_groups
+    kept = groups[:max_groups]
+    return {
+        "roots": [str(r) for r in roots],
+        "min_size": min_size,
+        "groups": kept,
+        "truncated": truncated,
+        "wasted_bytes": sum(int(g["wasted"]) for g in kept),
+        "generated": dt.datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def cmd_dupes(min_size: int, roots: list[Path] | None) -> int:
+    scan_roots = roots if roots else list(PROJECT_ROOTS)
+    result = find_duplicates(scan_roots, min_size=min_size)
+    try:
+        DUPES_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DUPES_STATE_PATH.write_text(json.dumps(result, ensure_ascii=False),
+                                    encoding="utf-8")
+    except OSError as exc:
+        print(f"warning: could not persist {DUPES_STATE_PATH}: {exc}")
+    print(f"groups: {len(result['groups'])}  wasted: {fmt_size(int(result['wasted_bytes']))}"
+          f"  report: {DUPES_STATE_PATH}")
+    for group in result["groups"][:20]:
+        print(f"  {fmt_size(int(group['size']))} x{len(group['files'])}  {group['files'][0]}")
+    return 0
+
+
+def cmd_apps() -> int:
+    """Build apps.json (consumed by the dashboard's 应用 view)."""
+    records: list[dict[str, object]] = []
+    for bundle in installed_app_bundles():
+        rec = app_record(bundle)
+        records.append(rec)
+        print(f"scanned: {rec['name']}  {fmt_size(int(rec['total_size']))}"
+              + ("  [running]" if rec["running"] else ""), flush=True)
+    records.sort(key=lambda r: int(r["total_size"]), reverse=True)
+    payload = {
+        "timestamp": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "apps": records,
+    }
+    APPS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    APPS_STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    print(f"apps_json: {APPS_STATE_PATH}")
+    print(f"apps: {len(records)}")
+    return 0
+
+
+def find_app_bundle(app_name: str) -> Path | None:
+    """Exact bundle-name match under the allowed Applications dirs only.
+    The parent check structurally rejects ".."-style traversal: any name that
+    escapes the Applications root (e.g. "../Foo.app") resolves to a different
+    parent and is refused before any filesystem access."""
+    if not APP_NAME_RE.match(app_name) or ".." in app_name:
+        return None
+    for root in APP_DIRS:
+        candidate = root / app_name
+        if candidate.parent != root:
+            return None
+        if candidate.is_dir() and not candidate.is_symlink():
+            return candidate
+    return None
+
+
+def move_path_to_quarantine(path: Path, operation_id: str, reason: str) -> tuple[bool, str, dict[str, object] | None]:
+    """Quarantine one path for uninstall; keeps the standard entry shape."""
+    try:
+        if not (is_under(path, Path("/Applications")) or is_under(path, HOME)):
+            return False, "refused: outside /Applications and home", None
+        before = fingerprint(path)
+        if before["is_symlink"]:
+            return False, "refused: path is a symlink", None
+        after = fingerprint(path)
+        if (after["device"], after["inode"]) != (before["device"], before["inode"]):
+            return False, "refused: path changed since scan (TOCTOU guard)", None
+        destination_dir = TRASH_ROOT / operation_id
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+        destination = destination_dir / f"{digest}-{path.name}"
+        if destination.exists():
+            return False, "refused: quarantine destination already exists", None
+        size = size_bytes(path)
+        shutil.move(str(path), str(destination))
+        entry = {
+            "candidate_id": digest, "original_path": str(path),
+            "quarantine_path": str(destination), "category": "app-uninstall",
+            "risk": "manual", "reason": reason, "size": size,
+            "fingerprint": before, "status": "quarantined",
+        }
+        return True, "quarantined", entry
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc), None
+
+
+def cmd_uninstall(app_name: str, apply: bool) -> int:
+    bundle = find_app_bundle(app_name)
+    if bundle is None:
+        print(f"error: no installed app named {app_name!r} under /Applications or ~/Applications")
+        return 2
+    if process_running(bundle.name):
+        print(f"error: {bundle.name} is running — quit it first, then uninstall")
+        return 1
+    info = app_bundle_info(bundle)
+    paths = [bundle] + [p for p in app_related_paths(bundle.name, info.get("bundle_id", "")) if p.exists()]
+    total = sum(size_bytes(p) for p in paths)
+    print(f"app: {bundle.name}")
+    print(f"bundle_id: {info.get('bundle_id') or '(unknown)'}")
+    for p in paths:
+        print(f"  {fmt_size(size_bytes(p))}  {p}")
+    print(f"total: {fmt_size(total)} across {len(paths)} paths")
+    if not apply:
+        print("dry-run: nothing moved (pass --apply to quarantine the list above)")
+        return 0
+    operation_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    entries: list[dict[str, object]] = []
+    for p in paths:
+        ok, message, entry = move_path_to_quarantine(p, operation_id, f"uninstall {bundle.name}")
+        print(f"  {message}: {p}")
+        if entry:
+            entries.append(entry)
+    if entries:
+        manifest = save_operation(operation_id, "uninstall", entries)
+        print(f"operation_id: {operation_id}")
+        print(f"operation_manifest: {manifest}")
+        print(f"restore_command: python3 {Path(__file__).resolve()} --restore {operation_id}")
+    print(f"uninstalled: {bundle.name} ({len(entries)}/{len(paths)} paths quarantined)")
+    return 0
+
+
+def candidate_action(candidate: Candidate, mode: str, actions: dict[Path, str]) -> str:
+    if candidate.path in actions:
+        return actions[candidate.path]
+    if candidate.risk == "manual":
+        return "needs review"
+    if mode == "scan":
+        return "scan only"
+    return "would delete" if should_delete(candidate, mode) else "scan only"
+
+
+def candidate_to_dict(candidate: Candidate, mode: str, actions: dict[Path, str]) -> dict[str, object]:
+    return {
+        "id": candidate_id(candidate),
+        "path": str(candidate.path),
+        "size": candidate.size,
+        "size_human": fmt_size(candidate.size),
+        "category": candidate.category,
+        "risk": candidate.risk,
+        "reason": candidate.reason,
+        "action": candidate_action(candidate, mode, actions),
+        "deletable": is_eligible(candidate, "clean-aggressive" if mode == "scan" else mode),
+    }
+
+
+def write_state(
+    mode: str,
+    apply_flag: bool,
+    tools: dict[str, bool],
+    candidates: list[Candidate],
+    actions: dict[Path, str],
+    before_df: str,
+    after_df: str,
+    stale_days: int = STALE_DAYS_DEFAULT,
+) -> Path:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    safe_total = sum(c.size for c in candidates if c.size >= 0 and is_eligible(c, "clean-safe"))
+    aggressive_total = sum(c.size for c in candidates if c.size >= 0 and c.risk == "aggressive" and is_eligible(c))
+    total = safe_total + aggressive_total
+    selected_total = sum(c.size for c in candidates if c.size >= 0 and should_delete(c, mode))
+    manual_total = sum(c.size for c in candidates if c.size >= 0 and c.risk == "manual")
+    missing_core = [name for name in CORE_TOOL_CHECKS if not tools.get(name)]
+    missing_optional = [name for name in OPTIONAL_TOOL_CHECKS if not tools.get(name)]
+    by_category: dict[str, int] = {}
+    for c in candidates:
+        by_category[c.category] = by_category.get(c.category, 0) + (c.size if c.size >= 0 else 0)
+    state = {
+        "timestamp": timestamp,
+        "mode": mode,
+        "apply": apply_flag,
+        "deletable_bytes": total,
+        "deletable_human": fmt_size(total),
+        "safe_bytes": safe_total,
+        "safe_human": fmt_size(safe_total),
+        "aggressive_bytes": aggressive_total,
+        "aggressive_human": fmt_size(aggressive_total),
+        "selected_bytes": selected_total,
+        "selected_human": fmt_size(selected_total),
+        "manual_bytes": manual_total,
+        "manual_human": fmt_size(manual_total),
+        "candidate_count": len(candidates),
+        "tools": tools,
+        "core_tools": CORE_TOOL_CHECKS,
+        "optional_tools": OPTIONAL_TOOL_CHECKS,
+        "missing_tools": missing_core,
+        "missing_core_tools": missing_core,
+        "missing_optional_tools": missing_optional,
+        "disk_before": before_df,
+        "disk_after": after_df,
+        "dashboard": str(DASHBOARD_PATH),
+        "by_category": by_category,
+        "config": CONFIG,
+        "stale_days_used": stale_days,
+        "candidates": [candidate_to_dict(c, mode, actions) for c in candidates],
+    }
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Also emit dashboard_data.js so the HTML works under file:// (no XHR/CORS).
+    data_js_path = DASHBOARD_PATH.parent / "dashboard_data.js"
+    data_js_path.write_text(
+        "window.__DASHBOARD_DATA__ = " + json.dumps(state, ensure_ascii=False) + ";\n",
+        encoding="utf-8",
+    )
+    # Emit config_data.js so the settings panel can render current config.
+    config_js_path = DASHBOARD_PATH.parent / "config_data.js"
+    config_js_path.write_text(
+        "window.__DASHBOARD_CONFIG__ = " + json.dumps(CONFIG, ensure_ascii=False) + ";\n",
+        encoding="utf-8",
+    )
+
+    # Rebuild dashboard.html from the design template. The two are byte-identical by
+    # design: the page is a data-free shell that loads dashboard_data.js / config_data.js
+    # (both written just above, both gitignored), so no per-run data is ever injected into
+    # the HTML and the generated file stays safe to serve. Keeping the HTML free of CDN and
+    # inlined frameworks is what lets it boot under file:// and in sandboxed preview webviews.
+    _render_dashboard_html(state)
+
+    summary = {
+        "timestamp": timestamp,
+        "mode": mode,
+        "apply": apply_flag,
+        "deletable_bytes": total,
+        "manual_bytes": manual_total,
+        "candidate_count": len(candidates),
+    }
+    with HISTORY_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(summary, ensure_ascii=False) + "\n")
+    return STATE_PATH
+
+
+def _render_dashboard_html(state: dict) -> None:
+    """Produce dashboard.html from the design template as a data-free preview shell.
+
+    The page does not inline the real scan state or config. It references
+    dashboard_data.js / config_data.js instead (gitignored, emitted next to it) via
+    <script src>, so dashboard.html carries no machine-specific data and can be served
+    publicly. Under file:// the sibling scripts load the real data; when they are absent
+    (e.g. on GitHub) the UI falls back to its built-in "data missing" state.
+
+    Because nothing is injected any more, this is an exact copy of the template: the
+    output is byte-identical to dashboard_template.html. That is why the template is the
+    only tracked file and dashboard.html is gitignored — see .gitignore. The function is
+    kept (rather than the template simply being served directly) so that dashboard.html
+    always exists at DASHBOARD_PATH after a scan, which is what web_server.py serves and
+    what check_dashboard.py inspects. `state` is accepted for signature stability; no
+    field of it reaches the page.
+    """
+    template_path = DASHBOARD_PATH.with_name("dashboard_template.html")
+    if not template_path.exists():
+        print(f"warning: {template_path.name} missing; skipped dashboard build")
+        return
+    try:
+        html = template_path.read_text(encoding="utf-8")
+        DASHBOARD_PATH.write_text(html, encoding="utf-8")
+    except OSError as exc:
+        print(f"warning: failed to build dashboard.html: {exc}")
+
+
+# ---- launchd service (常驻服务) ---------------------------------------------
+# The dashboard only sees TCC-protected data (~/.Trash, MobileSync) and the
+# user's crontab when it runs from a properly permissioned, persistent context.
+# A user LaunchAgent solves both: it survives terminal/session exits, and once
+# the interpreter is granted Full Disk Access every protected feature works.
+
+SERVICE_LABEL = "com.yancongya.mac-dev-cleanup"
+SERVICE_PLIST = HOME / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
+SERVICE_PYTHON = "/usr/bin/python3"
+WEB_SERVER_PATH = Path(__file__).resolve().parent / "web_server.py"
+
+
+def _dashboard_port() -> int:
+    try:
+        return int(CONFIG.get("dashboard_port", 8766))
+    except (TypeError, ValueError):
+        return 8766
+
+
+def _service_plist_xml() -> str:
+    log = LOG_DIR / "service"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{SERVICE_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{SERVICE_PYTHON}</string>
+        <string>{WEB_SERVER_PATH}</string>
+        <string>--port</string>
+        <string>{_dashboard_port()}</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>{log / "out.log"}</string>
+    <key>StandardErrorPath</key><string>{log / "err.log"}</string>
+    <key>WorkingDirectory</key><string>{Path(__file__).resolve().parent.parent}</string>
+</dict>
+</plist>
+"""
+
+
+def _service_uid() -> str:
+    import os
+    return str(os.getuid())
+
+
+def _service_running() -> bool:
+    """True when something is answering the dashboard health endpoint."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{_dashboard_port()}/api/health",
+                timeout=3) as resp:
+            return resp.status == 200
+    except OSError:
+        return False
+
+
+def cmd_service(action: str) -> int:
+    uid = _service_uid()
+    if action == "status":
+        installed = SERVICE_PLIST.is_file()
+        loaded = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"],
+            capture_output=True, text=True).returncode == 0
+        alive = _service_running()
+        print(f"plist installed : {installed}  ({SERVICE_PLIST})")
+        print(f"launchd loaded  : {loaded}")
+        print(f"health endpoint : {'up' if alive else 'down'}  (port {_dashboard_port()})")
+        if installed and not alive:
+            print("hint: 授权「完全磁盘访问」后 `launchctl kickstart -k gui/"
+                  f"{uid}/{SERVICE_LABEL}` 重启服务")
+        return 0
+    if action == "uninstall":
+        # Only bootout the label the plist itself declares (and only when it is
+        # actually loaded). A patched/foreign plist without our Label — as used
+        # by the unit tests — must never touch the production LaunchAgent.
+        try:
+            declared = plistlib.loads(SERVICE_PLIST.read_bytes()).get("Label") if SERVICE_PLIST.is_file() else None
+        except Exception:
+            declared = None
+        if declared:
+            loaded = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/{declared}"],
+                capture_output=True, text=True).returncode == 0
+            if loaded:
+                subprocess.run(["launchctl", "bootout", f"gui/{uid}/{declared}"],
+                               capture_output=True, text=True)
+        if SERVICE_PLIST.exists():
+            SERVICE_PLIST.unlink()
+            print(f"removed {SERVICE_PLIST}")
+        else:
+            print("service was not installed")
+        return 0
+    # install
+    if not Path(SERVICE_PYTHON).exists():
+        print(f"error: {SERVICE_PYTHON} not found — install the Command Line Tools (xcode-select --install)", file=sys.stderr)
+        return 2
+    if _service_running():
+        print(f"warning: 端口 {_dashboard_port()} 已有服务在响应——如果它是某个会话临时启动的，")
+        print("  请先停掉它，否则本服务会因端口冲突反复重启。继续安装（会在旧服务停止后自动接管）。")
+    SERVICE_PLIST.parent.mkdir(parents=True, exist_ok=True)
+    (LOG_DIR / "service").mkdir(parents=True, exist_ok=True)
+    # Bootout first so reinstall always starts from a clean slate.
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{SERVICE_LABEL}"],
+                   capture_output=True, text=True)
+    SERVICE_PLIST.write_text(_service_plist_xml(), encoding="utf-8")
+    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(SERVICE_PLIST)],
+                   capture_output=True, text=True)
+    loaded = subprocess.run(
+        ["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"],
+        capture_output=True, text=True).returncode == 0
+    if loaded:
+        print(f"installed & loaded: {SERVICE_PLIST}")
+        print(f"dashboard : http://127.0.0.1:{_dashboard_port()}/dashboard.html  (开机自启 · 崩溃自动拉起)")
+    else:
+        # Some host contexts (IDEs, agent runners) are refused by launchd with
+        # "Input/output error" regardless of plist validity — the bootstrap
+        # must come from a real login shell (Terminal).
+        print(f"plist written : {SERVICE_PLIST}")
+        print("launchd 未加载。请先检查是否其实已加载过（重复 bootstrap 会报")
+        print("\"Bootstrap failed: 5: Input/output error\"，这是误导性报错，不代表 plist 有问题）：")
+        print(f"  launchctl print gui/{uid}/{SERVICE_LABEL}   # 有输出 = 已加载，跳过 bootstrap")
+        print("若确认未加载，请在 Terminal.app 里执行：")
+        print(f"  launchctl bootstrap gui/{uid} {SERVICE_PLIST}")
+        print(f"之后用 `python3 {Path(__file__).resolve()} service --service-action status` 验证。")
+    print("--- 最后一步（必需，授权完全磁盘访问）---")
+    print("TCC 认实际执行的二进制，即 CLT 解释器实体（/usr/bin/python3 只是 shim）：")
+    print("  /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9")
+    print("注意：添加对话框中它会显示为灰色（Launch Services 把版本号误判为扩展名），")
+    print("正确做法：在 Finder 里 Cmd+Shift+G 打开上述目录，把 python3.9 文件")
+    print("直接拖到「完全磁盘访问权限」列表上松手，再打开开关。")
+    print("警告：CLT 升级后该授权会失效，需重新拖拽一次。")
+    print(f"然后运行: launchctl kickstart -k gui/{uid}/{SERVICE_LABEL}")
+    print("授权后系统废纸篓 / iOS 备份 / Safari 缓存全部可用；crontab 计划任务在服务加载后立即可用。")
+    return 0 if loaded else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Scan and clean macOS developer-generated files.")
+    parser.add_argument("mode", nargs="?", choices=["scan", "clean-safe", "clean-aggressive", "apps", "uninstall", "dupes", "service"],
+                        help="Operation mode. Omit when using --show-config / --set-config.")
+    parser.add_argument("--service-action", choices=["install", "uninstall", "status"], default=None,
+                        help="service mode: install / uninstall / status the launchd LaunchAgent.")
+    parser.add_argument("--min-size", type=int, default=None,
+                        help="dupes: minimum file size in bytes (default 10 MB).")
+    parser.add_argument("--roots", action="append", default=[],
+                        help="dupes: additional scan root (repeatable; default: scan_roots).")
+    parser.add_argument("--app-name", metavar="NAME.app",
+                        help="App bundle name for the uninstall mode (exact match under /Applications or ~/Applications).")
+    parser.add_argument("--apply", action="store_true", help="Actually delete candidates for the selected mode.")
+    parser.add_argument("--limit", type=int, default=0, help="Only print the largest N candidates in terminal output.")
+    parser.add_argument("--candidate-id", action="append", default=[], help="Limit this run to a stable candidate ID; repeatable.")
+    parser.add_argument("--category", action="append", default=[], help="Limit this run to a category; repeatable.")
+    parser.add_argument("--stale-days", type=int, default=None,
+                        help=f"Treat projects idle for more than N days as stale (default from config: {STALE_DAYS_DEFAULT}).")
+    parser.add_argument("--show-config", action="store_true", help="Print current config.json and exit.")
+    parser.add_argument("--set-config", action="store_true",
+                        help="Read JSON config from stdin and atomically write validated config.json.")
+    parser.add_argument("--restore", metavar="OPERATION_ID", help="Restore every available item from an operation.")
+    parser.add_argument("--list-operations", action="store_true", help="List recoverable cleanup operations.")
+    args = parser.parse_args()
+
+    # Management modes (no scan).
+    if args.list_operations:
+        OPERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        for path in sorted(OPERATIONS_DIR.glob("*.json"), reverse=True):
+            try:
+                op = json.loads(path.read_text(encoding="utf-8"))
+                pending = sum(1 for e in op.get("entries", []) if e.get("status") == "quarantined")
+                print(f"{op.get('operation_id')}  {op.get('timestamp')}  {op.get('mode')}  recoverable={pending}")
+            except (OSError, json.JSONDecodeError):
+                continue
+        return 0
+    if args.restore:
+        try:
+            restored, messages = restore_operation(args.restore)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"restored: {restored}")
+        for message in messages:
+            print(f"warning: {message}")
+        return 0
+    if args.show_config:
+        print(json.dumps(CONFIG, ensure_ascii=False, indent=2))
+        return 0
+    if args.set_config:
+        raw = sys.stdin.read().strip()
+        if not raw:
+            print("error: no JSON on stdin", file=sys.stderr)
+            return 2
+        try:
+            new_cfg = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"error: invalid JSON: {e}", file=sys.stderr)
+            return 2
+        try:
+            save_config(new_cfg)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"config written atomically to {CONFIG_PATH}")
+        return 0
+    if args.mode == "apps":
+        return cmd_apps()
+    if args.mode == "uninstall":
+        if not args.app_name:
+            parser.error("--app-name is required for uninstall (e.g. --app-name 'Foo.app')")
+        return cmd_uninstall(args.app_name, args.apply)
+    if args.mode == "dupes":
+        roots = [Path(r).expanduser() for r in args.roots] or None
+        return cmd_dupes(args.min_size if args.min_size else DUPES_MIN_SIZE_DEFAULT, roots)
+    if args.mode == "service":
+        if not args.service_action:
+            parser.error("--service-action install|uninstall|status is required for service mode")
+        return cmd_service(args.service_action)
+
+    if not args.mode:
+        parser.error("mode is required (scan / clean-safe / clean-aggressive) unless using --show-config / --set-config")
+
+    stale_days = args.stale_days if args.stale_days is not None else STALE_DAYS_DEFAULT
+    tools = {name: command_exists(name) for name in [*CORE_TOOL_CHECKS, *OPTIONAL_TOOL_CHECKS]}
+    before_df = get_free_space()
+    candidates = collect(args.mode, stale_days)
+    if args.candidate_id:
+        wanted_ids = set(args.candidate_id)
+        candidates = [c for c in candidates if candidate_id(c) in wanted_ids]
+    if args.category:
+        wanted_categories = set(args.category)
+        candidates = [c for c in candidates if c.category in wanted_categories]
+
+    actions: dict[Path, str] = {}
+    if args.apply:
+        wechat_live: bool | None = None
+        app_live: dict[str, bool] = {}
+        operation_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        operation_entries: list[dict[str, object]] = []
+        for candidate in candidates:
+            if should_delete(candidate, args.mode):
+                # WeChat data must never be moved while the app is live:
+                # live-container moves risk database corruption.
+                if candidate.category in WECHAT_CATEGORIES:
+                    if wechat_live is None:
+                        wechat_live = wechat_running()
+                    if wechat_live:
+                        actions[candidate.path] = "skipped: WeChat is running"
+                        continue
+                # An app-support safe path may be live state while its app runs
+                # (a recording in progress, a log being appended). Skip it and
+                # let a later run — after the app is quit — reclaim it.
+                if candidate.category == APP_SUPPORT_CACHE_CATEGORY:
+                    owner = app_support_owner(candidate.path)
+                    if owner and owner.require_quit:
+                        if owner.require_quit not in app_live:
+                            app_live[owner.require_quit] = process_running(owner.require_quit)
+                        if app_live[owner.require_quit]:
+                            actions[candidate.path] = f"skipped: {owner.name} is running"
+                            continue
+                ok, message, entry = move_to_quarantine(candidate, operation_id)
+                actions[candidate.path] = message if ok else f"failed: {message}"
+                if entry:
+                    operation_entries.append(entry)
+        if operation_entries:
+            operation_path = save_operation(operation_id, args.mode, operation_entries)
+            print(f"operation_id: {operation_id}")
+            print(f"operation_manifest: {operation_path}")
+            print(f"restore_command: python3 {Path(__file__).resolve()} --restore {operation_id}")
+        wechat_skipped = sum(1 for msg in actions.values() if str(msg).startswith("skipped: WeChat"))
+        if wechat_skipped:
+            print(f"warning: {wechat_skipped} WeChat candidates skipped — quit WeChat and re-run to clean them")
+        app_skips = sorted({
+            str(msg) for msg in actions.values()
+            if str(msg).startswith("skipped: ") and str(msg).endswith(" is running")
+            and not str(msg).startswith("skipped: WeChat")
+        })
+        for msg in app_skips:
+            count = sum(1 for m in actions.values() if str(m) == msg)
+            print(f"warning: {count} candidates skipped — {msg[len('skipped: '):]}; quit the app and re-run")
+
+    after_df = get_free_space()
+    # Filtered runs (--candidate-id / --category) are dashboard-selected
+    # operations against a possibly stale inventory. They must never overwrite
+    # the global state: with zero matches (the nightly job already cleaned what
+    # the user selected) a full overwrite would wipe the dashboard inventory,
+    # and with matches it would shrink it to just the filtered subset. The
+    # web panel refreshes the full inventory with its own scan after a clean.
+    if args.candidate_id or args.category:
+        if not candidates:
+            print("warning: no candidates matched the selected ids/categories — state.json left unchanged")
+        state = "unchanged (filtered run)"
+    else:
+        state = write_state(args.mode, args.apply, tools, candidates, actions, before_df, after_df, stale_days)
+
+    visible = candidates[: args.limit] if args.limit else candidates
+    potential = sum(c.size for c in candidates if c.size >= 0 and is_eligible(c))
+    selected = sum(c.size for c in candidates if c.size >= 0 and should_delete(c, args.mode))
+    manual_total = sum(c.size for c in candidates if c.size >= 0 and c.risk == "manual")
+    stale_deps_total = sum(c.size for c in candidates if c.size >= 0 and c.category == "stale-deps")
+    stale_models_total = sum(c.size for c in candidates if c.size >= 0 and c.category == "stale-model")
+    stale_project_names = sorted({
+        c.reason.split(" (")[0].replace("stale project ", "")
+        for c in candidates if c.category in {"stale-deps", "stale-model"}
+    })
+    print(f"mode: {args.mode}")
+    print(f"apply: {args.apply}")
+    print(f"potentially_cleanable: {fmt_size(potential)}")
+    print(f"selected_in_mode: {fmt_size(selected)}")
+    print(f"needs_review (manual): {fmt_size(manual_total)}")
+    print(f"stale_deps (aggressive): {fmt_size(stale_deps_total)}")
+    print(f"stale_models (manual): {fmt_size(stale_models_total)}")
+    wechat_total = sum(c.size for c in candidates if c.size >= 0 and c.category in WECHAT_CATEGORIES)
+    if wechat_total:
+        print(f"wechat (aggressive): {fmt_size(wechat_total)}")
+    if stale_project_names:
+        print(f"stale_projects: {', '.join(stale_project_names)}")
+    print(f"candidates: {len(candidates)}")
+    print(f"state_json: {state}")
+    print(f"dashboard_html: {DASHBOARD_PATH}")
+    missing_core = [name for name in CORE_TOOL_CHECKS if not tools.get(name)]
+    missing_optional = [name for name in OPTIONAL_TOOL_CHECKS if not tools.get(name)]
+    print("missing_core_tools: " + (", ".join(missing_core) if missing_core else "none"))
+    print("missing_optional_tools: " + (", ".join(missing_optional) if missing_optional else "none"))
+    for c in visible:
+        action = candidate_action(c, args.mode, actions)
+        print(f"{fmt_size(c.size):>8}  {c.risk:<10}  {c.category:<14}  {action:<13}  {c.path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -21,23 +21,38 @@
 
 ## 快速开始
 
-**步骤 0（推荐）· 一键下载并使用**：把下面这句直接复制给 AI 代理，它会自动完成「克隆仓库 → 安装到 skills 目录 → 跑只读扫描做安装验证」的完整链路：
+**步骤 0（推荐）· SkillDo 统一安装**：本机维护时以本仓库为唯一可编辑源，通过 SkillDo 构建并分发 Skill。把下面这句交给 AI 代理，它会先检查本地仓库与 SkillDo 安装状态，再按仓库里的流程构建、安装并做只读验证：
 
-> 请帮我把这个 skill 快速下载并安装使用：把仓库 https://github.com/yancongya/mac-dev-cleanup.git 克隆到 ~/.codex/skills/mac-dev-cleanup，然后运行 scan 做一次只读扫描作为安装验证，告诉我能清理多少空间、有哪些需要我确认的项目。如果缺少 Python 或权限不足，也请说明。
+> 请按 mac-dev-cleanup 仓库的 SkillDo 流程安装或更新它：先检查本地仓库、生成包、SkillDo 中心副本和各 agent 软链的状态；只从仓库源构建并同步，不要创建第二份独立 Skill 副本；完成后运行只读 scan 验证，并报告可清理项和权限问题。
 
 如需手动操作：
 
-1. **手动安装 Skill**（终端执行，把仓库放到代理的 skills 目录，下例以 Codex 为例）：
-
-   ```bash
-   git clone https://github.com/yancongya/mac-dev-cleanup.git ~/.codex/skills/mac-dev-cleanup
-   ```
-
-   若用 **SkillDo** 统一管理多个 Skill，推荐只保留一份物理目录 `~/.skillshub/mac-dev-cleanup`，其余工具的 skills 目录一律用软链指过去——多份真副本会各自漂移，导致不同代理读到不同版本的代码。
+1. **维护本机安装**：在此仓库根目录执行 [SkillDo 更新流程](#skilldo-更新流程)。不要把仓库直接克隆到 `~/.codex/skills/`，否则会绕过中心目录并形成重复副本。没有 SkillDo 的外部使用者可按代理自己的安装流程克隆仓库。
 
 2. **调用 Skill**（安装后，在 AI 代理对话里直接说，可整句复制粘贴）：
 
    > 用 mac-dev-cleanup 这个 skill 帮我扫描并清理开发缓存：先只做只读扫描，再列出可清理项让我确认后再执行。
+
+## SkillDo 更新流程
+
+本仓库根目录是唯一可编辑源；构建器把 Skill 专用文件投影到受 Git 跟踪的 `skills/mac-dev-cleanup/`。该目录是生成物，不要直接编辑。首次登记并刷新本机中心副本时，在仓库根目录运行：
+
+```bash
+python3 scripts/build_skilldo_package.py build
+skilldo track-local --skill mac-dev-cleanup --path skills/mac-dev-cleanup --yes
+skilldo update --skill mac-dev-cleanup --yes
+```
+
+后续修改根目录的 `SKILL.md`、运行脚本或支持文件后，重新构建并更新中心副本：
+
+```bash
+python3 scripts/build_skilldo_package.py build
+skilldo update --skill mac-dev-cleanup --yes
+```
+
+构建器只把 Skill、运行脚本、看板模板和 Agent 元数据放进 `skills/mac-dev-cleanup/`，不包含 Git 元数据、依赖、配置、扫描状态、历史或生成的看板数据。首次更新前应确认本机政策和历史仍位于 `~/.codex/logs/mac-dev-cleanup/`；更新后运行一次 `scan`，重建本机看板文件。
+
+`track-local` 保留仓库远端作为来源线索，但登记状态仍是本机来源。等生成目录提交并出现在 GitHub 后，再运行 `skilldo repair source --skill mac-dev-cleanup --url https://github.com/yancongya/mac-dev-cleanup.git --subpath skills/mac-dev-cleanup --apply`，将 SkillDo 元数据切换为可跨设备更新的 Git 来源。不要在远端路径尚未发布时强制登记 Git 来源。
 
 ## 能力
 
@@ -47,8 +62,8 @@
 - **配置化应用白名单**：把 `~/Library/Application Support/<App>` 下可安全回收的缓存（如录屏中断残档、Crashpad、日志）纳入扫描，用户数据（如截图历史）只报告不删；应用常驻时自动跳过，退出后重跑即回收
 - **Stale 项目识别**：以源码 mtime + 最后 git commit 判定（默认 90 天）
 - **可恢复清理**：真实清理「先进废纸篓」，写入操作清单，可一键还原——绝不使用裸 `rm`
-- **清理后自动回收**：`--apply` 完成后自动清空废纸篓（后台 osascript + 10 分钟轮询）并核验回收；`df` 未回补时按 SKILL.md 的对照实验判断，而不是重复删除
-- **容器只报告、不盲删**：Docker / OrbStack 的镜像与卷只做列表与人工确认（`docker container prune` 会连服务容器一起删）
+- **可恢复清理**：`--apply` 仅把候选项移入可恢复隔离区并写操作清单；不会自动清空废纸篓。清空是独立且不可逆的操作，必须由用户明确提出，并在控制台通过 `EMPTY TRASH` 与 API token 双重确认
+- **Docker 边界**：本 Skill 只读查看 Mac OrbStack 容量；NAS Docker 状态、日志和生命周期操作统一经 Agent Ops，本 Skill 不执行 Docker 清理或其他写操作
 - **项目内结构整理（Project hygiene）**：除磁盘级缓存外，还能整理单个项目——清空格目录、删 AI IDE 残留（`.agents`/`.claude`/`.opencode`/`.superpowers`/`.workflow`/`.DS_Store`/`*.bak`）、把散落的 `migrate_*`/`fix_*`/`test_*`/`init_*` 脚本归位到 `scripts/`/`tests/`、合并冗余文档。全程 Git 感知（`git mv`/`git rm`），不碰源码与数据库
 - **本地 Web 控制台**：六视图（概览 = 纯只读仪表盘 / 清理 = 唯一执行域含整模式与按勾选两种范式 + 重复文件 / 系统 = 应用卸载 + 启动项 + TM 快照 / 还原 = 操作与执行统一时间线 + 废纸篓 / 计划任务 / 设置含工具自检）；服务/FDA 权限降级由顶部全局横幅统一提示；端口解析顺序 `--port` → `MDC_PORT` → `config.json: dashboard_port`（默认 8766，避让常被占用的 8765）
 - **系统废纸篓管理**：`~/.Trash` 全量清单（隔离区单列、保持可恢复）；清空需逐字确认串 `EMPTY TRASH` + API token 双重门禁，默认保留隔离区
@@ -74,7 +89,7 @@ python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地
 
 ## 安全须知
 
-清理采用「Trash-first」策略：真实删除会先把文件移入 `~/.Trash/mac-dev-cleanup/<操作ID>/` 并写入操作清单，便于一键还原。完成后 Skill 会自动清空废纸篓释放空间（后台 osascript + 10 分钟轮询），并核验回收。
+清理采用「Trash-first」策略：`--apply` 会把文件移入 `~/.Trash/mac-dev-cleanup/<操作ID>/` 并写入操作清单，便于还原；它不会自动清空废纸篓。若用户之后明确要求永久清空，需通过控制台输入 `EMPTY TRASH` 并通过 API token 门禁。只有确认隔离区内容为零后，才可报告空间已经释放。
 
 若 `df` 未及时回血，先用**对照实验**区分「记账失灵」与「清理没生效」：往 `/tmp` 写一个 512M 文件看 `df` 是否变化，再删掉看是否回补——写降删不回补是记账问题（多见于有待装系统更新），写降删也回补则说明腾出的块被其它进程占用，两种都不该重复删。切勿因 `df` 未变就误判清理失败（验证用 `df -h ~`，而非 `df /`）。详见 SKILL.md 的「APFS snapshots」章节。
 
