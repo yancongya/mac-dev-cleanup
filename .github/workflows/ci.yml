@@ -1,0 +1,22 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Verify SkillDo bundle matches repository sources
+        run: python3 scripts/build_skilldo_package.py check
+      - name: Run cleanup and package tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
