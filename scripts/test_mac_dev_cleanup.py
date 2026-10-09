@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt  # noqa: F401  (kept for parity with production imports)
 import hashlib
+import http.client
 import importlib.util
 import io
 import json
@@ -124,6 +125,76 @@ class DashboardPortTests(unittest.TestCase):
             with self.subTest(port=bad):
                 with self.assertRaises(ValueError):
                     cleanup.validate_config({"dashboard_port": bad})
+
+
+class WebServerHttpIntegrationTests(unittest.TestCase):
+    """Exercise the real handler over loopback without running cleanup work."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = web_server.LoopbackServer(("127.0.0.1", 0), web_server.Handler)
+        import threading
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def request(self, method: str, path: str, *, headers: dict[str, str] | None = None,
+                body: bytes | None = None) -> tuple[int, http.client.HTTPMessage, bytes]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        self.addCleanup(connection.close)
+        connection.request(method, path, body=body, headers=headers or {})
+        response = connection.getresponse()
+        return response.status, response.headers, response.read()
+
+    @staticmethod
+    def config_payload() -> bytes:
+        return json.dumps({"stale_days": 31}).encode("utf-8")
+
+    def test_config_post_rejects_missing_and_wrong_tokens_before_route(self) -> None:
+        with patch.object(web_server.cleanup, "save_config") as save_config:
+            for token in (None, "wrong-token"):
+                headers = {"Content-Type": "application/json"}
+                if token is not None:
+                    headers["X-MDC-Token"] = token
+                status, _response_headers, body = self.request(
+                    "POST", "/api/config", headers=headers, body=self.config_payload())
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(body)["error"], "missing or invalid token")
+            save_config.assert_not_called()
+
+    def test_config_post_with_server_token_reaches_route(self) -> None:
+        normalized = cleanup.validate_config({"stale_days": 31})
+        with patch.object(web_server.cleanup, "save_config", return_value=Path("unused")) as save_config:
+            status, _response_headers, body = self.request(
+                "POST", "/api/config",
+                headers={"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN},
+                body=self.config_payload())
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True, "config": normalized})
+        save_config.assert_called_once_with(normalized)
+
+    def test_cross_origin_health_and_custom_header_preflight_are_not_enabled(self) -> None:
+        origin = "https://example.invalid"
+        status, headers, body = self.request("GET", "/api/health", headers={"Origin": origin})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["token"], web_server.API_TOKEN)
+        self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
+
+        status, headers, _body = self.request(
+            "OPTIONS", "/api/config",
+            headers={"Origin": origin, "Access-Control-Request-Method": "POST",
+                     "Access-Control-Request-Headers": "content-type,x-mdc-token"})
+        self.assertEqual(status, 501)
+        self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
+
+    def test_http_server_binds_only_to_loopback(self) -> None:
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+        self.assertGreater(self.server.server_port, 0)
 
 
 class ConfigLocationTests(unittest.TestCase):
