@@ -18,9 +18,9 @@ python3 scripts/check_dashboard.py             # 模板与生成物一致性
 node scripts/check_dashboard_dom.mjs dashboard.html   # DOM 结构
 ```
 
-- [ ] 单测 **89/89** 通过（基线 89，含 cron/prune/trash TCC/service uninstall 归属守卫回归）
-- [ ] DOM 检查 **105/105** 通过（基线 105，六视图 + 交互断言）
-- [ ] 模板一致性 `[OK]`（生成物与模板逐字节一致）
+- [x] 单测 **90/90** 通过（2026-10-10，含 cron/prune/trash TCC/service uninstall 归属守卫回归）
+- [x] DOM 检查 **105/105** 通过（2026-10-10，六视图 + 交互断言）
+- [x] 模板/SkillDo 包校验 `[OK]`（2026-10-10：仓库模板校验、Skill 包 build/check 通过；中心模板与运行时 dashboard SHA-256 一致）
 - [ ] GET 端点巡检全部 200：`health / state / config / apps / trash / launch / snapshots / dupes / schedule / operations / clean/history / app/icon`（icon 用 apps 列表首个应用名验证，PNG 魔数）
 - [ ] POST 门禁抽查：`empty-system` 错误 confirm → 400；`snapshot/delete` 传 `com.apple.os.update-*` 名 → 400；`schedule` 传 `clean-aggressive` → 400；`trash/clear` 错误 confirm → 400（CLEAR QUARANTINE 字面量守卫）
 - [ ] TCC 降级抽查：在**确实无 FDA 的隔离上下文**（临时撤销授权 / 独立无 FDA 用户）中 `/api/trash` 返回 `system.available:false`（非 500）、`/api/snapshots` 正常、scan 不中断。**注意**：agent/IDE 内置终端自身通常无 FDA，用它跑 `stat ~/.Trash` 会假阴性——这验证的是工具环境而非服务授权；权威验证须 `launchctl kickstart -k` 后在浏览器/真实 Terminal 查 `/api/trash` 的 `available` 字段
@@ -164,6 +164,13 @@ node scripts/check_dashboard_dom.mjs dashboard.html   # DOM 结构
 ---
 
 ## 验收记录
+
+### 2026-10-10 六视图只读走查与权限横幅修正
+
+- **发现**：真实本机服务中，`/api/trash` 返回 `system.available=false`，而 `/api/schedule` 返回 `crontab_available=true`；原横幅却同时声称定时任务不可用，与计划任务视图的“crontab 已连接”矛盾。
+- **修复**：横幅现根据实时状态分别列出不可用能力；当前只显示“系统废纸篓暂不可用”。修复已推送 `mac-dev-cleanup`，并通过 SkillDo 更新中心 Skill；5 个工具目标仍指向中心目录。
+- **验收**：单测 90/90、DOM 105/105、SkillDo 包 build/check 通过；中心 dashboard 模板与生成页 SHA-256 一致。launchd 服务更新后返回 HTTP 200；浅色、深色下六个视图均可打开。计划任务页仍显示 crontab 已连接，控件没有被禁用。此次只读走查没有执行扫描外的清理、保存、卸载、恢复或计划任务操作。
+- **遗留**：系统废纸篓仍缺完全磁盘访问权限；浏览器仍报告缺少 `favicon.ico` 的 404。完整 GET/POST 安全门禁及 18 项逐项 UI 验收没有在本次完成，仍需按本清单继续验证。
 
 ### 2026-09-30 信息架构重组（本会话执行）
 
