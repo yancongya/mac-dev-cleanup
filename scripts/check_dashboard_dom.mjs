@@ -6,7 +6,7 @@
  *   npm i jsdom                       # resolvable from the current directory
  *   MDC_JSDOM=/path/to/jsdom/lib/api.js  node scripts/check_dashboard_dom.mjs dashboard.html
  *
- * Verifies: zero runtime errors, the four-view sidebar shell, hash routing,
+ * Verifies: zero runtime errors, the six-view sidebar shell, hash routing,
  * candidate selection → cleanup command generation, all sections render, search
  * keeps focus across re-renders, the settings schema renders every field, and
  * reason strings are translated.

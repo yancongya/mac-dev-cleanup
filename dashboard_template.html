@@ -3039,16 +3039,21 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // One root cause (service not installed / interpreter lacks Full Disk Access)
   // used to be explained differently in 3+ panels; now the long how-to lives
   // here exactly once, panels only show their local disabled state.
+  function svcUnavailableFeatures(){
+    if(!state.apiOnline) return [];
+    var unavailable=[];
+    if(TRASH.system && TRASH.system.available===false) unavailable.push("系统废纸篓");
+    if(SCHED.data && SCHED.data.crontab_available===false) unavailable.push("定时任务");
+    return unavailable;
+  }
   function svcDegraded(){
-    if(!state.apiOnline) return false;
-    var trashBad = !!(TRASH.system && TRASH.system.available===false);
-    var cronBad = !!(SCHED.data && SCHED.data.crontab_available===false);
-    return trashBad || cronBad;
+    return svcUnavailableFeatures().length>0;
   }
   function updateSvcBanner(){
     var b=$("svc-banner"); if(!b) return;
-    if(!svcDegraded()){ b.hidden=true; b.innerHTML=""; return; }
-    b.innerHTML='<b>服务权限未就绪</b> —— 系统废纸篓 / iOS 备份 / 定时任务暂不可用，三步授权：'+
+    var unavailable=svcUnavailableFeatures();
+    if(!unavailable.length){ b.hidden=true; b.innerHTML=""; return; }
+    b.innerHTML='<b>服务权限未就绪</b> —— '+unavailable.map(esc).join(" / ")+'暂不可用，三步授权：'+
       '① 终端运行 <code>python3 scripts/mac_dev_cleanup.py service install</code> 安装常驻服务；'+
       '② Finder 按 <code>Cmd+Shift+G</code> 进入 <code>/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/</code>，把 <code>python3.9</code> 拖进 <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles">完全磁盘访问权限</a> 列表并开启（对话框里它是灰色的，只能拖拽；CLT 升级后需重拖）；'+
       '③ <code>launchctl kickstart -k gui/$UID/'+esc("com.yancongya.mac-dev-cleanup")+'</code> 重启服务';

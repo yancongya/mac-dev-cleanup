@@ -8,7 +8,7 @@
     },
     {
       "path": "dashboard_template.html",
-      "sha256": "a2ea877f3dcc4f367f3b3a0f944853ee9ea9815c5075ffd7e7f8c68151b1eefd"
+      "sha256": "3aa56dcf320e8d4cd4c7793534c0f3cf3a0541760d4e31ec730971f9ca5626ff"
     },
     {
       "path": "agents/openai.yaml",
