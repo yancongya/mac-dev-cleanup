@@ -80,6 +80,8 @@ skilldo update --skill mac-dev-cleanup --yes
 ```bash
 python3 <skill-dir>/scripts/mac_dev_cleanup.py scan               # 只读扫描
 python3 <skill-dir>/scripts/mac_dev_cleanup.py clean-safe         # 干跑（只报告）
+python3 <skill-dir>/scripts/mac_dev_cleanup.py scan --summary-json /tmp/mac-cleanup-summary.json # 导出无路径汇总
+python3 <skill-dir>/scripts/mac_dev_cleanup.py clean-safe --summary-json /tmp/mac-cleanup-summary.json # 干跑汇总
 python3 <skill-dir>/scripts/mac_dev_cleanup.py clean-safe --apply # 真清理（进废纸篓）
 python3 <skill-dir>/scripts/mac_dev_cleanup.py dupes              # 重复文件报告（只读）
 python3 <skill-dir>/scripts/mac_dev_cleanup.py --show-config      # 查看当前配置
@@ -87,6 +89,8 @@ python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地
 ```
 
 完整说明见 [SKILL.md](SKILL.md)、[CHANGELOG.md](CHANGELOG.md) 与[在线文档](https://yancongya.github.io/mac-dev-cleanup/)。
+
+`--summary-json` 仅用于 `scan` 或清理干跑，输出版本化、无候选路径/原因/ID/配置的 JSON 摘要；不能与 `--apply` 同用。
 
 ## 安全须知
 

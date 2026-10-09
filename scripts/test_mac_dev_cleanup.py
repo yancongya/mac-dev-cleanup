@@ -42,6 +42,64 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg["wechat_media_keep_months"], 3)
 
 
+class SummaryJsonTests(unittest.TestCase):
+    def test_summary_aggregates_without_candidate_details(self) -> None:
+        candidates = [
+            cleanup.Candidate(Path("/private/secret/project/.cache"), 100, "cache", "safe", "private reason"),
+            cleanup.Candidate(Path("/Users/secret/large"), 200, "large-dir", "manual", "another secret"),
+            cleanup.Candidate(Path("/tmp/aggressive"), 300, "deps", "aggressive", "reason"),
+        ]
+        summary = cleanup.build_summary(candidates, "clean-safe")
+        self.assertEqual(summary["schema"], "mac-dev-cleanup.summary.v1")
+        self.assertEqual(summary["mode"], "clean-safe")
+        self.assertIs(summary["apply"], False)
+        self.assertEqual(summary["candidateCount"], 3)
+        self.assertEqual(summary["riskCounts"], {"safe": 1, "aggressive": 1, "manual": 1})
+        self.assertEqual(summary["safeBytes"], 100)
+        self.assertEqual(summary["aggressiveBytes"], 300)
+        self.assertEqual(summary["manualBytes"], 200)
+        self.assertEqual(summary["selectedBytes"], 100)
+        encoded = json.dumps(summary)
+        for secret in ("/private/secret", "/Users/secret", "/tmp/aggressive", "private reason", "another secret"):
+            self.assertNotIn(secret, encoded)
+        self.assertNotIn("id", summary)
+        self.assertNotIn("config", summary)
+
+    def test_apply_rejects_summary_before_scan(self) -> None:
+        with patch.object(sys, "argv", ["mac_dev_cleanup.py", "scan", "--apply", "--summary-json", "/tmp/out.json"]), \
+                patch.object(cleanup, "collect", side_effect=AssertionError("must reject before scan")):
+            with self.assertRaises(SystemExit) as raised:
+                cleanup.main()
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_summary_mode_writes_and_prints_only_path_free_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            candidate = cleanup.Candidate(Path(temp) / "private-cache", 100, "cache", "safe", "private reason")
+            summary_path = Path(temp) / "summary.json"
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["mac_dev_cleanup.py", "clean-safe", "--summary-json", str(summary_path)]), \
+                    patch("sys.stdout", output), \
+                    patch.object(cleanup, "collect", return_value=[candidate]), \
+                    patch.object(cleanup, "get_free_space", return_value="test"), \
+                    patch.object(cleanup, "command_exists", return_value=True), \
+                    patch.object(cleanup, "write_state", return_value=Path("state.json")), \
+                    patch.object(cleanup, "move_to_quarantine", side_effect=AssertionError("dry-run must not move")):
+                self.assertEqual(cleanup.main(), 0)
+            stdout_summary = json.loads(output.getvalue())
+            file_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(stdout_summary, file_summary)
+            self.assertEqual(stdout_summary["schema"], "mac-dev-cleanup.summary.v1")
+            self.assertNotIn(str(candidate.path), output.getvalue())
+            self.assertNotIn(candidate.reason, output.getvalue())
+
+    def test_summary_rejects_candidate_filters_before_scan(self) -> None:
+        with patch.object(sys, "argv", ["mac_dev_cleanup.py", "scan", "--candidate-id", "secret", "--summary-json", "/tmp/out.json"]), \
+                patch.object(cleanup, "collect", side_effect=AssertionError("must reject before scan")):
+            with self.assertRaises(SystemExit) as raised:
+                cleanup.main()
+        self.assertEqual(raised.exception.code, 2)
+
+
 class DashboardPortTests(unittest.TestCase):
     """The dashboard port is policy, not a hardcoded constant.
 

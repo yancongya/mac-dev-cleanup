@@ -298,13 +298,17 @@ Run:
 
 ```bash
 python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan --summary-json /tmp/mac-cleanup-summary.json
 ```
 
 Safe dry run:
 
 ```bash
 python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe --summary-json /tmp/mac-cleanup-summary.json
 ```
+
+`--summary-json PATH` exports a versioned, path-free summary for `scan` or a cleanup dry-run. It contains aggregate counts and byte totals only; candidate paths, reasons, IDs, project names, and configuration are omitted. The flag is rejected with `--apply`.
 
 Safe cleanup (moves eligible items to the Skill quarantine inside Trash):
 

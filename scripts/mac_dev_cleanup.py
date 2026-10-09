@@ -2404,6 +2404,31 @@ def candidate_to_dict(candidate: Candidate, mode: str, actions: dict[Path, str])
     }
 
 
+def build_summary(candidates: list[Candidate], mode: str) -> dict[str, object]:
+    """Return a versioned, path-free summary of a scan or dry run."""
+    risk_counts = {risk: sum(1 for c in candidates if c.risk == risk)
+                   for risk in ("safe", "aggressive", "manual")}
+    totals = {
+        "safeBytes": sum(c.size for c in candidates if c.size >= 0 and is_eligible(c, "clean-safe")),
+        "aggressiveBytes": sum(c.size for c in candidates if c.size >= 0 and c.risk == "aggressive" and is_eligible(c)),
+        "manualBytes": sum(c.size for c in candidates if c.size >= 0 and c.risk == "manual"),
+        "selectedBytes": sum(c.size for c in candidates if c.size >= 0 and should_delete(c, mode)),
+    }
+    return {
+        "schema": "mac-dev-cleanup.summary.v1",
+        "timestamp": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "mode": mode,
+        "apply": False,
+        "candidateCount": len(candidates),
+        "riskCounts": risk_counts,
+        **totals,
+    }
+
+
+def write_summary(path: Path, summary: dict[str, object]) -> None:
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def write_state(
     mode: str,
     apply_flag: bool,
@@ -2670,6 +2695,7 @@ def main() -> int:
     parser.add_argument("--app-name", metavar="NAME.app",
                         help="App bundle name for the uninstall mode (exact match under /Applications or ~/Applications).")
     parser.add_argument("--apply", action="store_true", help="Actually delete candidates for the selected mode.")
+    parser.add_argument("--summary-json", metavar="PATH", help="Write a path-free JSON summary for scan/dry-run only.")
     parser.add_argument("--limit", type=int, default=0, help="Only print the largest N candidates in terminal output.")
     parser.add_argument("--candidate-id", action="append", default=[], help="Limit this run to a stable candidate ID; repeatable.")
     parser.add_argument("--category", action="append", default=[], help="Limit this run to a category; repeatable.")
@@ -2739,6 +2765,12 @@ def main() -> int:
 
     if not args.mode:
         parser.error("mode is required (scan / clean-safe / clean-aggressive) unless using --show-config / --set-config")
+    if args.summary_json and args.apply:
+        parser.error("--summary-json cannot be used with --apply")
+    if args.summary_json and args.mode not in {"scan", "clean-safe", "clean-aggressive"}:
+        parser.error("--summary-json is supported only for scan and cleanup dry-runs")
+    if args.summary_json and (args.candidate_id or args.category):
+        parser.error("--summary-json requires a complete scan; candidate/category filters are not supported")
 
     stale_days = args.stale_days if args.stale_days is not None else STALE_DAYS_DEFAULT
     tools = {name: command_exists(name) for name in [*CORE_TOOL_CHECKS, *OPTIONAL_TOOL_CHECKS]}
@@ -2812,6 +2844,12 @@ def main() -> int:
         state = "unchanged (filtered run)"
     else:
         state = write_state(args.mode, args.apply, tools, candidates, actions, before_df, after_df, stale_days)
+
+    if args.summary_json:
+        summary = build_summary(candidates, args.mode)
+        write_summary(Path(args.summary_json).expanduser(), summary)
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 0
 
     visible = candidates[: args.limit] if args.limit else candidates
     potential = sum(c.size for c in candidates if c.size >= 0 and is_eligible(c))
