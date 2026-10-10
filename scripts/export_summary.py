@@ -34,6 +34,7 @@ BYTE_FIELDS = {
     "selectedBytes": "selected_bytes",
 }
 MAX_STATE_BYTES = 32 * 1024 * 1024
+MAX_SUMMARY_INTEGER = (1 << 63) - 1
 MAX_FUTURE_SKEW = dt.timedelta(minutes=5)
 INGEST_PATH = "/v1/mac/summary"
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -57,7 +58,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _non_negative_int(value: Any, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if (not isinstance(value, int) or isinstance(value, bool) or value < 0
+            or value > MAX_SUMMARY_INTEGER):
         raise SummaryError(f"invalid {field}")
     return value
 
@@ -104,7 +106,8 @@ def build_export_summary(state: Any, *, now: dt.datetime | None = None) -> dict[
         if not isinstance(risk, str) or risk not in risk_counts:
             raise SummaryError("invalid candidate risk")
         size = candidate.get("size")
-        if not isinstance(size, int) or isinstance(size, bool):
+        if (not isinstance(size, int) or isinstance(size, bool)
+                or size > MAX_SUMMARY_INTEGER):
             raise SummaryError("invalid candidate size")
         risk_counts[risk] += 1
         # The cleanup engine uses negative sizes (currently -1) for candidates
@@ -125,6 +128,8 @@ def build_export_summary(state: Any, *, now: dt.datetime | None = None) -> dict[
         risk_bytes["safe"], risk_bytes["aggressive"], risk_bytes["manual"]
     ):
         raise SummaryError("risk byte totals do not match saved candidates")
+    if safe + aggressive > MAX_SUMMARY_INTEGER:
+        raise SummaryError("deletable bytes exceed the Agent Ops summary limit")
     deletable = _non_negative_int(state.get("deletable_bytes"), "deletable_bytes")
     if deletable != safe + aggressive:
         raise SummaryError("deletable bytes do not match risk totals")

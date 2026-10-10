@@ -84,6 +84,10 @@ class SavedSummaryExportTests(unittest.TestCase):
             ("unknown risk", lambda s: s["candidates"][0].update(risk="unknown"), "candidate risk"),
             ("bool bytes", lambda s: s.update(safe_bytes=True), "safeBytes"),
             ("negative bytes", lambda s: s.update(manual_bytes=-1), "manualBytes"),
+            ("byte total exceeds Agent Ops integer limit",
+             lambda s: s.update(safe_bytes=export_summary.MAX_SUMMARY_INTEGER + 1), "safeBytes"),
+            ("candidate size exceeds Agent Ops integer limit",
+             lambda s: s["candidates"][0].update(size=export_summary.MAX_SUMMARY_INTEGER + 1), "candidate size"),
             ("missing candidate size", lambda s: s["candidates"][0].pop("size"), "candidate size"),
             ("risk byte mismatch", lambda s: s.update(aggressive_bytes=301, deletable_bytes=401, selected_bytes=100), "risk byte totals"),
             ("deletable mismatch", lambda s: s.update(deletable_bytes=1), "risk totals"),
@@ -95,6 +99,16 @@ class SavedSummaryExportTests(unittest.TestCase):
                 mutate(state)
                 with self.assertRaisesRegex(export_summary.SummaryError, error):
                     export_summary.build_export_summary(state)
+
+    def test_export_rejects_safe_and_aggressive_total_overflow(self) -> None:
+        state = valid_state()
+        limit = export_summary.MAX_SUMMARY_INTEGER
+        state["candidates"][0]["size"] = limit
+        state["candidates"][1]["size"] = 1
+        state.update(safe_bytes=limit, aggressive_bytes=1, deletable_bytes=limit + 1,
+                     selected_bytes=limit)
+        with self.assertRaisesRegex(export_summary.SummaryError, "Agent Ops summary limit"):
+            export_summary.build_export_summary(state)
 
     def test_export_rejects_far_future_timestamp(self) -> None:
         state = valid_state()

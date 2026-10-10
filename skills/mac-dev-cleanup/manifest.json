@@ -20,7 +20,7 @@
     },
     {
       "path": "scripts/export_summary.py",
-      "sha256": "1cc58d77ed9706aba10a988b446529f1815cbf39b2e286865a464fc0776acb81"
+      "sha256": "14751c061f966f6f0876f3d550cea3a40f04626300d854d954c2d644f9f076fb"
     },
     {
       "path": "scripts/web_server.py",
