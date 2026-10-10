@@ -584,6 +584,10 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
 .sys-item .si-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace;font-size:11.5px;color:var(--muted)}
 .sys-item .si-size{font-variant-numeric:tabular-nums;font-weight:600;flex:0 0 auto}
 .sys-item .si-time{color:var(--subtle);font-size:11px;flex:0 0 auto;font-family:ui-monospace,monospace}
+.service-state{display:flex;align-items:center;gap:5px;flex-wrap:wrap;max-width:240px}
+.service-actions{display:flex;gap:5px;flex:0 0 auto}
+.service-actions .btn{height:25px;padding:0 8px;font-size:10px;white-space:nowrap}
+@media(max-width:760px){.sys-item{align-items:flex-start;flex-wrap:wrap}.service-state{max-width:100%}.service-actions{margin-left:auto}}
 /* strong-confirm modal (empty system trash) */
 .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:90;display:flex;align-items:center;justify-content:center;padding:16px}
 .modal-mask[hidden]{display:none}
@@ -2730,7 +2734,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '<div class="app-list-shell"><div id="apps-list"><div class="empty">加载中…</div></div></div>'+
         '<pre class="cmd-out" id="apps-out" hidden></pre>'+
         '<div class="apps-after" id="apps-after" hidden><button type="button" class="btn" id="apps-goto-history">↺ 查看操作历史并还原</button><span class="c-slate" style="font-size:11px">已卸载的整包（含残留配置）保存在废纸篓隔离区，可随时一键还原</span></div>'+
-        panel("launch","启动项",'<span id="launch-count"></span>第三方 LaunchAgents/Daemons · 只读', renderLaunchInner(), true) +
+        panel("launch","启动项与服务",'<span id="launch-count"></span>LaunchAgent 与已登记服务', renderLaunchInner(), true) +
         panel("snapshots","TM 快照","本地快照 · 删除需强确认", renderSnapshotsInner(), true) +
       '</div>'+
       '<div class="view" id="view-history" style="display:none">'+
@@ -3016,7 +3020,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // ---- reports view (启动项 / TM 快照 / 重复文件) ----
   // Read-only reports; the only mutating actions are snapshot delete (strong
   // confirm) and dupes rebuild. Mirrors the trash panel's loadXxx/renderXxx split.
-  var REPORTS = { launch:null, snapshots:null, dupes:null, dupesTimer:null };
+  var REPORTS = { services:null, snapshots:null, dupes:null, dupesTimer:null };
   var PENDING_SNAPSHOT = null;
   var SCOPE_ZH = { "user":"用户", "local-agents":"本地代理", "local-daemons":"本地守护" };
 
@@ -3166,9 +3170,11 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     loadDupes();
   }
   function loadLaunch(){
-    fetch("api/launch",{cache:"no-store"}).then(function(r){ return r.json(); })
-      .then(function(j){ if(j.ok){ REPORTS.launch=j.items||[]; renderLaunch(); } })
-      .catch(function(){});
+    fetch("api/services",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(j){
+        if(j&&j.ok){ REPORTS.services=j.services||[]; renderLaunch(); }
+        else { var el=$("launch-list"); if(el) el.innerHTML='<div class="empty">服务清单暂不可用：'+esc((j&&j.error)||"读取失败")+'</div>'; }
+      }).catch(function(){ var el=$("launch-list"); if(el) el.innerHTML='<div class="empty">服务清单暂不可用，请确认本地服务正在运行</div>'; });
   }
   function loadSnapshots(){
     fetch("api/snapshots",{cache:"no-store"}).then(function(r){ return r.json(); })
@@ -3218,7 +3224,7 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   function renderLaunchInner(){
     return '<div id="launch-list"><div class="empty">加载中…</div></div>'+
-      '<p class="ov-sub" style="padding:0 16px 12px">仅报告；启用/卸载请在 launchctl 或应用内操作。</p>';
+      '<p class="ov-sub" style="padding:0 16px 12px">此列表展示 LaunchAgent/LaunchDaemon plist；macOS 应用登录项暂未纳入，可在系统设置查看。停止只影响当前运行；关闭自启只影响下次登录；两者都不会卸载服务。卸载应用仍在上方“应用卸载”区域单独处理。仅登记的当前用户服务可操作；系统代理、守护进程及其他登录项只读。</p>';
   }
   function renderLaunch(){
     var el=$("launch-list"); if(!el) return;
@@ -3228,13 +3234,13 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       if(badge) badge.textContent="";
       return;
     }
-    var items=REPORTS.launch||[];
+    var items=REPORTS.services||[];
     if(badge) badge.textContent = items.length?("共 "+items.length+" 项 · "):"";
     if(!items.length){
-      el.innerHTML='<div class="empty">未发现第三方启动项（com.apple.* 已由后端过滤）</div>';
+      el.innerHTML='<div class="empty">未发现本机启动项或已登记服务</div>';
       return;
     }
-    var scopes=["user","local-agents","local-daemons"];
+    var scopes=["user","local-agents","local-daemons","app-login"];
     var html="";
     scopes.forEach(function(sc){
       var list=items.filter(function(it){ return (it.scope||"user")===sc; });
@@ -3243,17 +3249,48 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         '<span class="note">'+list.length+' 项</span></div>';
       html+='<div class="sys-list">'+list.map(function(it){
         var tags='';
+        var managed=sc==="user" && it.registered===true;
+        var unregistered=sc==="user" && it.registered!==true;
         if(it.run_at_load) tags+='<span class="tag tag-scanonly">RunAtLoad</span>';
         if(it.keep_alive) tags+='<span class="tag tag-would">KeepAlive</span>';
-        if(it.disabled) tags+='<span class="tag tag-manual">Disabled</span>';
+        if(it.loaded) tags+='<span class="tag tag-scanonly">已加载</span>';
+        if(it.running) tags+='<span class="tag tag-safe">运行中</span>';
+        if(it.enabled===true) tags+='<span class="tag tag-safe">登录时启动</span>';
+        else if(it.enabled===false) tags+='<span class="tag tag-manual">未设为自启</span>';
+        else tags+='<span class="tag tag-review">自启状态未知</span>';
+        if(it.reason) tags+='<span class="note" title="'+esc(it.reason)+'">'+esc(it.reason)+'</span>';
+        var controls='';
+        if(managed){
+          controls='<div class="service-actions"><button type="button" class="btn service-action" data-label="'+esc(it.label||"")+'" data-action="'+(it.running?'stop':'start')+'">'+(it.running?'停止':'启动')+'</button><button type="button" class="btn service-action" data-label="'+esc(it.label||"")+'" data-action="'+(it.enabled?'disable':'enable')+'">'+(it.enabled?'关闭自启':'设为登录启动')+'</button></div>';
+        } else if(unregistered){
+          controls='<div class="service-actions"><button type="button" class="btn service-register" data-label="'+esc(it.label||"")+'">登记为可管理服务</button></div>';
+        }
         return '<div class="sys-item">'+
           '<span class="si-name" title="'+esc(it.label||"")+'">'+esc(it.label||"")+'</span>'+
-          '<span class="si-time" style="max-width:45%" title="'+esc(it.program||"")+'">'+esc(truncatePath(it.program||""))+'</span>'+
-          tags+
+          '<span class="si-time" style="max-width:38%" title="'+esc(it.program||it.path||"")+'">'+esc(truncatePath(it.program||it.path||""))+'</span>'+
+          '<span class="service-state">'+tags+'</span>'+controls+
         '</div>';
       }).join("")+'</div>';
     });
     el.innerHTML=html;
+    bindServiceActions();
+  }
+  function bindServiceActions(){
+    var list=$("launch-list"); if(!list || list.dataset.bound) return;
+    list.dataset.bound="1";
+    list.addEventListener("click",function(e){
+      var register=e.target.closest(".service-register"), actionBtn=e.target.closest(".service-action");
+      if(!register&&!actionBtn) return;
+      var label=(register||actionBtn).getAttribute("data-label")||"";
+      var action=register?"register":actionBtn.getAttribute("data-action");
+      var prompt={register:"登记“"+label+"”为可管理服务？登记不会启动服务或更改自启状态。",start:"启动“"+label+"”？",stop:"停止“"+label+"”？停止不会卸载服务。",enable:"允许“"+label+"”在登录时启动？",disable:"关闭“"+label+"”的登录自启？这不会停止当前运行的服务。"}[action];
+      if(!window.confirm(prompt||"确认操作？")) return;
+      var btn=register||actionBtn; btn.disabled=true;
+      fetch(register?"api/services/register":"api/services/action",{method:"POST",headers:postHeaders(),body:JSON.stringify(register?{label:label}:{label:label,action:action})})
+        .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+        .then(function(res){if(res.ok&&res.j&&res.j.ok){toast(register?"服务已登记":"服务操作已完成","ok");loadLaunch();}else{btn.disabled=false;toast("操作失败："+((res.j&&res.j.error)||"未知错误"),"err");}})
+        .catch(function(){btn.disabled=false;toast("操作失败：网络错误","err");});
+    });
   }
 
   function renderSnapshotsInner(){

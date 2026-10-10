@@ -192,6 +192,77 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 501)
         self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
 
+    def test_services_api_keeps_system_scopes_read_only(self) -> None:
+        items = [
+            {"scope": "user", "path": "/user/LaunchAgents/example.plist", "label": "com.example.user"},
+            {"scope": "local-agents", "path": "/Library/LaunchAgents/vendor.plist", "label": "com.vendor.agent",
+             "program": "/Library/vendor/agent", "run_at_load": True, "keep_alive": False},
+            {"scope": "local-daemons", "path": "/Library/LaunchDaemons/vendord.plist", "label": "com.vendor.daemon",
+             "program": "/Library/vendor/daemon", "run_at_load": False, "keep_alive": True},
+        ]
+        user_service = {"label": "com.example.user", "scope": "user", "registered": True,
+                        "loaded": True, "running": True, "enabled": True}
+        with patch.object(web_server.cleanup, "launch_items", return_value=items), \
+                patch.object(web_server.local_services, "list_services",
+                             return_value={"ok": True, "services": [user_service]}) as list_services:
+            status, _headers, body = self.request("GET", "/api/services")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(list_services.call_args.args[0], items)
+        self.assertEqual(len(payload["services"]), 3)
+        for item in payload["services"][1:]:
+            self.assertFalse(item["registered"])
+            self.assertIsNone(item["loaded"])
+            self.assertIsNone(item["running"])
+            self.assertIsNone(item["enabled"])
+            self.assertTrue(any(word in item["reason"] for word in ("只读", "仅显示")))
+
+    def test_service_control_endpoints_reject_missing_token_before_dispatch(self) -> None:
+        with patch.object(web_server.local_services, "register_service") as register, \
+                patch.object(web_server.local_services, "service_action") as action:
+            for path, body in (
+                ("/api/services/register", {"label": "com.example.user"}),
+                ("/api/services/action", {"label": "com.example.user", "action": "stop"}),
+            ):
+                status, _headers, response = self.request(
+                    "POST", path, headers={"Content-Type": "application/json"},
+                    body=json.dumps(body).encode("utf-8"))
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(response)["error"], "missing or invalid token")
+            register.assert_not_called()
+            action.assert_not_called()
+
+    def test_service_control_endpoints_dispatch_only_strict_registered_commands(self) -> None:
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server.local_services, "register_service",
+                          return_value={"ok": True, "service": {"label": "com.example.user"}}) as register, \
+                patch.object(web_server.local_services, "service_action",
+                             return_value={"ok": True, "action": "stop"}) as action:
+            status, _headers, body = self.request(
+                "POST", "/api/services/register", headers=headers,
+                body=json.dumps({"label": "com.example.user"}).encode("utf-8"))
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)["ok"])
+            register.assert_called_once_with("com.example.user")
+
+            status, _headers, body = self.request(
+                "POST", "/api/services/action", headers=headers,
+                body=json.dumps({"label": "com.example.user", "action": "stop"}).encode("utf-8"))
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)["ok"])
+            action.assert_called_once_with("com.example.user", "stop")
+
+            for path, body in (
+                ("/api/services/register", {"label": "com.example.user", "path": "/tmp/arbitrary.plist"}),
+                ("/api/services/action", {"label": "com.example.user", "action": "restart", "command": "rm -rf /"}),
+            ):
+                status, _headers, response = self.request(
+                    "POST", path, headers=headers, body=json.dumps(body).encode("utf-8"))
+                self.assertEqual(status, 400)
+                self.assertFalse(json.loads(response)["ok"])
+            register.assert_called_once()
+            action.assert_called_once()
+
     def test_http_server_binds_only_to_loopback(self) -> None:
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         self.assertGreater(self.server.server_port, 0)

@@ -173,6 +173,12 @@ Cleaning `aggressive` is not automatically worth it: **updater/runtime caches ar
 
 - Uninstalling an app used to leave it in the dashboard listing forever (and its icon-cache PNG on disk): a present-but-stale `apps.json` short-circuited the rebuild path, and the `force` flag from the front end had no backend effect. Now `prune_stale_app_records()` (a) drops the uninstalled app's record and its md5-keyed icon-cache PNG right after a successful `--apply` uninstall, (b) runs on every `GET /api/apps` so externally deleted bundles self-heal, and (c) `prune_orphan_icons()` sweeps icon-cache PNGs whose bundle left apps.json after every rebuild.
 
+## Explicitly managed user LaunchAgents (2026-10-10)
+
+- The System view lists third-party LaunchAgents and LaunchDaemons. System-scope entries remain read-only. A user LaunchAgent can be managed only after its exact plist Label is registered in the local allowlist at `~/.codex/logs/mac-dev-cleanup/managed-services.json` (mode 0600). Registration records the canonical plist path and does not start the service or change login behavior.
+- Dashboard controls are separate: start/stop affects the current GUI session; enable/disable affects future login behavior and disabling does not stop a running service. Every change requires confirmation and the local API token. The backend constructs fixed `launchctl` argv and revalidates the plist/Label on every operation; callers cannot supply a path or shell command.
+- macOS application Login Items are not yet enumerated or controlled by this panel. Use System Settings for those. App uninstall remains a separate feature. Tests use mocked launchctl runners; they must never change the host service state.
+
 ## LaunchAgent service + one-click restore (2026-09-28)
 
 - **`service --service-action install|uninstall|status`**: writes `~/Library/LaunchAgents/com.yancongya.mac-dev-cleanup.plist` (RunAtLoad + KeepAlive, system `/usr/bin/python3`, logs under `LOG_DIR/service/`). `launchctl bootstrap` **from IDE/agent host contexts is refused by macOS with "Input/output error" (5)** — even for minimal valid plists; only a real Terminal login shell can load it. The installer therefore writes the plist, verifies the load, and prints the exact Terminal command when refused. `~/.Trash`, `MobileSync`, Safari caches and the dashboard schedule tab all need this persistent, FDA-granted context.

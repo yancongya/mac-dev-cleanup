@@ -101,6 +101,7 @@ def _load_exec_history() -> list[dict]:
 
 sys.path.insert(0, str(SCRIPT.parent))
 import mac_dev_cleanup as cleanup  # noqa: E402
+import local_services as local_services  # noqa: E402
 
 # The CLI module owns the policy path; never re-derive it here. It resolves to
 # LOG_DIR/config.json (outside the Skill directory), so a `skilldo update` that
@@ -373,6 +374,26 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/launch":
             self.send_json(200, {"ok": True, "items": cleanup.launch_items()})
             return
+        if path == "/api/services":
+            items = cleanup.launch_items()
+            result = local_services.list_services(items)
+            # System-wide launch agents and daemons stay visible as read-only
+            # discoveries. Never run system-domain launchctl queries/actions.
+            result["services"].extend({
+                "label": item.get("label"),
+                "program": item.get("program", ""),
+                "scope": item.get("scope"),
+                "path": item.get("path"),
+                "registered": False,
+                "loaded": None,
+                "running": None,
+                "enabled": None,
+                "run_at_load": item.get("run_at_load") is True,
+                "keep_alive": bool(item.get("keep_alive")),
+                "reason": "系统范围启动项仅显示；不操作 system 域",
+            } for item in items if item.get("scope") != "user")
+            self.send_json(200, result)
+            return
         if path == "/api/snapshots":
             self.send_json(200, cleanup.tmutil_snapshots())
             return
@@ -581,6 +602,28 @@ class Handler(SimpleHTTPRequestHandler):
             payload = self.read_body()
         except ValueError as exc:
             self.send_json(400, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/services/register":
+            if not isinstance(payload, dict) or set(payload) != {"label"}:
+                self.send_json(400, {"ok": False, "error": "body must contain only label"})
+                return
+            try:
+                result = local_services.register_service(payload["label"])
+            except (ValueError, OSError) as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+                return
+            self.send_json(200, result)
+            return
+        if path == "/api/services/action":
+            if not isinstance(payload, dict) or set(payload) != {"label", "action"}:
+                self.send_json(400, {"ok": False, "error": "body must contain only label and action"})
+                return
+            try:
+                result = local_services.service_action(payload["label"], payload["action"])
+            except (ValueError, OSError) as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+                return
+            self.send_json(200, result)
             return
         if path == "/api/config":
             try:

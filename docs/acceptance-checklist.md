@@ -63,10 +63,14 @@ node scripts/check_dashboard_dom.mjs dashboard.html   # DOM 结构
 - [ ] 卸载失败（应用运行中/受保护）有明确错误 toast
 - [ ] 通过 Finder 等外部途径删除的应用，重进应用视图后**自动消失**（GET 自愈），图标同步清扫
 
-### 3b. 启动项（只读）
+### 3b. 启动与服务
 
 - [ ] scope 分组（用户/本地代理/本地守护中文）、Label/Program/RunAtLoad/KeepAlive 徽标、com.apple.* 已过滤
-- [ ] 只读声明（「启用/卸载请在 launchctl 或应用内操作」），面板内无操作按钮
+- [ ] 未登记的用户 LaunchAgent 只有“登记”按钮；登记前后不调用 launchctl 改状态
+- [ ] 登记后分别提供启动/停止与登录自启开关；停止不会卸载，关闭自启不会停止当前进程
+- [ ] 每项变更前确认；服务注册表位于 `~/.codex/logs/mac-dev-cleanup/managed-services.json`，权限为 0600
+- [ ] 仅用户 LaunchAgents 可登记；系统 LaunchAgents/Daemons 不提供操作按钮
+- [ ] macOS 应用登录项尚未纳入本面板，应用卸载仍独立
 
 ### 3c. TM 快照
 

@@ -75,6 +75,42 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 await new Promise((r) => setTimeout(r, 300));
 
+// Exercise the online services panel in an isolated DOM so the primary suite
+// continues to validate the dashboard's offline behavior.
+const serviceRequests = [];
+const serviceFixture = [
+  { label: "demo.unregistered", program: "/Users/demo/demo", scope: "user", registered: false, running: false, enabled: false },
+  { label: "demo.managed", program: "/Users/demo/managed", scope: "user", registered: true, running: true, enabled: true, loaded: true },
+  { label: "demo.unknown", program: "/Users/demo/unknown", scope: "user", registered: true, running: false, enabled: null },
+  { label: "demo.system", program: "/Library/LaunchDaemons/demo", scope: "local-daemons", registered: false, running: true, enabled: true },
+  { label: "demo.loginapp", program: "/Applications/Demo.app", scope: "app-login", registered: false, running: false, enabled: true },
+];
+const serviceDom = new JSDOM(renderHtml, {
+  runScripts: "dangerously", pretendToBeVisual: true, virtualConsole: vc,
+  url: "http://127.0.0.1:8766/dashboard.html",
+  beforeParse(serviceWindow) {
+    serviceWindow.confirm = (message) => { serviceWindow.__confirmPrompt = message; return false; };
+    serviceWindow.fetch = (url, options = {}) => {
+      serviceRequests.push({ url: String(url), options });
+      const path = String(url).replace(/^\//, "");
+      const bodies = {
+        "api/health": { ok: true, token: "dom-test-token" },
+        "api/services": { ok: true, services: serviceFixture },
+        "api/apps": { ok: true, apps: [{ name: "Demo.app", path: "/Applications/Demo.app", total_size: 1, running: false, related: [] }] },
+        "api/clean/history": { ok: true, runs: [] }, "api/snapshots": { ok: true, snapshots: [] },
+        "api/dupes": { ok: true, report: { generated_at: 0, roots: [], groups: [] } },
+        "api/schedule": { ok: true, jobs: [] }, "api/clean/status": { ok: true, running: false, lines: [] },
+        "api/operations": { ok: true, operations: [] }, "api/trash": { ok: true, items: [] },
+      };
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(bodies[path] || { ok: true }) });
+    };
+  },
+});
+await new Promise((r) => setTimeout(r, 350));
+const serviceDoc = serviceDom.window.document;
+const service$ = (s) => serviceDoc.querySelector(s);
+const serviceText = (s) => service$(s)?.textContent.trim() || "";
+
 const checks = [];
 const ok = (name, cond, extra = "") =>
   checks.push({ name, pass: !!cond, extra: cond ? "" : extra });
@@ -121,7 +157,7 @@ ok("应用列表容器存在", !!$("#apps-list"));
 ok("应用重扫按钮存在", !!$("#apps-rescan"));
 ok("应用统计条存在", !!$("#apps-stats"));
 ok("应用排序控件存在", !!$("#apps-sort"));
-ok("启动项面板已并入系统视图", !!$("#view-apps #panel-launch"));
+ok("LaunchAgent 启动项与服务面板已并入系统视图", !!$("#view-apps #panel-launch") && text("#panel-launch h2").includes("启动项与服务"));
 ok("TM 快照面板已并入系统视图", !!$("#view-apps #panel-snapshots"));
 
 // --- history view: trash panel (quarantine + system trash sub-sections) ---
@@ -138,9 +174,19 @@ ok("清空系统废纸篓标注不可恢复", ($("#sys-trash-confirm")?.textCont
 ok("快照删除标注不可恢复", ($("#snapshot-confirm")?.textContent || "").includes("不可恢复"));
 
 // --- reports panels live in 系统(apps) view now; dupes lives in clean view ---
-ok("启动项面板存在", !!$("#panel-launch") && !!$("#pbody-launch"));
-ok("启动项面板含只读说明", ($("#pbody-launch")?.textContent || "").includes("仅报告"));
-ok("启动项面板无删除/禁用按钮", !$("#pbody-launch").querySelector("button"));
+ok("启动项与服务面板存在", !!$("#panel-launch") && !!$("#pbody-launch"));
+ok("页面说明 LaunchAgent 范围与系统设置入口", /LaunchAgent\/LaunchDaemon plist/.test(text("#pbody-launch")) && /macOS 应用登录项暂未纳入/.test(text("#pbody-launch")) && /系统设置查看/.test(text("#pbody-launch")));
+ok("页面区分停止、自启与卸载", /停止只影响当前运行/.test(text("#pbody-launch")) && /关闭自启只影响下次登录/.test(text("#pbody-launch")) && /不会卸载服务/.test(text("#pbody-launch")));
+ok("服务清单渲染", serviceText("#launch-list").includes("demo.managed") && serviceText("#launch-list").includes("demo.system"));
+ok("未登记用户项仅提供登记", service$("#launch-list [data-label=\"demo.unregistered\"]")?.classList.contains("service-register") && !service$("#launch-list [data-label=\"demo.unregistered\"] + .service-action"));
+ok("已登记服务有独立启停和自启控制", service$("#launch-list [data-label=\"demo.managed\"][data-action=\"stop\"]") && service$("#launch-list [data-label=\"demo.managed\"][data-action=\"disable\"]"));
+ok("未知自启状态明确标识", service$("#launch-list [data-label=\"demo.unknown\"]")?.closest(".sys-item").textContent.includes("自启状态未知") && service$("#launch-list [data-label=\"demo.unknown\"][data-action=\"enable\"]"));
+ok("系统项与预留应用登录项只读", ["demo.system", "demo.loginapp"].every((label) => [...serviceDoc.querySelectorAll("#launch-list .sys-item")].find((row) => row.textContent.includes(label))?.querySelectorAll("button").length === 0));
+const beforeCanceledAction = serviceRequests.length;
+const mutatingButtons = [...serviceDoc.querySelectorAll("#launch-list .service-register, #launch-list .service-action")];
+mutatingButtons.forEach((button) => button.dispatchEvent(new serviceDom.window.MouseEvent("click", { bubbles: true })));
+ok("所有服务变更按钮先二次确认", mutatingButtons.length === 5 && serviceDom.window.__confirmPrompt.includes("登录时启动") && serviceRequests.length === beforeCanceledAction && mutatingButtons.every((button) => !button.disabled));
+ok("应用卸载仍是独立功能", !!service$("#apps-list .app-un-btn") && serviceText("#view-apps").includes("卸载 = 应用包"));
 ok("快照面板存在", !!$("#panel-snapshots") && !!$("#pbody-snapshots"));
 ok("快照强确认层默认隐藏", !!$("#snapshot-confirm") && $("#snapshot-confirm").hidden === true);
 ok("快照面板含 df 不实时说明", ($("#pbody-snapshots")?.textContent || "").includes("df 可能不实时反映"));
