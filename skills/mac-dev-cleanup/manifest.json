@@ -32,7 +32,7 @@
     },
     {
       "path": "scripts/local_services_cli.py",
-      "sha256": "31e5cfc1af8646dc5eff21ed52556e202a895a9379e0c82f8a9407e27190530f"
+      "sha256": "1130fb960f34d6bc79c22902cccf804a0d8e9815c8e6182a12daa216d275dfc7"
     },
     {
       "path": "scripts/check_skill_routing.py",

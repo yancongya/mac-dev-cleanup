@@ -47,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def run(argv: Sequence[str] | None = None, *, manager: Any | None = None) -> int:
     args = _parser().parse_args(argv)
-    services = manager or local_services.LocalServices()
+    services = manager if manager is not None else local_services.LocalServices()
     try:
         if args.command == "list":
             result = services.list_services()
