@@ -326,10 +326,10 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path == "/dashboard.html" and not (ROOT / "dashboard.html").is_file():
-            # SkillDo updates intentionally omit machine-specific generated files.
-            # Serve the tracked shell and let it fetch the existing state through
-            # /api/state, so an update does not require running a fresh scan.
+        if path == "/dashboard.html":
+            # Always serve the bundle's data-free template. Machine-specific
+            # file:// artifacts live under LOG_DIR and are never served as files;
+            # this page obtains current state and config through the local API.
             template = ROOT / "dashboard_template.html"
             try:
                 body = template.read_bytes()
@@ -340,6 +340,24 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # The bundle template keeps sibling script tags so the private copy can
+        # load real snapshots under file://. Over HTTP, return explicit empty
+        # globals instead of 404s; detectApi() then hydrates through /api/state
+        # and /api/config without exposing the private generated JS files.
+        empty_dashboard_scripts = {
+            "/dashboard_data.js": b"window.__DASHBOARD_DATA__ = null;\n",
+            "/config_data.js": b"window.__DASHBOARD_CONFIG__ = null;\n",
+        }
+        if path in empty_dashboard_scripts:
+            body = empty_dashboard_scripts[path]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
             return

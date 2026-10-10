@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "f289dd8d7d05d2049a894d392ee179602582416f3884a377554de9d3893f4cbd"
+      "sha256": "2930d0ce7efb805a886bd7e002cc82be93b24d1580c13802ac27878ecadebd38"
     },
     {
       "path": "dashboard_template.html",
@@ -16,7 +16,7 @@
     },
     {
       "path": "scripts/mac_dev_cleanup.py",
-      "sha256": "c02f50ac9e6b6355891f52dbdde307d2a9fc4a964a37ca7bad149e7622bcce45"
+      "sha256": "a63d985ab5b59e9ae5f8acc53e6d2a994ed661c3fc7e523c24fc1429a9e1e76f"
     },
     {
       "path": "scripts/export_summary.py",
@@ -24,7 +24,7 @@
     },
     {
       "path": "scripts/web_server.py",
-      "sha256": "cebf8f7b8c9e9b7ba4666733587d05f62067938d753d1f09cafc54eddc01ad3f"
+      "sha256": "be8a11eb31cfb0c578b4bb06f60026a9fc557d3d001c42ee28e01138cbd9b4be"
     },
     {
       "path": "scripts/local_services.py",

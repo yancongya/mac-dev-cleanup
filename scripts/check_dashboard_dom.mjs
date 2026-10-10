@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 /**
- * Headless render check for the generated dashboard (development-time only).
+ * Headless render check for the tracked dashboard template (development-time only).
  *
  * The dashboard itself stays dependency-free; this checker needs jsdom:
  *   npm i jsdom                       # resolvable from the current directory
- *   MDC_JSDOM=/path/to/jsdom/lib/api.js  node scripts/check_dashboard_dom.mjs dashboard.html
+ *   MDC_JSDOM=/path/to/jsdom/lib/api.js  node scripts/check_dashboard_dom.mjs dashboard_template.html
  *
  * Verifies: zero runtime errors, the six-view sidebar shell, hash routing,
  * candidate selection → cleanup command generation, all sections render, search
  * keeps focus across re-renders, the settings schema renders every field, and
  * reason strings are translated.
  */
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import os from "node:os";
+import path from "node:path";
 
 async function loadJsdom() {
   const candidates = ["jsdom", process.env.MDC_JSDOM].filter(Boolean);
@@ -34,9 +36,9 @@ async function loadJsdom() {
 const { JSDOM, VirtualConsole } = await loadJsdom();
 
 const html = readFileSync(process.argv[2], "utf8");
-// The generated dashboard.html is a data-free shell that references dashboard_data.js
-// (gitignored). For the DOM checks we inline the latest scan state so rendering is
-// deterministic and does not depend on async file:// script loading.
+// The template is a data-free shell that references sibling runtime scripts. For the
+// DOM checks we inline the latest scan state so rendering is deterministic and does not
+// depend on async file:// script loading.
 const statePath = `${os.homedir()}/.codex/logs/mac-dev-cleanup/state.json`;
 let renderHtml = html;
 let latestState = null;
@@ -49,6 +51,84 @@ try {
 } catch (e) {
   // fall through with null DATA; checks will fail clearly rather than render silently
 }
+
+// Exercise the actual file: URL loading rule with a generated sibling-script fixture.
+// The fixture contains no machine data and is removed immediately afterward.
+const fileDashboardDir = mkdtempSync(path.join(os.tmpdir(), "mdc-file-dashboard-"));
+const fileDashboardPath = path.join(fileDashboardDir, "dashboard.html");
+writeFileSync(fileDashboardPath, html, "utf8");
+writeFileSync(path.join(fileDashboardDir, "dashboard_data.js"),
+  "window.__DASHBOARD_DATA__ = null; window.__fileDashboardDataLoaded = true;\n", "utf8");
+writeFileSync(path.join(fileDashboardDir, "config_data.js"),
+  "window.__DASHBOARD_CONFIG__ = {}; window.__fileDashboardConfigLoaded = true;\n", "utf8");
+let fileScriptsLoaded = false;
+let fileDashboardDom;
+try {
+  fileDashboardDom = await JSDOM.fromFile(fileDashboardPath, {
+    runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+  });
+  if (fileDashboardDom.window.document.readyState !== "complete") {
+    await new Promise((resolve) => fileDashboardDom.window.addEventListener("load", resolve, { once: true }));
+  }
+  fileScriptsLoaded = fileDashboardDom.window.__fileDashboardDataLoaded === true &&
+    fileDashboardDom.window.__fileDashboardConfigLoaded === true;
+} finally {
+  fileDashboardDom?.window.close();
+  rmSync(fileDashboardDir, { recursive: true, force: true });
+}
+if (!fileScriptsLoaded) {
+  throw new Error("file:// dashboard did not load its sibling data scripts");
+}
+console.log("[OK] file:// dashboard loads both sibling scripts from its generated directory");
+
+// Exercise the same template over HTTP with a real local network stack. The
+// server returns the safe empty script stubs used by web_server.py; no private
+// dashboard snapshots are read or served in this check.
+const httpRequests = [];
+const httpScriptStubs = {
+  "/dashboard_data.js": "window.__DASHBOARD_DATA__ = null;\n",
+  "/config_data.js": "window.__DASHBOARD_CONFIG__ = null;\n",
+};
+const httpServer = createServer((request, response) => {
+  const pathname = new URL(request.url || "/", "http://127.0.0.1").pathname;
+  httpRequests.push(pathname);
+  if (pathname === "/dashboard.html") {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    response.end(html);
+  } else if (pathname in httpScriptStubs) {
+    response.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" });
+    response.end(httpScriptStubs[pathname]);
+  } else {
+    response.writeHead(404);
+    response.end();
+  }
+});
+const httpConsoleErrors = [];
+const httpVirtualConsole = new VirtualConsole();
+httpVirtualConsole.on("jsdomError", (error) => httpConsoleErrors.push(error.message));
+await new Promise((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+let httpDom;
+let httpScriptsLoaded = false;
+try {
+  const address = httpServer.address();
+  if (!address || typeof address === "string") throw new Error("local dashboard test server failed to bind");
+  httpDom = await JSDOM.fromURL(`http://127.0.0.1:${address.port}/dashboard.html`, {
+    runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+    virtualConsole: httpVirtualConsole,
+  });
+  if (httpDom.window.document.readyState !== "complete") {
+    await new Promise((resolve) => httpDom.window.addEventListener("load", resolve, { once: true }));
+  }
+  httpScriptsLoaded = httpRequests.includes("/dashboard_data.js") && httpRequests.includes("/config_data.js");
+} finally {
+  httpDom?.window.close();
+  await new Promise((resolve) => httpServer.close(resolve));
+}
+if (!httpScriptsLoaded || httpConsoleErrors.length) {
+  throw new Error(`HTTP dashboard asset check failed: scripts loaded=${httpScriptsLoaded}, console errors=${httpConsoleErrors.length}`);
+}
+console.log("[OK] HTTP dashboard loads both safe sibling stubs without console errors");
+
 const errors = [];
 const vc = new VirtualConsole();
 vc.on("jsdomError", (e) => errors.push("jsdomError: " + (e.stack || e.message)));

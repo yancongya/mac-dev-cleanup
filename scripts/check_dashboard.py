@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Validate the dashboard template, its generated copy, and the inline JavaScript.
+"""Validate the dashboard template, private generated copy, and inline JavaScript.
 
-The dashboard is a data-free shell. `dashboard_template.html` is the only tracked file;
-`dashboard.html` is regenerated from it by every scan (a plain copy, hence byte-identical)
-and is gitignored, so its absence is not a failure.
+The dashboard is a data-free shell. `dashboard_template.html` is the tracked source;
+`~/.codex/logs/mac-dev-cleanup/dashboard/dashboard.html` is regenerated from it by scan.
+The private generated copy and data scripts are outside the repository and may be absent
+in a fresh checkout.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,7 +19,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "dashboard_template.html"
-HTML = ROOT / "dashboard.html"
+RUNTIME_DIR = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "dashboard"
+HTML = RUNTIME_DIR / "dashboard.html"
+DATA_SCRIPTS = (RUNTIME_DIR / "dashboard_data.js", RUNTIME_DIR / "config_data.js")
 STATE = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "state.json"
 
 
@@ -26,12 +30,12 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-# The only sibling scripts the page may load. Both are gitignored (machine-specific) and
-# emitted next to the HTML by scan — which is exactly what keeps the HTML itself data-free.
+# The only sibling scripts the page may load. They contain machine-specific data and are
+# emitted beside the private file:// copy, never into the SkillDo source tree.
 ALLOWED_EXTERNAL_SCRIPTS = {"dashboard_data.js", "config_data.js"}
 
-# Fallback tokens the page needs when the sibling data scripts are absent (fresh clone,
-# GitHub). Real data must never replace them: scan writes it to the two JS files instead.
+# Fallback tokens the page needs when the sibling data scripts are absent. Real data must
+# never replace them: scan writes it to the private sibling JS files instead.
 DATA_TOKENS = ("/*__DATA__*/null", "/*__CONFIG__*/null")
 
 
@@ -91,9 +95,16 @@ def main() -> None:
                 "dashboard.html differs from dashboard_template.html, but the build is a plain "
                 "copy — either regenerate it with `scan` or delete it; do not hand-edit it"
             )
-        checked = "template + generated copy"
+        if not RUNTIME_DIR.is_dir() or stat.S_IMODE(RUNTIME_DIR.stat().st_mode) != 0o700:
+            fail(f"private dashboard directory must have mode 0700: {RUNTIME_DIR}")
+        for path in (HTML, *DATA_SCRIPTS):
+            if not path.is_file():
+                fail(f"generated file dashboard is incomplete: {path.name} missing")
+            if stat.S_IMODE(path.stat().st_mode) != 0o600:
+                fail(f"private dashboard file must have mode 0600: {path}")
+        checked = "template + private generated copy"
     else:
-        print("[note] dashboard.html absent (gitignored build output) — run `scan` to generate it")
+        print("[note] private dashboard.html absent — run `scan` to generate it")
         checked = "template only"
 
     if not STATE.exists():

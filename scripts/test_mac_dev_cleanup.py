@@ -12,6 +12,7 @@ import plistlib
 import subprocess
 import sys
 import shutil
+import stat
 import tempfile
 import time
 import unittest
@@ -243,12 +244,31 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
     def test_dashboard_route_falls_back_to_tracked_template_after_skill_update(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc-dashboard-template-") as temp:
             root = Path(temp)
-            (root / "dashboard_template.html").write_text("<html>tracked-shell</html>", encoding="utf-8")
+            (root / "dashboard_template.html").write_text(
+                '<html>tracked-shell<script src="dashboard_data.js"></script>'
+                '<script src="config_data.js"></script></html>', encoding="utf-8")
+            (root / "dashboard.html").write_text("<html>stale-generated-copy</html>", encoding="utf-8")
             with patch.object(web_server, "ROOT", root):
                 status, headers, body = self.request("GET", "/dashboard.html")
         self.assertEqual(status, 200)
         self.assertEqual(headers.get("Content-Type"), "text/html; charset=utf-8")
         self.assertIn(b"tracked-shell", body)
+        self.assertNotIn(b"stale-generated-copy", body)
+        self.assertIn(b'<script src="dashboard_data.js"></script>', body)
+        self.assertIn(b'<script src="config_data.js"></script>', body)
+
+    def test_dashboard_sibling_scripts_return_safe_api_fallbacks_over_http(self) -> None:
+        expected = {
+            "/dashboard_data.js": b"window.__DASHBOARD_DATA__ = null;\n",
+            "/config_data.js": b"window.__DASHBOARD_CONFIG__ = null;\n",
+        }
+        for path, stub in expected.items():
+            with self.subTest(path=path):
+                status, headers, body = self.request("GET", path)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers.get("Content-Type"), "application/javascript; charset=utf-8")
+                self.assertEqual(headers.get("Cache-Control"), "no-store")
+                self.assertEqual(body, stub)
 
     def test_service_control_endpoints_reject_missing_token_before_dispatch(self) -> None:
         with patch.object(web_server.local_services, "register_service") as register, \
@@ -346,6 +366,7 @@ class ConfigLocationTests(unittest.TestCase):
         self.assertEqual(cleanup.LEGACY_CONFIG_PATH, skill_dir / "config.json")
         self.assertNotEqual(cleanup.CONFIG_PATH, cleanup.LEGACY_CONFIG_PATH)
 
+
     def test_legacy_config_is_adopted_once(self) -> None:
         legacy = self.root / "skill" / "config.json"
         legacy.parent.mkdir(parents=True)
@@ -379,6 +400,40 @@ class ConfigLocationTests(unittest.TestCase):
         self.assertEqual(written, target)
         self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["stale_days"], 42)
 
+
+class DashboardRuntimeOutputTests(unittest.TestCase):
+    def test_scan_outputs_private_file_dashboard_outside_skill_tree(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc-dashboard-runtime-") as temp:
+            root = Path(temp)
+            log_dir = root / "logs"
+            dashboard_dir = log_dir / "dashboard"
+            dashboard_dir.mkdir(parents=True, mode=0o755)
+            os.chmod(dashboard_dir, 0o755)
+            state_path = log_dir / "state.json"
+            history_path = log_dir / "history.jsonl"
+            dashboard_path = dashboard_dir / "dashboard.html"
+            data_path = dashboard_dir / "dashboard_data.js"
+            config_path = dashboard_dir / "config_data.js"
+
+            with patch.object(cleanup, "LOG_DIR", log_dir), \
+                    patch.object(cleanup, "STATE_PATH", state_path), \
+                    patch.object(cleanup, "HISTORY_PATH", history_path), \
+                    patch.object(cleanup, "DASHBOARD_DIR", dashboard_dir), \
+                    patch.object(cleanup, "DASHBOARD_PATH", dashboard_path), \
+                    patch.object(cleanup, "DASHBOARD_DATA_PATH", data_path), \
+                    patch.object(cleanup, "DASHBOARD_CONFIG_PATH", config_path), \
+                    patch.object(cleanup, "CONFIG", {"test_policy": "fixture"}):
+                cleanup.write_state("scan", False, {}, [], {}, "before", "after")
+
+            self.assertEqual(stat.S_IMODE(dashboard_dir.stat().st_mode), 0o700)
+            for output in (dashboard_path, data_path, config_path):
+                self.assertTrue(output.is_file())
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+            self.assertEqual(dashboard_path.read_bytes(), cleanup.TEMPLATE_PATH.read_bytes())
+            html = dashboard_path.read_text(encoding="utf-8")
+            self.assertIn('<script src="dashboard_data.js"></script>', html)
+            self.assertIn('<script src="config_data.js"></script>', html)
+            self.assertEqual(list(dashboard_dir.glob("*.tmp")), [])
 
 class WeChatMonthTests(unittest.TestCase):
     def test_month_key_strict(self) -> None:

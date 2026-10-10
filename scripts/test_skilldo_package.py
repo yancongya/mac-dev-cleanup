@@ -33,7 +33,8 @@ class SkillDoPackageTests(unittest.TestCase):
         }
         self.assertEqual(actual, builder.EXPECTED_PACKAGE_FILES)
         self.assertEqual(output, ROOT / "skills" / "mac-dev-cleanup")
-        for forbidden in ("config.json", "state.json", "history.jsonl", "dashboard_data.js", "config_data.js"):
+        for forbidden in ("config.json", "state.json", "history.jsonl", "dashboard.html",
+                          "dashboard_data.js", "config_data.js"):
             self.assertNotIn(forbidden, actual)
 
     def test_failed_package_swap_restores_previous_bundle(self) -> None:

@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import zipfile
@@ -90,7 +91,11 @@ def safe_walk(top, topdown: bool = True):
         yield current, dirs, files
 OPERATIONS_DIR = LOG_DIR / "operations"
 TRASH_ROOT = HOME / ".Trash" / "mac-dev-cleanup"
-DASHBOARD_PATH = Path(__file__).resolve().parents[1] / "dashboard.html"
+DASHBOARD_DIR = LOG_DIR / "dashboard"
+DASHBOARD_PATH = DASHBOARD_DIR / "dashboard.html"
+DASHBOARD_DATA_PATH = DASHBOARD_DIR / "dashboard_data.js"
+DASHBOARD_CONFIG_PATH = DASHBOARD_DIR / "config_data.js"
+TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "dashboard_template.html"
 # MDC_CONFIG lets tests (and alternate setups) point at a different policy file
 # without touching the installed config.json.
 CONFIG_PATH = (
@@ -2481,17 +2486,15 @@ def write_state(
         "candidates": [candidate_to_dict(c, mode, actions) for c in candidates],
     }
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    # Also emit dashboard_data.js so the HTML works under file:// (no XHR/CORS).
-    data_js_path = DASHBOARD_PATH.parent / "dashboard_data.js"
-    data_js_path.write_text(
+    # Keep machine-specific snapshots beside the private file:// dashboard,
+    # outside the SkillDo-managed source tree.
+    _write_private_dashboard_file(
+        DASHBOARD_DATA_PATH,
         "window.__DASHBOARD_DATA__ = " + json.dumps(state, ensure_ascii=False) + ";\n",
-        encoding="utf-8",
     )
-    # Emit config_data.js so the settings panel can render current config.
-    config_js_path = DASHBOARD_PATH.parent / "config_data.js"
-    config_js_path.write_text(
+    _write_private_dashboard_file(
+        DASHBOARD_CONFIG_PATH,
         "window.__DASHBOARD_CONFIG__ = " + json.dumps(CONFIG, ensure_ascii=False) + ";\n",
-        encoding="utf-8",
     )
 
     # Rebuild dashboard.html from the design template. The two are byte-identical by
@@ -2514,30 +2517,58 @@ def write_state(
     return STATE_PATH
 
 
+def _ensure_private_dashboard_dir() -> None:
+    """Create the external dashboard directory with owner-only access."""
+    if DASHBOARD_DIR.is_symlink():
+        raise OSError(f"dashboard directory must not be a symbolic link: {DASHBOARD_DIR}")
+    DASHBOARD_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if DASHBOARD_DIR.is_symlink() or not DASHBOARD_DIR.is_dir():
+        raise OSError(f"dashboard path is not a regular directory: {DASHBOARD_DIR}")
+    os.chmod(DASHBOARD_DIR, 0o700)
+
+
+def _write_private_dashboard_file(path: Path, content: str) -> None:
+    """Atomically replace one dashboard artifact with owner-only permissions."""
+    _ensure_private_dashboard_dir()
+    if path.parent != DASHBOARD_DIR:
+        raise OSError("dashboard output must stay in the private dashboard directory")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=DASHBOARD_DIR)
+    temp_path = Path(temp_name)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            os.close(fd)
+            raise
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _render_dashboard_html(state: dict) -> None:
-    """Produce dashboard.html from the design template as a data-free preview shell.
+    """Write the file:// dashboard shell beside its private sibling scripts.
 
-    The page does not inline the real scan state or config. It references
-    dashboard_data.js / config_data.js instead (gitignored, emitted next to it) via
-    <script src>, so dashboard.html carries no machine-specific data and can be served
-    publicly. Under file:// the sibling scripts load the real data; when they are absent
-    (e.g. on GitHub) the UI falls back to its built-in "data missing" state.
+    The tracked template remains in the Skill bundle. The generated HTML and its
+    machine-specific sibling scripts live together under LOG_DIR so relative
+    script loads continue to work under file:// without exposing them in the
+    SkillDo-managed directory.
 
-    Because nothing is injected any more, this is an exact copy of the template: the
-    output is byte-identical to dashboard_template.html. That is why the template is the
-    only tracked file and dashboard.html is gitignored — see .gitignore. The function is
-    kept (rather than the template simply being served directly) so that dashboard.html
-    always exists at DASHBOARD_PATH after a scan, which is what web_server.py serves and
-    what check_dashboard.py inspects. `state` is accepted for signature stability; no
-    field of it reaches the page.
+    The HTML remains a byte-for-byte copy of the template and contains no scan
+    data. `state` is accepted for signature stability; no field reaches the page.
     """
-    template_path = DASHBOARD_PATH.with_name("dashboard_template.html")
-    if not template_path.exists():
-        print(f"warning: {template_path.name} missing; skipped dashboard build")
+    if not TEMPLATE_PATH.exists():
+        print(f"warning: {TEMPLATE_PATH.name} missing; skipped dashboard build")
         return
     try:
-        html = template_path.read_text(encoding="utf-8")
-        DASHBOARD_PATH.write_text(html, encoding="utf-8")
+        html = TEMPLATE_PATH.read_text(encoding="utf-8")
+        _write_private_dashboard_file(DASHBOARD_PATH, html)
     except OSError as exc:
         print(f"warning: failed to build dashboard.html: {exc}")
 

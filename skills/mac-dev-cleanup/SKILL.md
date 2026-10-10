@@ -46,18 +46,18 @@ Build and update after editing:
 - Do not edit the central copy or use `skilldo push` for this locally tracked source. Publish repository changes through the repository's normal Git review process; `skilldo update` only materializes the already-built local bundle.
 - **`skilldo update` replaces the active central directory with the bundle's content.** The current CLI first stages the bundle, then renames the old center to a recoverable sibling named `~/.skillshub/.skilldo-old-<uuid>` before installing the new center. On failure it restores the old center; after success the sibling remains available for recovery. Local-only files are therefore absent from the active Skill until restored or regenerated. Older update paths were observed to delete loose files and symlinks; don't rely on an in-place merge.
 
-  After updating, restore the notes link and regenerate the dashboard from current external state:
+  After updating, restore the notes link. The scan state and file dashboard now live outside the installed Skill, so an update does not erase them or require a rescan. If the persistent web server was already running, restart it so it loads the updated bundled code.
 
   ```bash
   ln -sfn ~/.codex/logs/mac-dev-cleanup/.workbuddy ~/.skillshub/mac-dev-cleanup/.workbuddy
-  python3 ~/.skillshub/mac-dev-cleanup/scripts/mac_dev_cleanup.py scan   # regenerates config_data.js, dashboard_data.js, dashboard.html
   ```
 
-  The dashboard is unavailable until that `scan` runs. Tracked bundle files come back byte-for-byte; generated files are rebuilt from the current external state.
+  Tracked bundle files come back byte-for-byte. The private dashboard directory and current scan state remain in place.
 
   Everything that must survive therefore lives *outside* the installed Skill directory:
   - policy → `~/.codex/logs/mac-dev-cleanup/config.json` (the script's `CONFIG_PATH`)
   - state, history, reports → `~/.codex/logs/mac-dev-cleanup/`
+  - private `file://` dashboard and its data scripts → `~/.codex/logs/mac-dev-cleanup/dashboard/` (directory mode 0700; files mode 0600)
   - this Skill's own notes → `~/.codex/logs/mac-dev-cleanup/.workbuddy/`, symlinked in
 - **CLI `update` respects symlink targets** (fixed 2026-09-23 in SkillDo, `src-tauri/src/core/installer.rs`). The CLI path used to re-sync *all* targets through `sync_dir_copy_with_overwrite` regardless of the recorded mode, so one `skilldo update` silently turned these five symlinks into five independent copies — and it left the database still claiming `mode=symlink`, so `skilldo list` reported a link that was no longer there. It now skips any target that is already a correct link, re-materialises copy targets (plus Cursor, which cannot use symlinks), and repairs a link that is missing or pointing elsewhere — the same semantics the GUI path always had. On a SkillDo build older than that fix, restore the layout by hand:
 
@@ -68,7 +68,7 @@ Build and update after editing:
   ```
 
   `skilldo push` never touches targets at all.
-- `.gitignore` excludes machine-local `config.json`, `state.json`, `config_data.js`, `dashboard_data.js`, `dashboard.html` (the build output of `dashboard_template.html` — see *Dashboard and state*; both files are byte-identical by design, so only the template is tracked), `*.bak.*`, `__pycache__/`, `.workbuddy` (written without a trailing slash — the slash form matches directories only and would let the *symlink* be committed with a local absolute path inside), and the deprecated `vendor/`. The generated bundle's manifest and runtime/support files are Git-tracked; machine-local state remains outside the bundle and repository.
+- `.gitignore` retains exclusions for legacy machine-local `config.json`, `state.json`, `config_data.js`, `dashboard_data.js`, and `dashboard.html` files at the repository root. Current scans write dashboard artifacts only under `~/.codex/logs/mac-dev-cleanup/dashboard/`; none belong in the repository or installed Skill. It also excludes `*.bak.*`, `__pycache__/`, `.workbuddy` (written without a trailing slash — the slash form matches directories only and would let the *symlink* be committed with a local absolute path inside), and the deprecated `vendor/`.
 
 ## Important: APFS snapshots & disk space release
 
@@ -178,7 +178,7 @@ Cleaning `aggressive` is not automatically worth it: **updater/runtime caches ar
 - The System view lists third-party LaunchAgents and LaunchDaemons. System-scope entries remain read-only. A user LaunchAgent can be managed only after its exact plist Label is registered in the local allowlist at `~/.codex/logs/mac-dev-cleanup/managed-services.json` (mode 0600). Registration records the canonical plist path and does not start the service or change login behavior.
 - Dashboard controls are separate: start/stop affects the current GUI session; enable/disable affects future login behavior and disabling does not stop a running service. Every change requires confirmation and the local API token. The backend constructs fixed `launchctl` argv and revalidates the plist/Label on every operation; callers cannot supply a path or shell command.
 - A terminal service can be added from the panel with an absolute executable path, a JSON string array of arguments, and an optional working directory. This writes a mode-0600 LaunchAgent plist plus the local allowlist; it does not start the service immediately. If the same service is already running in a terminal, stop that copy first to avoid a duplicate. Do not put credentials in arguments; retrieve secrets through BWVault-backed service wrappers.
-- After `skilldo update`, generated dashboard files may be absent. The local server now serves the tracked template and hydrates from the existing state API; it does not need to run a scan to restore the dashboard.
+- After `skilldo update`, old center-local dashboard copies are discarded with the replaced Skill directory. The private file dashboard and scan state under `~/.codex/logs/mac-dev-cleanup/` persist; the local server serves the bundled template and hydrates from the existing state API without a rescan.
 - The app-login inventory covers the traditional “Open at Login” list exposed by System Events. It does not include App Background Activity or extensions. No public API lets this unrelated dashboard safely toggle another app's login registration; users change individual entries in System Settings > General > Login Items & Extensions. App uninstall remains separate. Tests mock System Events and launchctl; they must never change host login or service state.
 
 ## LaunchAgent service + one-click restore (2026-09-28)
@@ -439,7 +439,7 @@ When served this way, the dashboard can:
 - trigger a new read-only scan and refresh the page state;
 - view and clear the quarantine area, and inspect / empty the **system Trash** (`POST /api/trash/empty-system`, gated by the literal `confirm: "EMPTY TRASH"` string plus the API token — see P1 expansion above).
 
-Opening `dashboard.html` directly with `file://` remains supported as a read-only fallback. In that mode, config editing generates a CLI command instead of silently pretending the file was saved.
+Opening `~/.codex/logs/mac-dev-cleanup/dashboard/dashboard.html` directly with `file://` remains supported as a read-only fallback. The HTML and its two sibling data scripts are generated together in that private directory, so the browser can load them by relative path without XHR or CORS. In that mode, config editing generates a CLI command instead of silently pretending the file was saved. The installed Skill directory contains only the template and runtime code.
 
 ## Modes
 
@@ -470,14 +470,16 @@ Panels (the unified collapsible `panel()` shell, drag-reorderable) are grouped p
 
 The clean view's candidate list has **selection checkboxes** (manual-risk rows are disabled — that level is never auto-deleted) and a sticky bottom bar showing "已选 N 项 · X GB"; the 生成清理命令 button copies a precise `clean-safe`/`clean-aggressive` command (aggressive if any selected pick is aggressive) with one `--candidate-id <id>` per pick, so the terminal only deletes exactly what was reviewed. Selection lives in memory and is cleared when a fresh scan replaces candidate ids.
 
-The dashboard has exactly one tracked source — the template. Every scan regenerates `dashboard.html` from it:
+The dashboard has exactly one tracked source — the template. Every scan creates a private `file://` copy and its two machine-specific data scripts outside the SkillDo directory:
 
 ```text
 ~/.skillshub/mac-dev-cleanup/dashboard_template.html   # the only tracked file: design + tokens
-~/.skillshub/mac-dev-cleanup/dashboard.html            # generated on every scan (gitignored; never edit by hand)
+~/.codex/logs/mac-dev-cleanup/dashboard/dashboard.html          # generated shell for file://
+~/.codex/logs/mac-dev-cleanup/dashboard/dashboard_data.js       # latest scan snapshot
+~/.codex/logs/mac-dev-cleanup/dashboard/config_data.js          # current policy snapshot
 ```
 
-The two are **byte-identical** on purpose. Since the page stopped inlining its data, "generating" `dashboard.html` is a straight copy of the template, so the repository tracks one 124 KB file instead of two and a scan never produces a diff.
+The generated HTML is byte-identical to the template and contains no machine data. Its sibling scripts contain machine-specific scan/config data and are kept in the owner-only runtime directory (0700 directory, 0600 files). The HTTP server always serves the bundle template at the existing `/dashboard.html` route; the page loads state and config through the local API.
 
 Each run overwrites the latest state file instead of creating a new HTML file:
 
@@ -501,9 +503,9 @@ Cleanup operations are stored under:
 
 Each manifest records original path, quarantine path, reason, risk, size, identity fingerprint, and restore status.
 
-The dashboard is a **single file with zero third-party runtime dependencies**: no CDN, no `vendor/` libraries, no Alpine/Tailwind. It deliberately loads exactly two sibling scripts — `dashboard_data.js` and `config_data.js`, both gitignored and both emitted by `scan()`, both carrying machine-specific data (absolute paths, disk usage, per-category byte counts). That split is what makes the page publishable: the HTML itself is a data-free shell, while under `file://` the sibling scripts still feed it the real data. When they are absent (a fresh clone before the first scan, or the copy on GitHub) the UI falls back to its built-in "数据缺失" state instead of failing to boot.
+The dashboard is a **single HTML file with zero third-party runtime dependencies**: no CDN, no `vendor/` libraries, no Alpine/Tailwind. It deliberately loads exactly two sibling scripts — `dashboard_data.js` and `config_data.js`. `scan()` writes all three file-dashboard artifacts under `~/.codex/logs/mac-dev-cleanup/dashboard/`, outside the SkillDo source tree. The sibling scripts carry machine-specific data (absolute paths, disk usage, per-category byte counts), so the directory is owner-only. Opening that generated HTML through `file://` loads the scripts by relative path. The HTTP route serves the data-free template instead and obtains current state/config through the API.
 
-`write_state()` writes `state.json` plus the two data scripts, then calls `_render_dashboard_html()`, which copies `dashboard_template.html` over `dashboard.html`. Keeping the page free of sibling-*framework* loads is still mandatory — inlined Alpine/Tailwind or CDN references are what previously caused the "仪表盘脚本加载失败" error in the WorkBuddy preview webview.
+`write_state()` writes `state.json` and atomically replaces the two data scripts and generated HTML in the private dashboard directory. The template is read from the Skill bundle. The runtime directory is created with mode 0700 and each generated file with mode 0600. Keeping the page free of sibling-*framework* loads is still mandatory — inlined Alpine/Tailwind or CDN references are what previously caused the "仪表盘脚本加载失败" error in the WorkBuddy preview webview.
 
 Constraints when editing the dashboard UI:
 - Keep it dependency-free vanilla HTML/CSS/JS. Do NOT reintroduce Alpine, Tailwind, CDN links, or external `vendor/` scripts.
@@ -515,8 +517,8 @@ Constraints when editing the dashboard UI:
   python3 scripts/check_dashboard.py                     # static + syntax gate
   npm test                                               # engine/export tests + Skill routing
   npm i jsdom
-  node scripts/check_dashboard_dom.mjs dashboard.html    # 105 headless assertions
-  # or: MDC_JSDOM=/path/to/jsdom/lib/api.js node scripts/check_dashboard_dom.mjs dashboard.html
+  node scripts/check_dashboard_dom.mjs dashboard_template.html    # headless assertions
+  # or: MDC_JSDOM=/path/to/jsdom/lib/api.js node scripts/check_dashboard_dom.mjs dashboard_template.html
   ```
 
 Dashboard conventions worth preserving:
