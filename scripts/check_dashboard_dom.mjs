@@ -179,7 +179,10 @@ const serviceDom = new JSDOM(renderHtml, {
         "api/health": { ok: true, token: "dom-test-token" },
         "api/services": { ok: true, services: serviceFixture },
         "api/login-items": { ok: true, readOnly: true, items: [{ id: "demo-login", name: "Demo Login App", path: "/Applications/Demo Login App.app", kind: "application", hidden: false, enabled: true }] },
-        "api/apps": { ok: true, apps: [{ name: "Demo.app", path: "/Applications/Demo.app", total_size: 1, running: false, related: [] }] },
+        "api/apps": { ok: true, apps: [
+          { name: "Demo.app", path: "/Applications/Demo.app", total_size: 1, running: false, related: [] },
+          { name: "Running.app", path: "/Applications/Running.app", total_size: 1, running: true, related: [] },
+        ] },
         "api/clean/history": { ok: true, runs: [] }, "api/snapshots": { ok: true, snapshots: [] },
         "api/dupes": { ok: true, report: { generated_at: 0, roots: [], groups: [] } },
         "api/schedule": { ok: true, jobs: [] }, "api/clean/status": { ok: true, running: false, lines: [] },
@@ -267,6 +270,7 @@ ok("路由切换到应用视图", visible("#view-apps") && !visible("#view-clean
 ok("应用视图导航高亮", $(".nav-item.active")?.getAttribute("data-nav") === "apps", $(".nav-item.active")?.getAttribute("data-nav"));
 ok("应用搜索框存在", !!$("#apps-search"));
 ok("应用列表容器存在", !!$("#apps-list"));
+ok("应用列表提供启动和正常退出按钮", service$("#apps-list [data-app='Demo.app'][data-app-action='start']") && service$("#apps-list [data-app='Running.app'][data-app-action='stop']"));
 ok("应用重扫按钮存在", !!$("#apps-rescan"));
 ok("应用统计条存在", !!$("#apps-stats"));
 ok("应用排序控件存在", !!$("#apps-sort"));
@@ -296,6 +300,15 @@ ok("应用登录项只提供系统设置入口，不显示变更按钮", service
 ok("页面说明 LaunchAgent 范围与系统设置入口", /LaunchAgent\/LaunchDaemon plist/.test(text("#pbody-launch")) && /交互式终端/.test(text("#pbody-launch")) && service$("#pbody-launch a[href='x-apple.systempreferences:com.apple.LoginItems-Settings.extension']")?.textContent.includes("打开 macOS 登录项设置"));
 ok("页面区分停止、自启与卸载", /停止只影响当前运行/.test(text("#pbody-launch")) && /关闭自启只影响下次登录/.test(text("#pbody-launch")) && /不会卸载服务/.test(text("#pbody-launch")));
 ok("可用参数列表登记终端服务", !!$("#service-create-form") && !!$("#service-new-program") && /JSON 字符串数组/.test(text("#service-create-section")) && /不会立即启动/.test(text("#service-create-section")));
+const appStartButton = service$("#apps-list [data-app='Demo.app'][data-app-action='start']");
+const appActionRequestsBefore = serviceRequests.filter((request) => request.url.includes("api/apps/action")).length;
+appStartButton?.dispatchEvent(new serviceDom.window.MouseEvent("click", { bubbles: true }));
+const armedAppStart = appStartButton?.getAttribute("data-armed") === "1";
+const appActionRequestsArmed = serviceRequests.filter((request) => request.url.includes("api/apps/action")).length;
+appStartButton?.dispatchEvent(new serviceDom.window.MouseEvent("click", { bubbles: true }));
+await sleep(20);
+const startRequest = serviceRequests.find((request) => request.url.includes("api/apps/action"));
+ok("应用启停操作要求二次确认并提交结构化请求", armedAppStart && appActionRequestsArmed === appActionRequestsBefore && JSON.parse(startRequest?.options.body || "{}").action === "start" && JSON.parse(startRequest?.options.body || "{}").app === "Demo.app");
 ok("SkillDo 更新后从本地 API 恢复现有看板状态", !!latestState && noDataRequests.includes("api/state") && !!noDataDoc.querySelector("#view-apps") && !noDataDoc.querySelector("#boot-error.show"));
 ok("服务清单渲染", serviceText("#launch-list").includes("demo.managed") && serviceText("#launch-list").includes("demo.system"));
 ok("未登记用户项仅提供登记", service$("#launch-list [data-label=\"demo.unregistered\"]")?.classList.contains("service-register") && !service$("#launch-list [data-label=\"demo.unregistered\"] + .service-action"));

@@ -2945,6 +2945,8 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           (relN?'<span class="app-relcount">残留 '+relN+' 项</span>':'')+
           '<span class="app-size">'+fmtSize(a.total_size)+'</span>'+
           (relN?'<button type="button" class="btn app-rel-btn" style="height:24px;font-size:10px">残留</button>':'')+
+          '<button type="button" class="btn app-action-btn" data-app-action="'+(a.running?'stop':'start')+'" data-app="'+esc(a.name)+'"'+
+            ' title="'+(a.running?'正常退出应用':'启动应用')+'">'+(a.running?'退出':'启动')+'</button>'+
           '<button type="button" class="btn danger app-un-btn" data-app="'+esc(a.name)+'"'+
             (a.running?' disabled title="正在运行，退出后才能卸载"':'')+'>卸载</button>'+
         '</div>'+relHtml+
@@ -2955,6 +2957,33 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       if(relBtn){
         var rel=relBtn.closest(".app-item-wrap").querySelector(".app-rel");
         if(rel){ rel.hidden=!rel.hidden; relBtn.textContent=rel.hidden?"残留":"收起"; }
+        return;
+      }
+      var actionBtn=e.target.closest(".app-action-btn");
+      if(actionBtn){
+        var appName=actionBtn.getAttribute("data-app");
+        var action=actionBtn.getAttribute("data-app-action");
+        if(actionBtn.getAttribute("data-armed")!=="1"){
+          actionBtn.setAttribute("data-armed","1");
+          actionBtn.textContent=action==="start"?"确认启动？":"确认退出？";
+          setTimeout(function(){
+            if(actionBtn.getAttribute("data-armed")==="1"){
+              actionBtn.setAttribute("data-armed","0");
+              actionBtn.textContent=action==="start"?"启动":"退出";
+            }
+          },5000);
+          return;
+        }
+        actionBtn.setAttribute("data-armed","0"); actionBtn.disabled=true;
+        actionBtn.textContent=action==="start"?"启动中…":"退出中…";
+        fetch("api/apps/action",{method:"POST",headers:postHeaders(),
+          body:JSON.stringify({app:appName,action:action})})
+          .then(function(r){ return r.json().then(function(j){ return {ok:r.ok,j:j}; }); })
+          .then(function(res){
+            if(res.ok){ toast(appName+(action==="start"?" 已启动":" 已请求正常退出"),"ok"); }
+            else toast(res.j.error||"应用操作失败","err");
+            loadApps(false);
+          }).catch(function(){ toast("应用操作失败","err"); loadApps(false); });
         return;
       }
       var btn=e.target.closest(".app-un-btn"); if(!btn) return;

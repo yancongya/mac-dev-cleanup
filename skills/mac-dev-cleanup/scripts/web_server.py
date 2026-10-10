@@ -74,6 +74,38 @@ def _record_filename(started: float) -> str:
     return time.strftime("%Y%m%d-%H%M%S", time.localtime(started)) + ".json"
 
 
+def _app_record_by_name(name: object) -> dict | None:
+    """Return a validated installed app record from the current scan snapshot."""
+    if not isinstance(name, str) or not cleanup.APP_NAME_RE.fullmatch(name):
+        return None
+    data = read_json(APPS_STATE_PATH, None)
+    apps = data.get("apps", []) if isinstance(data, dict) else []
+    rec = next((item for item in apps if isinstance(item, dict) and item.get("name") == name), None)
+    if not rec:
+        return None
+    path = rec.get("path")
+    bundle_id = rec.get("bundle_id")
+    if not isinstance(path, str):
+        return None
+    if not isinstance(bundle_id, str) or not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", bundle_id):
+        return None
+    allowed_bundle = cleanup.find_app_bundle(name)
+    if allowed_bundle is None or allowed_bundle.resolve() != Path(path).resolve():
+        return None
+    current_bundle_id = cleanup.app_bundle_info(allowed_bundle).get("bundle_id", "")
+    if current_bundle_id != bundle_id:
+        return None
+    return rec
+
+
+def _app_is_running(bundle_id: str) -> bool:
+    """Ask Launch Services for this app's process by its verified bundle ID."""
+    proc = subprocess.run(["/usr/bin/osascript", "-e",
+                           f'tell application id "{bundle_id}" to get running'],
+                          text=True, capture_output=True, timeout=10)
+    return proc.returncode == 0 and proc.stdout.strip().lower() == "true"
+
+
 def _persist_exec_record(rec: dict) -> None:
     try:
         EXEC_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -741,6 +773,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/uninstall":
             self._handle_uninstall(payload if isinstance(payload, dict) else {})
             return
+        if path == "/api/apps/action":
+            self._handle_app_action(payload if isinstance(payload, dict) else {})
+            return
         if path == "/api/schedule":
             self._handle_schedule_post(payload if isinstance(payload, dict) else {})
             return
@@ -769,6 +804,49 @@ class Handler(SimpleHTTPRequestHandler):
 
         threading.Thread(target=worker, daemon=True).start()
         self.send_json(200, {"ok": True, "building": True})
+
+    def _handle_app_action(self, payload: dict) -> None:
+        """Open or politely quit one app from the last verified inventory."""
+        if set(payload) != {"app", "action"} or payload.get("action") not in ("start", "stop"):
+            self.send_json(400, {"ok": False, "error": "body must contain app and action (start or stop)"})
+            return
+        rec = _app_record_by_name(payload.get("app"))
+        if rec is None:
+            self.send_json(404, {"ok": False, "error": "app not found in the current installed-apps inventory"})
+            return
+        app = rec["name"]
+        bundle_id = rec["bundle_id"]
+        if not APPS_MUX.acquire(blocking=False):
+            self.send_json(409, {"ok": False, "error": "another apps operation is running"})
+            return
+        try:
+            running = _app_is_running(bundle_id)
+            action = payload["action"]
+            if action == "start":
+                if running:
+                    self.send_json(200, {"ok": True, "name": app, "running": True, "action": "start"})
+                    return
+                proc = subprocess.run(["/usr/bin/open", "-a", rec["path"]],
+                                      text=True, capture_output=True, timeout=20)
+            else:
+                if not running:
+                    self.send_json(200, {"ok": True, "name": app, "running": False, "action": "stop"})
+                    return
+                proc = subprocess.run(["/usr/bin/osascript", "-e",
+                                       f'tell application id "{bundle_id}" to quit'],
+                                      text=True, capture_output=True, timeout=30)
+            ok = proc.returncode == 0
+            self.send_json(200 if ok else 422, {
+                "ok": ok, "name": app, "action": action,
+                "running": _app_is_running(bundle_id) if ok else running,
+                "output": ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()[-1000:],
+            })
+        except subprocess.TimeoutExpired:
+            self.send_json(504, {"ok": False, "error": "app action timed out"})
+        except OSError:
+            self.send_json(503, {"ok": False, "error": "macOS app control tools are unavailable"})
+        finally:
+            APPS_MUX.release()
 
     def _handle_dupes_get(self) -> None:
         """Serve the duplicate-file report, building it in the background on

@@ -4,11 +4,11 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "965e4749a87cb5ba223fdda62bbe47051fc60f3551fed6dba4edf5057f4a90a7"
+      "sha256": "93b975f78a956b38666661cc47460fa476eb230be071185503cf06428f759f7f"
     },
     {
       "path": "dashboard_template.html",
-      "sha256": "d47368170df5de4f3f2f7fa731ed0cee2fc0446ce8a97a03daa5540fb76263e1"
+      "sha256": "e42b458df32d0444409c10a59ec0bc23217956dc5f2f984308b6b385a7c44c41"
     },
     {
       "path": "agents/openai.yaml",
@@ -24,7 +24,7 @@
     },
     {
       "path": "scripts/web_server.py",
-      "sha256": "be8a11eb31cfb0c578b4bb06f60026a9fc557d3d001c42ee28e01138cbd9b4be"
+      "sha256": "727a30c7f89dd9c0b074d6b30b73e645a595396514ef958399eaa1a00b430eb7"
     },
     {
       "path": "scripts/local_services.py",

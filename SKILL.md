@@ -178,6 +178,7 @@ Cleaning `aggressive` is not automatically worth it: **updater/runtime caches ar
 - The System view lists third-party LaunchAgents and LaunchDaemons. System-scope entries remain read-only. A user LaunchAgent can be managed only after its exact plist Label is registered in the local allowlist at `~/.codex/logs/mac-dev-cleanup/managed-services.json` (mode 0600). Registration records the canonical plist path and does not start the service or change login behavior.
 - Dashboard controls are separate: start/stop affects the current GUI session; enable/disable affects future login behavior and disabling does not stop a running service. Every change requires confirmation and the local API token. The backend constructs fixed `launchctl` argv and revalidates the plist/Label on every operation; callers cannot supply a path or shell command.
 - A terminal service can be added from the panel with an absolute executable path, a JSON string array of arguments, and an optional working directory. This writes a mode-0600 LaunchAgent plist plus the local allowlist; it does not start the service immediately. If the same service is already running in a terminal, stop that copy first to avoid a duplicate. Do not put credentials in arguments; retrieve secrets through BWVault-backed service wrappers.
+- Installed applications have separate confirmed **启动 / 退出** controls in the app inventory. They open by verified bundle path or request a graceful quit; this does not force-kill apps or alter login items.
 - After `skilldo update`, old center-local dashboard copies are discarded with the replaced Skill directory. The private file dashboard and scan state under `~/.codex/logs/mac-dev-cleanup/` persist; the local server serves the bundled template and hydrates from the existing state API without a rescan.
 - The app-login inventory covers the traditional “Open at Login” list exposed by System Events. It does not include App Background Activity or extensions. No public API lets this unrelated dashboard safely toggle another app's login registration; users change individual entries in System Settings > General > Login Items & Extensions. App uninstall remains separate. Tests mock System Events and launchctl; they must never change host login or service state.
 
@@ -625,6 +626,10 @@ Use the bundled `scripts/local_login_items_cli.py list` to read the current user
 ```sh
 python3 <skill-dir>/scripts/local_login_items_cli.py list
 ```
+
+## Installed app start and quit
+
+From the System view's installed-app list, the **启动 / 退出** control opens an installed app by its verified bundle path or requests a normal macOS quit. The action is confirmed in the UI, requires the loopback API token, and accepts only an app in the latest inventory whose bundle path and bundle ID still match an app under `/Applications` or `~/Applications`. Quit is graceful; it does not force-kill the app. This does not change login items or background-service settings. Use the separate LaunchAgent controls for terminal-hosted services and System Settings for traditional app login items.
 
 ## Agent Ops status handoff
 

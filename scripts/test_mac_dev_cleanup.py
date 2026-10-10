@@ -18,6 +18,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import mac_dev_cleanup as cleanup
@@ -167,6 +168,44 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
                 self.assertEqual(status, 403)
                 self.assertEqual(json.loads(body)["error"], "missing or invalid token")
             save_config.assert_not_called()
+
+    def test_app_action_requires_scanned_bundle_and_only_uses_verified_bundle_id(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-app-action-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        bundle = base / "Sample.app"
+        bundle.mkdir()
+        state = base / "apps.json"
+        state.write_text(json.dumps({"apps": [{"name": "Sample.app", "path": str(bundle),
+                                               "bundle_id": "com.example.sample"}]}), encoding="utf-8")
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server, "APPS_STATE_PATH", state), \
+             patch.object(web_server.cleanup, "find_app_bundle", return_value=bundle), \
+             patch.object(web_server.cleanup, "app_bundle_info", return_value={"bundle_id": "com.example.sample"}), \
+             patch.object(web_server, "_app_is_running", side_effect=[False, True]), \
+             patch.object(web_server.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout="", stderr="")) as run:
+            status, _headers, body = self.request(
+                "POST", "/api/apps/action", headers=headers,
+                body=json.dumps({"app": "Sample.app", "action": "start"}).encode())
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/open", "-a", str(bundle)])
+
+    def test_app_action_rejects_unscanned_names_without_running_system_command(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-app-action-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        state = base / "apps.json"
+        state.write_text(json.dumps({"apps": []}), encoding="utf-8")
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server, "APPS_STATE_PATH", state), \
+             patch.object(web_server.subprocess, "run") as run:
+            status, _headers, body = self.request(
+                "POST", "/api/apps/action", headers=headers,
+                body=json.dumps({"app": "Sample.app", "action": "start"}).encode())
+        self.assertEqual(status, 404)
+        self.assertFalse(json.loads(body)["ok"])
+        run.assert_not_called()
 
     def test_config_post_with_server_token_reaches_route(self) -> None:
         normalized = cleanup.validate_config({"stale_days": 31})
