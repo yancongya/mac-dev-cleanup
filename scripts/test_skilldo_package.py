@@ -76,10 +76,13 @@ class SkillDoPackageTests(unittest.TestCase):
             shutil.copytree(builder.OUTPUT, legacy)
             (legacy / "scripts" / "local_services_cli.py").unlink()
             (legacy / "scripts" / "export_summary.py").unlink()
+            (legacy / "scripts" / "login_items.py").unlink()
+            (legacy / "scripts" / "local_login_items_cli.py").unlink()
             manifest_path = legacy / builder.MANIFEST
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["files"] = [record for record in manifest["files"] if record["path"] not in {
-                "scripts/local_services_cli.py", "scripts/export_summary.py"
+                "scripts/local_services_cli.py", "scripts/export_summary.py",
+                "scripts/login_items.py", "scripts/local_login_items_cli.py",
             }]
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                                      encoding="utf-8")
@@ -94,13 +97,34 @@ class SkillDoPackageTests(unittest.TestCase):
             previous = Path(directory) / "mac-dev-cleanup"
             shutil.copytree(builder.OUTPUT, previous)
             (previous / "scripts" / "local_services_cli.py").unlink()
+            (previous / "scripts" / "login_items.py").unlink()
+            (previous / "scripts" / "local_login_items_cli.py").unlink()
             manifest_path = previous / builder.MANIFEST
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["files"] = [record for record in manifest["files"]
-                                 if record["path"] != "scripts/local_services_cli.py"]
+                                 if record["path"] not in {"scripts/local_services_cli.py",
+                                                            "scripts/login_items.py",
+                                                            "scripts/local_login_items_cli.py"}]
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                                      encoding="utf-8")
 
+            builder.check_bundle(previous, allow_legacy=True)
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    builder.check_bundle(previous)
+
+    def test_pre_login_items_bundle_is_accepted_only_for_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc-pre-login-items-bundle-") as directory:
+            previous = Path(directory) / "mac-dev-cleanup"
+            shutil.copytree(builder.OUTPUT, previous)
+            for path in ("scripts/login_items.py", "scripts/local_login_items_cli.py"):
+                (previous / path).unlink()
+            manifest_path = previous / builder.MANIFEST
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["files"] = [record for record in manifest["files"]
+                                 if record["path"] not in {"scripts/login_items.py", "scripts/local_login_items_cli.py"}]
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                                     encoding="utf-8")
             builder.check_bundle(previous, allow_legacy=True)
             with redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):

@@ -93,7 +93,7 @@ skilldo update --skill mac-dev-cleanup --yes
 - **本地 Web 控制台**：六视图（概览 = 纯只读仪表盘 / 清理 = 唯一执行域含整模式与按勾选两种范式 + 重复文件 / 系统 = 应用卸载 + 启动项 + TM 快照 / 还原 = 操作与执行统一时间线 + 废纸篓 / 计划任务 / 设置含工具自检）；服务/FDA 权限降级由顶部全局横幅统一提示；端口解析顺序 `--port` → `MDC_PORT` → `config.json: dashboard_port`（默认 8766，避让常被占用的 8765）
 - **系统废纸篓管理**：`~/.Trash` 全量清单（隔离区单列、保持可恢复）；清空需逐字确认串 `EMPTY TRASH` + API token 双重门禁，默认保留隔离区
 - **TM 本地快照管理**：列表 + 单条删除；`com.apple.os.update-*` 系统更新回滚点代码级拒绝删除，重启装完更新即自动释放
-- **启动与服务管理**：LaunchAgents/LaunchDaemons 清单保留系统级只读；用户可登记已有用户 LaunchAgent，或用绝对可执行路径 + JSON 参数数组创建用户服务，再在本地看板启动/停止、设置登录自启。登记不立即启动；若服务已从终端运行，先停止该实例以免重复。macOS 应用登录项与应用自带后台项目由系统管理；看板提供“打开 macOS 登录项设置”入口，不直接改写第三方软件的后台注册。应用卸载仍是独立功能。
+- **启动与服务管理**：LaunchAgents/LaunchDaemons 清单保留系统级只读；用户可登记已有用户 LaunchAgent，或用绝对可执行路径 + JSON 参数数组创建用户服务，再在本地看板启动/停止、设置登录自启。登记不立即启动；若服务已从终端运行，先停止该实例以免重复。看板可按需通过 macOS System Events 读取传统“登录时打开”项目；第三方应用登录项与后台活动的开关仍由 macOS“登录项与扩展”设置管理。应用卸载仍是独立功能。
 - **TCC 优雅降级**：`~/.Trash` 与 `MobileSync` 是 macOS 权限保护目录——无权限时 API 返回 `available: false` / 类别缺席并给出授权指引，绝不中断扫描或报 500
 - **零运行时依赖**：纯 Python 标准库
 
@@ -135,6 +135,16 @@ python3 <skill-dir>/scripts/local_services_cli.py disable-autostart com.example.
 ```
 
 `list` / `status` 只读；`register` 只登记现有 plist，不启动或更改自启；生命周期命令必须给出精确 Label 且服务已登记。CLI 没有任意命令、plist 路径、系统 LaunchAgent/Daemon 或 `restart` 操作；错误以非零退出码和 JSON 错误返回。NAS 容器生命周期仍由 Agent Ops 管理。
+
+### 应用登录项只读清单
+
+读取当前用户“登录时打开”项目时，可能需要允许本地终端/看板通过 macOS 自动化访问 System Events：
+
+```bash
+python3 <skill-dir>/scripts/local_login_items_cli.py list
+```
+
+CLI 和看板只返回清单，不更改登录状态。macOS 的 `SMAppService` 仅允许应用管理自身 bundle 内注册的 helper；本工具不能用它切换其他应用。应用后台活动、扩展和部分受系统管理的条目不会出现在传统清单中。使用“登录项与扩展”设置逐项变更。
 
 `--summary-json` 仅用于 `scan` 或清理干跑，输出版本化、无候选路径/原因/ID/配置的 JSON 摘要；不能与 `--apply` 同用。
 

@@ -3223,7 +3223,13 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   }
 
   function renderLaunchInner(){
-    return '<div id="launch-list"><div class="empty">加载中…</div></div>'+
+    return '<section class="panel" style="margin:0 16px 12px"><div style="padding:14px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
+      '<div><strong>应用登录项 · Open at Login</strong><p class="ov-sub" style="margin:5px 0 0">普通应用登录项由 macOS 管理。点击后只读取当前用户的传统“登录时打开”清单；首次读取可能触发 macOS 的自动化授权提示。应用后台活动和扩展不包含在此清单中。</p></div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="login-items-refresh">读取应用登录项</button>'+
+      '<a class="btn" href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension" target="_blank" rel="noopener noreferrer">打开 macOS 登录项设置</a></div></div>'+
+      '<div id="app-login-list" style="padding:0 16px 12px"><div class="empty">尚未读取。macOS 不提供由此面板切换其他应用登录注册的公开 API；需要变更时请在系统设置中逐项操作。</div></div>'+
+      '</section>'+
+      '<div id="launch-list"><div class="empty">加载中…</div></div>'+
       '<details id="service-create-section" style="padding:0 16px 14px"><summary style="cursor:pointer;font-size:12px;font-weight:600">登记一个终端服务</summary>'+
       '<p class="ov-sub">填写绝对可执行文件路径与 JSON 参数数组。系统会创建用户 LaunchAgent，不经过 shell；登记后不会立即启动。若该服务目前在终端运行，先在终端停止它，避免重复启动。不要把密码或令牌写入参数。</p>'+
       '<form id="service-create-form">'+
@@ -3233,12 +3239,39 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<label class="field">工作目录（可选）<input id="service-new-cwd" placeholder="/Users/you/Projects/example" autocomplete="off"></label>'+
       '<div style="display:flex;gap:14px;padding:8px 0"><label><input type="checkbox" id="service-new-run-at-load"> 登录时启动</label><label><input type="checkbox" id="service-new-keep-alive"> 退出后自动拉起</label></div>'+
       '<button class="btn" type="submit">创建并登记</button></form></details>'+
-      '<div style="padding:0 16px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
-      '<p class="ov-sub" style="margin:0;flex:1 1 360px">此列表展示 LaunchAgent/LaunchDaemon plist。普通应用登录项由 macOS 管理；这里不直接修改应用自带的后台项目。停止只影响当前运行；关闭自启只影响下次登录；两者都不会卸载服务。卸载应用仍在上方“应用卸载”区域单独处理。仅登记的当前用户服务可操作；系统代理和守护进程只读。</p>'+
-      '<a class="btn" href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension" target="_blank" rel="noopener noreferrer">打开 macOS 登录项设置</a></div>';
+      '<div style="padding:0 16px 12px"><p class="ov-sub" style="margin:0">此列表展示 LaunchAgent/LaunchDaemon plist。停止只影响当前运行；关闭自启只影响下次登录；两者都不会卸载服务。卸载应用仍在上方“应用卸载”区域单独处理。仅登记的当前用户服务可操作；系统代理和守护进程只读。</p></div>';
+  }
+  function renderAppLoginItems(payload){
+    var el=$("app-login-list"); if(!el) return;
+    if(!payload || !payload.ok){
+      el.innerHTML='<div class="empty">'+esc((payload&&payload.error)||"读取失败")+'。可在 <a href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension">macOS 登录项设置</a> 查看和管理。</div>';
+      return;
+    }
+    var items=payload.items||[];
+    if(!items.length){el.innerHTML='<div class="empty">未发现传统“登录时打开”项目。后台活动与扩展请在 macOS 设置中查看。</div>';return;}
+    el.innerHTML='<div class="trash-sub-head" style="padding:8px 0 2px">登录时打开<span class="note">'+items.length+' 项 · 只读</span></div><div class="sys-list">'+items.map(function(it){
+      var location=it.path?truncatePath(it.path):"路径未公开";
+      var tags='<span class="tag tag-scanonly">登录时打开</span>'+(it.hidden?'<span class="tag tag-review">登录时隐藏</span>':'');
+      return '<div class="sys-item"><span class="si-name" title="'+esc(it.name||"")+'">'+esc(it.name||"未命名项目")+'</span>'+
+        '<span class="si-time" style="max-width:38%" title="'+esc(it.path||"")+'">'+esc(location)+'</span>'+
+        '<span class="service-state">'+tags+'</span><a class="btn" href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension" target="_blank" rel="noopener noreferrer">在系统设置中管理</a></div>';
+    }).join("")+'</div><p class="ov-sub" style="padding:8px 0 0;margin:0">此清单只覆盖“登录时打开”。应用后台活动和扩展由 macOS 另行管理；系统没有公开接口让本面板安全地切换其他应用的登录注册。</p>';
+  }
+  function bindAppLoginItemActions(){
+    var root=$("pbody-launch"); if(!root || root.dataset.loginItemsBound) return;
+    root.dataset.loginItemsBound="1";
+    root.addEventListener("click",function(e){
+      var button=e.target.closest("#login-items-refresh"); if(!button) return;
+      button.disabled=true; button.textContent="正在读取…";
+      fetch("api/login-items",{cache:"no-store"}).then(function(r){return r.json().then(function(j){return {ok:r.ok,payload:j};});})
+        .then(function(res){renderAppLoginItems(res.payload);if(res.ok&&res.payload&&res.payload.ok)toast("已读取应用登录项","ok");})
+        .catch(function(){renderAppLoginItems({ok:false,error:"无法连接本地服务"});})
+        .finally(function(){button.disabled=false;button.textContent="刷新应用登录项";});
+    });
   }
   function renderLaunch(){
     var el=$("launch-list"); if(!el) return;
+    bindAppLoginItemActions();
     var badge=$("launch-count");
     if(!state.apiOnline){
       el.innerHTML='<div class="empty">需通过本地服务打开才能读取启动项</div>';

@@ -102,6 +102,7 @@ def _load_exec_history() -> list[dict]:
 sys.path.insert(0, str(SCRIPT.parent))
 import mac_dev_cleanup as cleanup  # noqa: E402
 import local_services as local_services  # noqa: E402
+import login_items as app_login_items  # noqa: E402
 
 # The CLI module owns the policy path; never re-derive it here. It resolves to
 # LOG_DIR/config.json (outside the Skill directory), so a `skilldo update` that
@@ -390,6 +391,12 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/launch":
             self.send_json(200, {"ok": True, "items": cleanup.launch_items()})
+            return
+        if path == "/api/login-items":
+            try:
+                self.send_json(200, app_login_items.list_login_items())
+            except app_login_items.LoginItemsError as exc:
+                self.send_json(503, {"ok": False, "error": str(exc), "readOnly": True})
             return
         if path == "/api/services":
             items = cleanup.launch_items()

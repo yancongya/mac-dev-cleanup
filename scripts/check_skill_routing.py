@@ -41,6 +41,17 @@ if missing_service_cli:
     print(f"[FAIL] Missing local service CLI guidance: {', '.join(missing_service_cli)}", file=sys.stderr)
     raise SystemExit(1)
 
+login_items_required = (
+    "GET /api/login-items",
+    "local_login_items_cli.py list",
+    "traditional “Open at Login”",
+    "cannot be toggled through the public `SMAppService` API",
+)
+missing_login_items = [phrase for phrase in login_items_required if phrase not in text]
+if missing_login_items:
+    print(f"[FAIL] Missing read-only Login Items boundary: {', '.join(missing_login_items)}", file=sys.stderr)
+    raise SystemExit(1)
+
 if (
     "sole editable source" not in text
     or "python3 scripts/build_skilldo_package.py build" not in text
@@ -60,6 +71,7 @@ if readme and (
     or "skilldo track-local --skill mac-dev-cleanup --path skills/mac-dev-cleanup --yes" not in readme
     or "skilldo repair source --skill mac-dev-cleanup" not in readme
     or "scripts/local_services_cli.py list" not in readme
+    or "local_login_items_cli.py list" not in readme
 ):
     print("[FAIL] README.md update, source route, or Docker route conflicts with SKILL.md", file=sys.stderr)
     raise SystemExit(1)

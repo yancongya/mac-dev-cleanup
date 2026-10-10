@@ -217,6 +217,27 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
             self.assertIsNone(item["enabled"])
             self.assertTrue(any(word in item["reason"] for word in ("只读", "仅显示")))
 
+    def test_login_items_api_is_read_only_and_reports_system_settings_fallback(self) -> None:
+        inventory = {"ok": True, "readOnly": True, "items": [{"name": "Example", "enabled": True}]}
+        with patch.object(web_server.app_login_items, "list_login_items", return_value=inventory) as list_items:
+            status, _headers, body = self.request("GET", "/api/login-items")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), inventory)
+        list_items.assert_called_once_with()
+
+        with patch.object(web_server.app_login_items, "list_login_items",
+                          side_effect=web_server.app_login_items.LoginItemsError("System Events unavailable")):
+            status, _headers, body = self.request("GET", "/api/login-items")
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body), {
+            "ok": False, "error": "System Events unavailable", "readOnly": True,
+        })
+
+    def test_login_items_api_has_no_write_route(self) -> None:
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        status, _headers, _body = self.request("POST", "/api/login-items", headers=headers, body=b"{}")
+        self.assertEqual(status, 404)
+
     def test_dashboard_route_falls_back_to_tracked_template_after_skill_update(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc-dashboard-template-") as temp:
             root = Path(temp)
