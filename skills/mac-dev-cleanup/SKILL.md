@@ -310,6 +310,14 @@ python3 ~/.codex/skills/mac-dev-cleanup/scripts/mac_dev_cleanup.py clean-safe --
 
 `--summary-json PATH` exports a versioned, path-free summary for `scan` or a cleanup dry-run. It contains aggregate counts and byte totals only; candidate paths, reasons, IDs, project names, and configuration are omitted. The flag is rejected with `--apply`.
 
+To export the **latest already-saved scan** without scanning, cleaning, or loading policy, use the separate read-only helper:
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/export_summary.py --output /path/to/mac-cleanup-summary.json
+```
+
+It reads only the saved state file and projects the exact `mac-dev-cleanup.summary.v1` allowlist: `schema`, `timestamp`, `mode`, `apply`, `candidateCount`, `riskCounts` (`safe`, `aggressive`, `manual`), `safeBytes`, `aggressiveBytes`, `manualBytes`, and `selectedBytes`. It requires `apply: false`, a timezone-aware non-future timestamp, non-negative integer counts/totals, matching candidate/risk counts, and mode-consistent byte totals. The output is atomically written with owner-only permissions. It never emits candidate paths, IDs, reasons, config, or other source fields, and does not transmit the file anywhere.
+
 Safe cleanup (moves eligible items to the Skill quarantine inside Trash):
 
 ```bash

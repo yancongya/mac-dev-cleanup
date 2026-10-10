@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,6 +69,23 @@ class SkillDoPackageTests(unittest.TestCase):
             }
             self.assertEqual(restored_files, old_files)
             self.assertFalse(previous.exists())
+
+    def test_verified_previous_bundle_is_accepted_only_for_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc-legacy-bundle-") as directory:
+            legacy = Path(directory) / "mac-dev-cleanup"
+            shutil.copytree(builder.OUTPUT, legacy)
+            (legacy / "scripts" / "export_summary.py").unlink()
+            manifest_path = legacy / builder.MANIFEST
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["files"] = [record for record in manifest["files"]
+                                 if record["path"] != "scripts/export_summary.py"]
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                                     encoding="utf-8")
+
+            builder.check_bundle(legacy, allow_legacy=True)
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    builder.check_bundle(legacy)
 
 
 if __name__ == "__main__":

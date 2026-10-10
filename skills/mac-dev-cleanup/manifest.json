@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "7223d6185ee52eaf25e9172f7d2d1281a477d97ff192e18aedf9f003ce586de0"
+      "sha256": "728394e8dee426206792c848bcbb2a4e17e787ed973dd6339d5837de836f8d06"
     },
     {
       "path": "dashboard_template.html",
@@ -17,6 +17,10 @@
     {
       "path": "scripts/mac_dev_cleanup.py",
       "sha256": "c02f50ac9e6b6355891f52dbdde307d2a9fc4a964a37ca7bad149e7622bcce45"
+    },
+    {
+      "path": "scripts/export_summary.py",
+      "sha256": "00ae925f43e2e29c6567fae4e2c47ca43a2033320002f1e0a7f8aa651dfd7d24"
     },
     {
       "path": "scripts/web_server.py",

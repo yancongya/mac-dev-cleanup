@@ -29,9 +29,11 @@ PACKAGE_FILES = (
     "dashboard_template.html",
     "agents/openai.yaml",
     "scripts/mac_dev_cleanup.py",
+    "scripts/export_summary.py",
     "scripts/web_server.py",
     "scripts/check_skill_routing.py",
 )
+LEGACY_PACKAGE_FILES = tuple(path for path in PACKAGE_FILES if path != "scripts/export_summary.py")
 MANIFEST = "manifest.json"
 EXPECTED_PACKAGE_FILES = frozenset((*PACKAGE_FILES, MANIFEST))
 RUNTIME_FILES = ("dashboard.html", "dashboard_data.js", "config_data.js")
@@ -75,7 +77,7 @@ def load_manifest(directory: Path) -> dict:
     return value
 
 
-def check_bundle(directory: Path) -> None:
+def check_bundle(directory: Path, *, allow_legacy: bool = False) -> None:
     if directory.is_symlink() or not directory.is_dir():
         fail(f"bundle must be a real directory: {directory}")
     manifest = load_manifest(directory)
@@ -83,7 +85,10 @@ def check_bundle(directory: Path) -> None:
     if not isinstance(records, list):
         fail("manifest files must be a list")
     paths = [record.get("path") for record in records if isinstance(record, dict)]
-    if len(paths) != len(records) or frozenset(paths) != frozenset(PACKAGE_FILES):
+    permitted_sets = {frozenset(PACKAGE_FILES)}
+    if allow_legacy:
+        permitted_sets.add(frozenset(LEGACY_PACKAGE_FILES))
+    if len(paths) != len(records) or frozenset(paths) not in permitted_sets:
         fail("manifest file list does not match the declared SkillDo bundle")
 
     actual: set[str] = set()
@@ -95,8 +100,9 @@ def check_bundle(directory: Path) -> None:
             actual.add(relative)
         elif path.is_dir() and path.name in FORBIDDEN_NAMES:
             fail(f"bundle contains forbidden runtime/project content: {relative}")
-    if actual != EXPECTED_PACKAGE_FILES:
-        fail(f"bundle file inventory differs: {sorted(actual ^ EXPECTED_PACKAGE_FILES)}")
+    expected_inventory = frozenset((*paths, MANIFEST))
+    if actual != expected_inventory:
+        fail(f"bundle file inventory differs: {sorted(actual ^ expected_inventory)}")
 
     for record in records:
         path = directory / record["path"]
@@ -155,7 +161,9 @@ def install_bundle(staging: Path, output: Path) -> None:
     previous = output.with_name(f".{output.name}.previous")
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or output.is_symlink():
-        check_bundle(output)
+        # Permit a verified prior package when the allowlist grows. It is
+        # replaced only after the staged current package passes full checks.
+        check_bundle(output, allow_legacy=True)
         if previous.exists() or previous.is_symlink():
             fail(f"refusing to overwrite existing recovery path: {previous}")
         output.rename(previous)

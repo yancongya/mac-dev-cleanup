@@ -12,6 +12,7 @@
 
 - `SKILL.md` —— 给 **AI 代理**读取的技能清单（代理据此知道何时、如何调用本 Skill）；
 - `scripts/mac_dev_cleanup.py` —— Skill 真正执行的清理引擎（纯 Python 标准库，零运行时依赖）；
+- `scripts/export_summary.py` —— 从最近一次已保存状态导出脱敏摘要，不运行扫描或清理；
 - `scripts/web_server.py` + `dashboard_template.html` —— 本地 Web 控制台（读状态、改配置、触发扫描）；
 - 本 `README.md` —— 给**人**看的仓库说明。
 
@@ -32,6 +33,14 @@
 2. **调用 Skill**（安装后，在 AI 代理对话里直接说，可整句复制粘贴）：
 
    > 用 mac-dev-cleanup 这个 skill 帮我扫描并清理开发缓存：先只做只读扫描，再列出可清理项让我确认后再执行。
+
+如需导出最近一次扫描的汇总而不重新扫描，可指定一个已存在目录中的输出文件：
+
+```bash
+python3 ~/.codex/skills/mac-dev-cleanup/scripts/export_summary.py --output /path/to/mac-cleanup-summary.json
+```
+
+命令只读取已保存的 `state.json`，校验时间、风险计数和字节总数后写出 `mac-dev-cleanup.summary.v1`；导出仅含汇总字段，不含候选路径、ID、原因或配置。文件以仅当前用户可读写的权限原子写入。该命令只生成文件，不会自动同步到其他设备。
 
 ## SkillDo 更新流程
 
