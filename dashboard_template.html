@@ -3224,6 +3224,15 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   function renderLaunchInner(){
     return '<div id="launch-list"><div class="empty">加载中…</div></div>'+
+      '<details id="service-create-section" style="padding:0 16px 14px"><summary style="cursor:pointer;font-size:12px;font-weight:600">登记一个终端服务</summary>'+
+      '<p class="ov-sub">填写绝对可执行文件路径与 JSON 参数数组。系统会创建用户 LaunchAgent，不经过 shell；登记后不会立即启动。若该服务目前在终端运行，先在终端停止它，避免重复启动。不要把密码或令牌写入参数。</p>'+
+      '<form id="service-create-form">'+
+      '<label class="field">服务标识（例如 com.example.dashboard）<input id="service-new-label" required pattern="[A-Za-z0-9][A-Za-z0-9.-]{0,254}" autocomplete="off"></label>'+
+      '<label class="field">可执行文件绝对路径<input id="service-new-program" required placeholder="/opt/homebrew/bin/node" autocomplete="off"></label>'+
+      '<label class="field">参数（JSON 字符串数组）<textarea id="service-new-arguments" rows="3" spellcheck="false">[]</textarea></label>'+
+      '<label class="field">工作目录（可选）<input id="service-new-cwd" placeholder="/Users/you/Projects/example" autocomplete="off"></label>'+
+      '<div style="display:flex;gap:14px;padding:8px 0"><label><input type="checkbox" id="service-new-run-at-load"> 登录时启动</label><label><input type="checkbox" id="service-new-keep-alive"> 退出后自动拉起</label></div>'+
+      '<button class="btn" type="submit">创建并登记</button></form></details>'+
       '<p class="ov-sub" style="padding:0 16px 12px">此列表展示 LaunchAgent/LaunchDaemon plist；macOS 应用登录项暂未纳入，可在系统设置查看。停止只影响当前运行；关闭自启只影响下次登录；两者都不会卸载服务。卸载应用仍在上方“应用卸载”区域单独处理。仅登记的当前用户服务可操作；系统代理、守护进程及其他登录项只读。</p>';
   }
   function renderLaunch(){
@@ -3231,10 +3240,13 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     var badge=$("launch-count");
     if(!state.apiOnline){
       el.innerHTML='<div class="empty">需通过本地服务打开才能读取启动项</div>';
+      var createSection=$("service-create-section"); if(createSection) createSection.hidden=true;
       if(badge) badge.textContent="";
       return;
     }
+    var createSection=$("service-create-section"); if(createSection) createSection.hidden=false;
     var items=REPORTS.services||[];
+    bindServiceActions();
     if(badge) badge.textContent = items.length?("共 "+items.length+" 项 · "):"";
     if(!items.length){
       el.innerHTML='<div class="empty">未发现本机启动项或已登记服务</div>';
@@ -3276,9 +3288,9 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     bindServiceActions();
   }
   function bindServiceActions(){
-    var list=$("launch-list"); if(!list || list.dataset.bound) return;
-    list.dataset.bound="1";
-    list.addEventListener("click",function(e){
+    var root=$("pbody-launch"); if(!root || root.dataset.bound) return;
+    root.dataset.bound="1";
+    root.addEventListener("click",function(e){
       var register=e.target.closest(".service-register"), actionBtn=e.target.closest(".service-action");
       if(!register&&!actionBtn) return;
       var label=(register||actionBtn).getAttribute("data-label")||"";
@@ -3290,6 +3302,24 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
         .then(function(res){if(res.ok&&res.j&&res.j.ok){toast(register?"服务已登记":"服务操作已完成","ok");loadLaunch();}else{btn.disabled=false;toast("操作失败："+((res.j&&res.j.error)||"未知错误"),"err");}})
         .catch(function(){btn.disabled=false;toast("操作失败：网络错误","err");});
+    });
+    root.addEventListener("submit",function(e){
+      if(!e.target || e.target.id!=="service-create-form") return;
+      var createForm=e.target;
+      e.preventDefault();
+      var label=$("service-new-label").value.trim(), program=$("service-new-program").value.trim();
+      var args;
+      try { args=JSON.parse($("service-new-arguments").value||"[]"); }
+      catch(_err){ toast("参数必须是有效的 JSON 字符串数组","err"); return; }
+      if(!Array.isArray(args)||args.some(function(v){return typeof v!=="string";})){toast("参数必须是 JSON 字符串数组","err");return;}
+      if(!window.confirm("创建“"+label+"”的用户 LaunchAgent？这会写入登录项配置，但不会立即启动。若相同服务仍在终端运行，请先停止以免重复。")) return;
+      var button=createForm.querySelector("button[type=submit]"); button.disabled=true;
+      var payload={label:label,program:program,arguments:args,working_directory:$("service-new-cwd").value.trim()||null,
+        run_at_load:$("service-new-run-at-load").checked,keep_alive:$("service-new-keep-alive").checked};
+      fetch("api/services/create",{method:"POST",headers:postHeaders(),body:JSON.stringify(payload)})
+        .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+        .then(function(res){if(res.ok&&res.j&&res.j.ok){toast("服务已创建并登记；可在列表中启动","ok");createForm.reset();$("service-new-arguments").value="[]";loadLaunch();}else{button.disabled=false;toast("创建失败："+((res.j&&res.j.error)||"未知错误"),"err");}})
+        .catch(function(){button.disabled=false;toast("创建失败：网络错误","err");});
     });
   }
 

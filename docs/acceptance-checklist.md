@@ -67,6 +67,8 @@ node scripts/check_dashboard_dom.mjs dashboard.html   # DOM 结构
 
 - [ ] scope 分组（用户/本地代理/本地守护中文）、Label/Program/RunAtLoad/KeepAlive 徽标、com.apple.* 已过滤
 - [ ] 未登记的用户 LaunchAgent 只有“登记”按钮；登记前后不调用 launchctl 改状态
+- [ ] 可用绝对可执行路径 + JSON argv 数组创建终端服务；不经 shell，登记不会立即启动，plist 与本机登记清单权限为 0600
+- [ ] 创建时若同一服务正从终端运行，提示用户先停止该实例，避免重复
 - [ ] 登记后分别提供启动/停止与登录自启开关；停止不会卸载，关闭自启不会停止当前进程
 - [ ] 每项变更前确认；服务注册表位于 `~/.codex/logs/mac-dev-cleanup/managed-services.json`，权限为 0600
 - [ ] 仅用户 LaunchAgents 可登记；系统 LaunchAgents/Daemons 不提供操作按钮

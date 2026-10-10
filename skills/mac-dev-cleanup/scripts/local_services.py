@@ -35,7 +35,7 @@ def _valid_label(label: object) -> str:
 
 
 def _default_runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False, **kwargs)
+    return subprocess.run(argv, **kwargs)
 
 
 class LocalServices:
@@ -217,6 +217,61 @@ class LocalServices:
         self._save_registry(registered)
         return {"ok": True, "service": self._state(label, path, raw, True)}
 
+    def create_service(self, label: str, program: str, arguments: list[str],
+                       working_directory: str | None = None,
+                       run_at_load: bool = False, keep_alive: bool = False) -> dict[str, Any]:
+        """Create a user LaunchAgent from an explicit argv vector (never a shell string)."""
+        label = _valid_label(label)
+        if not isinstance(program, str) or not os.path.isabs(program) or "\x00" in program:
+            raise LocalServiceError("program must be an absolute executable path")
+        executable = Path(program)
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise LocalServiceError("program must exist and be executable")
+        if not isinstance(arguments, list) or len(arguments) > 128 or any(
+                not isinstance(arg, str) or "\x00" in arg or len(arg) > 4096 for arg in arguments):
+            raise LocalServiceError("arguments must be a list of plain strings")
+        if type(run_at_load) is not bool or type(keep_alive) is not bool:
+            raise LocalServiceError("startup options must be booleans")
+        cwd: Path | None = None
+        if working_directory is not None:
+            if not isinstance(working_directory, str) or "\x00" in working_directory or not os.path.isabs(working_directory):
+                raise LocalServiceError("working directory must be an absolute path")
+            cwd = Path(working_directory)
+            if cwd.is_symlink() or not cwd.is_dir():
+                raise LocalServiceError("working directory must be a real directory")
+        root = self.launch_agents
+        if root.is_symlink() or not root.is_dir():
+            raise LocalServiceError("LaunchAgents directory unavailable or unsafe")
+        target = root / f"{label}.plist"
+        if target.exists() or target.is_symlink():
+            raise LocalServiceError("a LaunchAgent with this label already exists")
+        registry = self._registry()
+        if label in registry:
+            raise LocalServiceError("service is already registered")
+        plist: dict[str, Any] = {
+            "Label": label,
+            "Program": str(executable),
+            "ProgramArguments": [str(executable), *arguments],
+            "RunAtLoad": run_at_load,
+            "KeepAlive": keep_alive,
+        }
+        if cwd is not None:
+            plist["WorkingDirectory"] = str(cwd)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                plistlib.dump(plist, stream, fmt=plistlib.FMT_XML, sort_keys=True)
+            checked_path, raw = self._candidate(label)
+            registry[label] = str(checked_path)
+            self._save_registry(registry)
+        except Exception:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            raise
+        return {"ok": True, "service": self._state(label, checked_path, raw, True)}
+
     def service_action(self, label: str, action: str) -> dict[str, Any]:
         label = _valid_label(label)
         if action not in _ACTIONS:
@@ -254,6 +309,12 @@ def list_services(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
 
 def register_service(label: str) -> dict[str, Any]:
     return _DEFAULT.register_service(label)
+
+
+def create_service(label: str, program: str, arguments: list[str],
+                   working_directory: str | None = None,
+                   run_at_load: bool = False, keep_alive: bool = False) -> dict[str, Any]:
+    return _DEFAULT.create_service(label, program, arguments, working_directory, run_at_load, keep_alive)
 
 
 def service_action(label: str, action: str) -> dict[str, Any]:

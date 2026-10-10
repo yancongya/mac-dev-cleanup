@@ -148,6 +148,44 @@ class LocalServicesTests(unittest.TestCase):
         with self.assertRaises(services.LocalServiceError):
             self.manager.service_action("com.example.worker", "stop")
 
+    def test_create_service_writes_private_launch_agent_without_running_it(self) -> None:
+        result = self.manager.create_service(
+            "com.example.dashboard", sys.executable, ["-m", "http.server", "8765"],
+            self.temp.name, run_at_load=True, keep_alive=True,
+        )
+        path = self.root / "com.example.dashboard.plist"
+        with path.open("rb") as stream:
+            plist = plistlib.load(stream)
+        self.assertEqual(plist["ProgramArguments"], [sys.executable, "-m", "http.server", "8765"])
+        self.assertEqual(plist["WorkingDirectory"], self.temp.name)
+        self.assertIs(plist["RunAtLoad"], True)
+        self.assertIs(plist["KeepAlive"], True)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        registry = json.loads(self.registry.read_text(encoding="utf-8"))
+        self.assertEqual(registry["services"]["com.example.dashboard"], str(path.resolve()))
+        self.assertFalse(any(call[:2] in (["launchctl", "bootstrap"], ["launchctl", "kickstart"])
+                             for call in self.runner.calls))
+        self.assertTrue(result["ok"])
+
+    def test_create_service_rejects_unparsed_command_strings_and_existing_labels(self) -> None:
+        with self.assertRaises(services.LocalServiceError):
+            self.manager.create_service("com.example.bad", "sh -c touch /tmp/unsafe", [])
+        with self.assertRaises(services.LocalServiceError):
+            self.manager.create_service("com.example.worker", sys.executable, ["-m", "http.server"])
+        self.assertFalse((self.root / "com.example.bad.plist").exists())
+        self.assertEqual(self.runner.calls, [])
+
+    def test_default_runner_passes_subprocess_options_once(self) -> None:
+        from unittest.mock import patch
+        expected = SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        with patch.object(services.subprocess, "run", return_value=expected) as run:
+            manager = services.LocalServices(uid=501, launch_agents=self.root,
+                                             registry_path=self.registry)
+            code, output = manager._run(["launchctl", "print", "gui/501/example"])
+        self.assertEqual((code, output), (0, "ok"))
+        run.assert_called_once_with(["launchctl", "print", "gui/501/example"],
+                                    capture_output=True, text=True, timeout=10, check=False)
+
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))

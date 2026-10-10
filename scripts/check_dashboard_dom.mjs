@@ -177,6 +177,7 @@ ok("快照删除标注不可恢复", ($("#snapshot-confirm")?.textContent || "")
 ok("启动项与服务面板存在", !!$("#panel-launch") && !!$("#pbody-launch"));
 ok("页面说明 LaunchAgent 范围与系统设置入口", /LaunchAgent\/LaunchDaemon plist/.test(text("#pbody-launch")) && /macOS 应用登录项暂未纳入/.test(text("#pbody-launch")) && /系统设置查看/.test(text("#pbody-launch")));
 ok("页面区分停止、自启与卸载", /停止只影响当前运行/.test(text("#pbody-launch")) && /关闭自启只影响下次登录/.test(text("#pbody-launch")) && /不会卸载服务/.test(text("#pbody-launch")));
+ok("可用参数列表登记终端服务", !!$("#service-create-form") && !!$("#service-new-program") && /JSON 字符串数组/.test(text("#service-create-section")) && /不会立即启动/.test(text("#service-create-section")));
 ok("服务清单渲染", serviceText("#launch-list").includes("demo.managed") && serviceText("#launch-list").includes("demo.system"));
 ok("未登记用户项仅提供登记", service$("#launch-list [data-label=\"demo.unregistered\"]")?.classList.contains("service-register") && !service$("#launch-list [data-label=\"demo.unregistered\"] + .service-action"));
 ok("已登记服务有独立启停和自启控制", service$("#launch-list [data-label=\"demo.managed\"][data-action=\"stop\"]") && service$("#launch-list [data-label=\"demo.managed\"][data-action=\"disable\"]"));

@@ -4,11 +4,11 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "a6bb1c121897fcf6b5c1ab964f3544089d522822006b116d2170fc7cade3a627"
+      "sha256": "5e7d4ae8a5be5be74dae9b361fb2858d5da44b719bfb5243ccceb6e6f5b8d0f5"
     },
     {
       "path": "dashboard_template.html",
-      "sha256": "cb79d5f565591d853ab786574f7cd31fd1fd32aad2ed72d8876af5b15c22d86b"
+      "sha256": "40fc2af810fb28941f9d06761ddbea37c005e003f1bd4715a4d8f216d913c376"
     },
     {
       "path": "agents/openai.yaml",
@@ -24,11 +24,11 @@
     },
     {
       "path": "scripts/web_server.py",
-      "sha256": "787fcdd57cb5fc0e8c233cd09de69927c266cb02b447b42b547eecc70b130c45"
+      "sha256": "d524e83c37389f641e6df1f3c2b85ff19ef609eb222076d119cace2e028862bc"
     },
     {
       "path": "scripts/local_services.py",
-      "sha256": "f5b78853ee5370ed0fba6a9049baa64894ac0c03eeceef5f0a7e575b94f29823"
+      "sha256": "dabf6af05b2c21e62ba9dc07f5e2019d28db04a5691d13793a5ea217e07e2605"
     },
     {
       "path": "scripts/check_skill_routing.py",

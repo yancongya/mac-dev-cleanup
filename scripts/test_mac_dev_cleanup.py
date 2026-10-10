@@ -219,10 +219,13 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
 
     def test_service_control_endpoints_reject_missing_token_before_dispatch(self) -> None:
         with patch.object(web_server.local_services, "register_service") as register, \
-                patch.object(web_server.local_services, "service_action") as action:
+                patch.object(web_server.local_services, "service_action") as action, \
+                patch.object(web_server.local_services, "create_service") as create:
             for path, body in (
                 ("/api/services/register", {"label": "com.example.user"}),
                 ("/api/services/action", {"label": "com.example.user", "action": "stop"}),
+                ("/api/services/create", {"label": "com.example.user", "program": "/usr/bin/python3",
+                 "arguments": [], "working_directory": None, "run_at_load": False, "keep_alive": False}),
             ):
                 status, _headers, response = self.request(
                     "POST", path, headers={"Content-Type": "application/json"},
@@ -231,6 +234,7 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
                 self.assertEqual(json.loads(response)["error"], "missing or invalid token")
             register.assert_not_called()
             action.assert_not_called()
+            create.assert_not_called()
 
     def test_service_control_endpoints_dispatch_only_strict_registered_commands(self) -> None:
         headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
@@ -262,6 +266,26 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
                 self.assertFalse(json.loads(response)["ok"])
             register.assert_called_once()
             action.assert_called_once()
+
+    def test_service_create_endpoint_requires_exact_argv_payload(self) -> None:
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        payload = {"label": "com.example.dashboard", "program": "/usr/bin/python3",
+                   "arguments": ["-m", "http.server"], "working_directory": "/tmp",
+                   "run_at_load": False, "keep_alive": False}
+        with patch.object(web_server.local_services, "create_service",
+                          return_value={"ok": True, "service": {"label": payload["label"]}}) as create:
+            status, _headers, body = self.request(
+                "POST", "/api/services/create", headers=headers,
+                body=json.dumps(payload).encode("utf-8"))
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)["ok"])
+            create.assert_called_once_with(payload["label"], payload["program"], payload["arguments"],
+                                           payload["working_directory"], False, False)
+            status, _headers, body = self.request(
+                "POST", "/api/services/create", headers=headers,
+                body=json.dumps({**payload, "shell": "true"}).encode("utf-8"))
+            self.assertEqual(status, 400)
+            create.assert_called_once()
 
     def test_http_server_binds_only_to_loopback(self) -> None:
         self.assertEqual(self.server.server_address[0], "127.0.0.1")

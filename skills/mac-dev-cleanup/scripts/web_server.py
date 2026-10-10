@@ -614,6 +614,21 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_json(200, result)
             return
+        if path == "/api/services/create":
+            fields = {"label", "program", "arguments", "working_directory", "run_at_load", "keep_alive"}
+            if not isinstance(payload, dict) or set(payload) != fields:
+                self.send_json(400, {"ok": False, "error": "body must contain the declared service fields"})
+                return
+            try:
+                result = local_services.create_service(
+                    payload["label"], payload["program"], payload["arguments"],
+                    payload["working_directory"], payload["run_at_load"], payload["keep_alive"],
+                )
+            except (ValueError, OSError) as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+                return
+            self.send_json(200, result)
+            return
         if path == "/api/services/action":
             if not isinstance(payload, dict) or set(payload) != {"label", "action"}:
                 self.send_json(400, {"ok": False, "error": "body must contain only label and action"})
