@@ -184,7 +184,7 @@ Cleaning `aggressive` is not automatically worth it: **updater/runtime caches ar
 - **7 → 6 tabs**: 概览（纯只读仪表盘，勾选/执行入口全部移除，预览行只跳转）/ 清理（唯一执行域：「整模式清理」面板明确标注忽略勾选 + 按勾选精确清理 + 重复文件，报告→行动闭环）/ 系统（应用卸载 + 启动项 + TM 快照，原「应用」与「报告」合并）/ 还原（操作与看板执行记录合并为统一时间线，来源标注「看板执行」，废纸篓面板随附）/ 计划任务 / 设置（含工具自检）。原独立「报告」tab 撤销。
 - **P0 semantics fixed**: POST `/api/trash/clear` now requires the literal confirm `"CLEAR QUARANTINE"` (clearing the quarantine destroys every restorable operation — the UI modal says so with actual counts); the shared confirm layer `#app-confirm` replaces the last native `confirm()`; irreversible modals (system trash / snapshots) carry a「不可恢复」badge.
 - **State polish**: candidate selection persists in `localStorage` (`mdc.selection.v1`, re-validated against the inventory on boot); `refreshAfterClean` re-polls on `state.timestamp` change (2 s × 15) instead of a fixed 6 s sleep; the service/FDA degradation guidance renders once in a global `#svc-banner` (panels keep only local disabled notes).
-- **Gate sync**: `check_dashboard_dom.mjs` rewritten alongside each stage (105 assertions); unit tests at 87. Run gates after every template change — the DOM gate is the contract for the tab structure.
+- **Gate sync**: `check_dashboard_dom.mjs` rewritten alongside each stage (105 assertions); `npm test` runs the engine/export unit suites and Skill routing check. Run both the unit and DOM gates after dashboard template changes.
 
 ## FDA grant for the service interpreter (2026-09-29, verified on this machine)
 
@@ -505,8 +505,9 @@ Constraints when editing the dashboard UI:
 
   ```bash
   python3 scripts/check_dashboard.py                     # static + syntax gate
+  npm test                                               # engine/export tests + Skill routing
   npm i jsdom
-  node scripts/check_dashboard_dom.mjs dashboard.html    # 59 headless assertions
+  node scripts/check_dashboard_dom.mjs dashboard.html    # 105 headless assertions
   # or: MDC_JSDOM=/path/to/jsdom/lib/api.js node scripts/check_dashboard_dom.mjs dashboard.html
   ```
 
