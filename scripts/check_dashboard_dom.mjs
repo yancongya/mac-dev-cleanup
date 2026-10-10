@@ -39,8 +39,10 @@ const html = readFileSync(process.argv[2], "utf8");
 // deterministic and does not depend on async file:// script loading.
 const statePath = `${os.homedir()}/.codex/logs/mac-dev-cleanup/state.json`;
 let renderHtml = html;
+let latestState = null;
 try {
   const state = JSON.parse(readFileSync(statePath, "utf8"));
+  latestState = state;
   renderHtml = renderHtml
     .replace("/*__DATA__*/null", JSON.stringify(state))
     .replace("/*__CONFIG__*/null", JSON.stringify(state.config || {}));
@@ -111,6 +113,35 @@ const serviceDoc = serviceDom.window.document;
 const service$ = (s) => serviceDoc.querySelector(s);
 const serviceText = (s) => service$(s)?.textContent.trim() || "";
 
+// After SkillDo replaces the managed directory, generated HTML/data siblings may
+// be absent. The server serves the tracked template and the UI rehydrates from the
+// existing /api/state without triggering a new scan.
+const noDataRequests = [];
+const noDataDom = new JSDOM(html, {
+  runScripts: "dangerously", pretendToBeVisual: true, virtualConsole: vc,
+  url: "http://127.0.0.1:8766/dashboard.html",
+  beforeParse(noDataWindow) {
+    noDataWindow.fetch = (url) => {
+      const path = String(url).replace(/^\//, "");
+      noDataRequests.push(path);
+      const bodies = {
+        "api/health": { ok: true, token: "dom-test-token" },
+        "api/state": latestState,
+        "api/services": { ok: true, services: serviceFixture },
+        "api/apps": { ok: true, apps: [] }, "api/clean/history": { ok: true, runs: [] },
+        "api/snapshots": { ok: true, snapshots: [] },
+        "api/dupes": { ok: true, report: { generated_at: 0, roots: [], groups: [] } },
+        "api/schedule": { ok: true, jobs: [] }, "api/clean/status": { ok: true, running: false, lines: [] },
+        "api/operations": { ok: true, operations: [] }, "api/trash": { ok: true, items: [] },
+      };
+      return Promise.resolve({ ok: path !== "api/state" || !!latestState, status: latestState ? 200 : 404,
+        json: () => Promise.resolve(bodies[path] || { ok: true }) });
+    };
+  },
+});
+await new Promise((r) => setTimeout(r, 350));
+const noDataDoc = noDataDom.window.document;
+
 const checks = [];
 const ok = (name, cond, extra = "") =>
   checks.push({ name, pass: !!cond, extra: cond ? "" : extra });
@@ -178,6 +209,7 @@ ok("启动项与服务面板存在", !!$("#panel-launch") && !!$("#pbody-launch"
 ok("页面说明 LaunchAgent 范围与系统设置入口", /LaunchAgent\/LaunchDaemon plist/.test(text("#pbody-launch")) && /macOS 应用登录项暂未纳入/.test(text("#pbody-launch")) && /系统设置查看/.test(text("#pbody-launch")));
 ok("页面区分停止、自启与卸载", /停止只影响当前运行/.test(text("#pbody-launch")) && /关闭自启只影响下次登录/.test(text("#pbody-launch")) && /不会卸载服务/.test(text("#pbody-launch")));
 ok("可用参数列表登记终端服务", !!$("#service-create-form") && !!$("#service-new-program") && /JSON 字符串数组/.test(text("#service-create-section")) && /不会立即启动/.test(text("#service-create-section")));
+ok("SkillDo 更新后从本地 API 恢复现有看板状态", !!latestState && noDataRequests.includes("api/state") && !!noDataDoc.querySelector("#view-apps") && !noDataDoc.querySelector("#boot-error.show"));
 ok("服务清单渲染", serviceText("#launch-list").includes("demo.managed") && serviceText("#launch-list").includes("demo.system"));
 ok("未登记用户项仅提供登记", service$("#launch-list [data-label=\"demo.unregistered\"]")?.classList.contains("service-register") && !service$("#launch-list [data-label=\"demo.unregistered\"] + .service-action"));
 ok("已登记服务有独立启停和自启控制", service$("#launch-list [data-label=\"demo.managed\"][data-action=\"stop\"]") && service$("#launch-list [data-label=\"demo.managed\"][data-action=\"disable\"]"));

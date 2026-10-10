@@ -811,8 +811,8 @@ td.sel input[type=checkbox]:disabled,.ccard-head input[type=checkbox]:disabled{c
 <script src="dashboard_data.js"></script>
 <script src="config_data.js"></script>
 <script>
-const DATA = window.__DASHBOARD_DATA__ || /*__DATA__*/null;
-const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
+var DATA = window.__DASHBOARD_DATA__ || /*__DATA__*/null;
+var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 </script>
 <script>
 (function(){
@@ -3705,20 +3705,26 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var t=$("api-text"); if(t) t.textContent="接口已连接";
       var sb=$("scan-btn"); if(sb){ sb.disabled=false; sb.title="重新执行只读扫描"; }
       syncSaveBtn(); syncRunBtns();
-      loadExecHistory();
-      loadApps(false);
-      loadReports();
-      loadSchedule();
-      // resume the log panel if an execution is already in flight (reload mid-run)
-      fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
-        .then(function(s){
-          if(!s || (!s.running && !s.lines || s.lines && !s.lines.length)) return;
-          var log=$("exec-log");
-          if(log && s.lines && s.lines.length){ log.textContent=s.lines.join("\n"); log.hidden=false; log.scrollTop=log.scrollHeight; }
-          gotoView("clean");
-          if(s.running) pollExec();
-        }).catch(function(){});
-    }).catch(function(){ /* offline: static view */ });
+      var stateRequest = DATA ? Promise.resolve(DATA) : fetch("api/state",{cache:"no-store"})
+        .then(function(r){ return r.ok ? r.json() : null; });
+      return stateRequest.then(function(snapshot){
+        if(!DATA && snapshot){
+          DATA=snapshot; CONFIG=snapshot.config||{};
+          loadSel(); loadForm(); renderMeta(); renderAll(); loadOperations(); loadTrash();
+        }
+        if(!DATA){ renderAll(); return; }
+        loadExecHistory(); loadApps(false); loadReports(); loadSchedule();
+        // resume the log panel if an execution is already in flight (reload mid-run)
+        fetch("api/clean/status",{cache:"no-store"}).then(function(r){ return r.json(); })
+          .then(function(s){
+            if(!s || (!s.running && !s.lines || s.lines && !s.lines.length)) return;
+            var log=$("exec-log");
+            if(log && s.lines && s.lines.length){ log.textContent=s.lines.join("\n"); log.hidden=false; log.scrollTop=log.scrollHeight; }
+            gotoView("clean");
+            if(s.running) pollExec();
+          }).catch(function(){});
+      });
+    }).catch(function(){ if(!DATA) renderAll(); /* offline: static view */ });
   }
 
   function boot(){
@@ -3735,14 +3741,13 @@ const CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       });
     })();
     window.addEventListener("hashchange", route);
-    if(!DATA){ renderAll(); return; }
-    loadSel();  // restore cross-reload selection (validated against inventory)
-    loadForm();
-    renderMeta();
-    renderAll();
+    if(DATA){
+      loadSel();  // restore cross-reload selection (validated against inventory)
+      loadForm(); renderMeta(); renderAll(); loadOperations(); loadTrash();
+    } else {
+      $("app").innerHTML='<div class="empty" style="padding:48px 16px">正在连接本地服务并读取最近一次扫描…</div>';
+    }
     detectApi();
-    loadOperations();
-    loadTrash();
   }
 
   if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", boot);

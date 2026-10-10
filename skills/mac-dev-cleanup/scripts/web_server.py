@@ -325,6 +325,23 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/dashboard.html" and not (ROOT / "dashboard.html").is_file():
+            # SkillDo updates intentionally omit machine-specific generated files.
+            # Serve the tracked shell and let it fetch the existing state through
+            # /api/state, so an update does not require running a fresh scan.
+            template = ROOT / "dashboard_template.html"
+            try:
+                body = template.read_bytes()
+            except OSError:
+                self.send_json(404, {"error": "dashboard template unavailable"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path == "/api/config":
             self.send_json(200, read_json(CONFIG_PATH, cleanup.DEFAULT_CONFIG))
             return

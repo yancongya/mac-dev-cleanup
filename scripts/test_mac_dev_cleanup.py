@@ -217,6 +217,16 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
             self.assertIsNone(item["enabled"])
             self.assertTrue(any(word in item["reason"] for word in ("只读", "仅显示")))
 
+    def test_dashboard_route_falls_back_to_tracked_template_after_skill_update(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mdc-dashboard-template-") as temp:
+            root = Path(temp)
+            (root / "dashboard_template.html").write_text("<html>tracked-shell</html>", encoding="utf-8")
+            with patch.object(web_server, "ROOT", root):
+                status, headers, body = self.request("GET", "/dashboard.html")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "text/html; charset=utf-8")
+        self.assertIn(b"tracked-shell", body)
+
     def test_service_control_endpoints_reject_missing_token_before_dispatch(self) -> None:
         with patch.object(web_server.local_services, "register_service") as register, \
                 patch.object(web_server.local_services, "service_action") as action, \
