@@ -3233,7 +3233,9 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<label class="field">工作目录（可选）<input id="service-new-cwd" placeholder="/Users/you/Projects/example" autocomplete="off"></label>'+
       '<div style="display:flex;gap:14px;padding:8px 0"><label><input type="checkbox" id="service-new-run-at-load"> 登录时启动</label><label><input type="checkbox" id="service-new-keep-alive"> 退出后自动拉起</label></div>'+
       '<button class="btn" type="submit">创建并登记</button></form></details>'+
-      '<p class="ov-sub" style="padding:0 16px 12px">此列表展示 LaunchAgent/LaunchDaemon plist；macOS 应用登录项暂未纳入，可在系统设置查看。停止只影响当前运行；关闭自启只影响下次登录；两者都不会卸载服务。卸载应用仍在上方“应用卸载”区域单独处理。仅登记的当前用户服务可操作；系统代理、守护进程及其他登录项只读。</p>';
+      '<div style="padding:0 16px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
+      '<p class="ov-sub" style="margin:0;flex:1 1 360px">此列表展示 LaunchAgent/LaunchDaemon plist。普通应用登录项由 macOS 管理；这里不直接修改应用自带的后台项目。停止只影响当前运行；关闭自启只影响下次登录；两者都不会卸载服务。卸载应用仍在上方“应用卸载”区域单独处理。仅登记的当前用户服务可操作；系统代理和守护进程只读。</p>'+
+      '<a class="btn" href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension" target="_blank" rel="noopener noreferrer">打开 macOS 登录项设置</a></div>';
   }
   function renderLaunch(){
     var el=$("launch-list"); if(!el) return;
