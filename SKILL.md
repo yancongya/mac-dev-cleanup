@@ -1,6 +1,6 @@
 ---
 name: mac-dev-cleanup
-description: Scan, analyze, configure, and safely clean macOS developer caches with a local web control panel, JSON policy, recoverable Trash-first cleanup, operation logs, exclusions, test artifacts, build outputs, node_modules, virtualenvs, Tauri/Vite build by-products (src-tauri/target, gen schemas, dist-ssr, vite timestamp configs), Playwright traces, Rust/Flutter caches, Blender asset/render caches, app caches/logs, screenshot and screen-recorder app caches inside Application Support (PixPin recording recovery, screenshot history), WeChat caches and expired chat media (month-window), screenshots, read-only Mac OrbStack capacity review, and large-file review. Use whenever the user asks to clean or inspect Mac storage, caches, developer artifacts, Tauri/Rust build outputs, Blender caches, screenshot or screen-recorder caches, WeChat caches, local OrbStack disk usage, temp files, logs, stale projects, or manage cleanup settings and reports. Route NAS Docker operations to Agent Ops.
+description: Scan, analyze, configure, and safely clean macOS developer caches with a local web control panel, JSON policy, recoverable Trash-first cleanup, operation logs, exclusions, test artifacts, build outputs, node_modules, virtualenvs, Tauri/Vite build by-products (src-tauri/target, gen schemas, dist-ssr, vite timestamp configs), Playwright traces, Rust/Flutter caches, Blender asset/render caches, app caches/logs, screenshot and screen-recorder app caches inside Application Support (PixPin recording recovery, screenshot history), WeChat caches and expired chat media (month-window), screenshots, and large-file review. Use whenever the user asks to clean or inspect Mac storage, caches, developer artifacts, Tauri/Rust build outputs, Blender caches, screenshot or screen-recorder caches, WeChat caches, temp files, logs, stale projects, or manage cleanup settings and reports. Route all NAS Docker operations to Agent Ops.
 ---
 
 # mac-dev-cleanup
@@ -103,7 +103,7 @@ df -k /System/Volumes/Data     # did NOT fall back? the counter is stuck
 
 - **Write moved it, delete did not** → the accounting is stuck (pending update / reboot placeholder). This is not a failed cleanup — stop re-deleting and reboot.
 - **Neither moved it** → the counter is frozen outright; trust `du` instead.
-- **Both moved it, yet an earlier deletion never showed up** → the counter is healthy, so you have a *concurrent consumer*, not a failed delete: the freed blocks were re-allocated by something else on the volume while you worked. Do not delete a second time. Look for the writer with `ps -A -o pid,%cpu,rss,etime,comm | sort -k2 -nr | head`, and remember that these grow silently: sparse disk images (`*.img.raw` — OrbStack / Docker; check real usage with `du`, not `ls`, since the apparent size can be hundreds of GB), the APFS swap volume (`diskutil apfs list` → role `VM`), and always-on monitor history databases (iStat Menus `history.db` ≈ 250 MB).
+- **Both moved it, yet an earlier deletion never showed up** → the counter is healthy, so you have a *concurrent consumer*, not a failed delete: the freed blocks were re-allocated by something else on the volume while you worked. Do not delete a second time. Look for the writer with `ps -A -o pid,%cpu,rss,etime,comm | sort -k2 -nr | head`, and remember that these grow silently: sparse virtual-machine disk images (`*.img.raw`; check real usage with `du`, not `ls`, since the apparent size can be hundreds of GB), the APFS swap volume (`diskutil apfs list` → role `VM`), and always-on monitor history databases (iStat Menus `history.db` ≈ 250 MB).
 
 Also test **both file shapes** — one big file and a few thousand small files can behave differently, and a Cargo `target/` tree is the second shape:
 
@@ -598,13 +598,9 @@ After reorganizing, verify:
 - No `.DS_Store` left: `find . -name '.DS_Store'`
 - Git status is clean or only shows expected renames: `git status`
 
-## Docker / OrbStack capacity review (read-only)
+## Docker routing
 
-This Skill may inspect **local Mac OrbStack capacity only**. Use `docker system df` as a read-only summary when the user asks about local OrbStack disk usage. Do not list or inspect NAS containers from here, and do not run Docker write operations from this Skill.
-
-**NAS Docker is managed only through Agent Ops.** Route NAS service status, logs, start, stop, restart, update, and rollback to Agent Ops. Do not SSH to the NAS for Docker work and do not call its Docker or fnOS APIs directly.
-
-**Block local OrbStack changes too.** `mac-dev-cleanup` has no registered local OrbStack lifecycle capability, so do not issue prune, container removal, image removal, volume removal, Compose mutation, or other Docker write operations against OrbStack. A capacity report is the limit of this Skill's Docker role; if the user wants cleanup, stop and route it through a registered Agent Ops capability or report that no such local capability is registered.
+This Mac cleanup Skill does not install, start, inspect, build with, or manage a local Docker engine or OrbStack. Keep local development lightweight. Route NAS Docker status, logs, start, stop, restart, update, and rollback through Agent Ops; do not SSH to the NAS for Docker work or call Docker/fnOS APIs directly.
 
 ## User LaunchAgent service CLI
 

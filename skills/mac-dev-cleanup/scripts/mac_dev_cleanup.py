@@ -427,7 +427,6 @@ CORE_TOOL_CHECKS = [
 OPTIONAL_TOOL_CHECKS = [
     "brew",
     "ncdu",
-    "docker",
     "node",
     "npm",
     "pnpm",

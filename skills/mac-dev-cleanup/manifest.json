@@ -4,11 +4,11 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "2930d0ce7efb805a886bd7e002cc82be93b24d1580c13802ac27878ecadebd38"
+      "sha256": "965e4749a87cb5ba223fdda62bbe47051fc60f3551fed6dba4edf5057f4a90a7"
     },
     {
       "path": "dashboard_template.html",
-      "sha256": "a3b70db78c10e2c69b05a43bc24583802c41d93e30dc9eaa2dd626146cb6d9d1"
+      "sha256": "d47368170df5de4f3f2f7fa731ed0cee2fc0446ce8a97a03daa5540fb76263e1"
     },
     {
       "path": "agents/openai.yaml",
@@ -16,7 +16,7 @@
     },
     {
       "path": "scripts/mac_dev_cleanup.py",
-      "sha256": "a63d985ab5b59e9ae5f8acc53e6d2a994ed661c3fc7e523c24fc1429a9e1e76f"
+      "sha256": "cab76cd95b48ac174e99ba39a378906e62169f840b1e7aac8d41ba240c89e6f7"
     },
     {
       "path": "scripts/export_summary.py",
@@ -44,7 +44,7 @@
     },
     {
       "path": "scripts/check_skill_routing.py",
-      "sha256": "9b0d6adc72e37afeb256e4b577ca921a7567882b95b8c9462c598943f644a39b"
+      "sha256": "0e545853d67eb59f348e9f8e8dfbe35c4d74501d0dda034521ffa3139c09beae"
     }
   ],
   "runtimeFiles": [

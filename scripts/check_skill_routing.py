@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that Docker guidance in SKILL.md respects the ownership boundary."""
+"""Check that Docker guidance in SKILL.md respects the NAS-only boundary."""
 
 from pathlib import Path
 import re
@@ -13,12 +13,9 @@ readme_path = ROOT / "README.md"
 readme = readme_path.read_text(encoding="utf-8") if readme_path.is_file() else ""
 
 required = (
-    "local Mac OrbStack capacity only",
-    "docker system df",
-    "NAS Docker is managed only through Agent Ops",
-    "status, logs, start, stop, restart, update, and rollback",
-    "Do not SSH to the NAS for Docker work",
-    "no registered local OrbStack lifecycle capability",
+    "does not install, start, inspect, build with, or manage a local Docker engine or OrbStack",
+    "Route NAS Docker status, logs, start, stop, restart, update, and rollback through Agent Ops",
+    "do not SSH to the NAS for Docker work",
     "agent-ops status --scope mac --json",
     "does not run a scan or cleanup",
     "Keep cleanup execution in this Skill's explicit `--apply` path",
@@ -65,7 +62,7 @@ if (
     raise SystemExit(1)
 
 if readme and (
-    "本 Skill 只读查看 Mac OrbStack 容量" not in readme
+    "本 Skill 不安装或管理本机 Docker/OrbStack" not in readme
     or "NAS Docker 状态、日志和生命周期操作统一经 Agent Ops" not in readme
     or "python3 scripts/build_skilldo_package.py build" not in readme
     or "skilldo track-local --skill mac-dev-cleanup --path skills/mac-dev-cleanup --yes" not in readme
@@ -97,4 +94,8 @@ if "rm -rf ~/.Trash/mac-dev-cleanup" in text or "quarantine `rm` succeeding" in 
     print("[FAIL] Skill still recommends irreversible quarantine deletion", file=sys.stderr)
     raise SystemExit(1)
 
-print("[OK] SKILL.md routes NAS Docker operations to Agent Ops and limits OrbStack to read-only capacity review")
+if re.search(r"local Mac OrbStack capacity only|docker system df|brew install --cask docker", text + readme, re.IGNORECASE):
+    print("[FAIL] Local Docker/OrbStack usage or installation guidance remains", file=sys.stderr)
+    raise SystemExit(1)
+
+print("[OK] SKILL.md keeps Mac cleanup Docker-free and routes NAS Docker operations to Agent Ops")

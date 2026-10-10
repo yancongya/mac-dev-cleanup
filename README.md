@@ -18,7 +18,7 @@
 
 > **README.md 与 SKILL.md 不冲突**：前者面向人类浏览 GitHub，后者面向 AI 代理运行 Skill，两者职责完全不同、可共存。
 
-> 仓库中的 `dashboard.html` 是**构建产物**（`dashboard_template.html` 的副本），不入库、由本地 `scan` 生成；`.gitignore` 同时排除含本机数据的 `config_data.js` / `dashboard_data.js` / `config.json` / `state.json`。
+> 仓库根目录可能留有旧版忽略产物；当前 `scan` 只在 `~/.codex/logs/mac-dev-cleanup/dashboard/` 生成看板 HTML 与本机数据文件，不写入仓库或 SkillDo 中心目录。
 
 ## 快速开始
 
@@ -87,7 +87,7 @@ skilldo update --skill mac-dev-cleanup --yes
 - **Stale 项目识别**：以源码 mtime + 最后 git commit 判定（默认 90 天）
 - **可恢复清理**：真实清理「先进废纸篓」，写入操作清单，可一键还原——绝不使用裸 `rm`
 - **可恢复清理**：`--apply` 仅把候选项移入可恢复隔离区并写操作清单；不会自动清空废纸篓。清空是独立且不可逆的操作，必须由用户明确提出，并在控制台通过 `EMPTY TRASH` 与 API token 双重确认
-- **Docker 边界**：本 Skill 只读查看 Mac OrbStack 容量；NAS Docker 状态、日志和生命周期操作统一经 Agent Ops，本 Skill 不执行 Docker 清理或其他写操作
+- **Docker 边界**：本 Skill 不安装或管理本机 Docker/OrbStack，保持本机轻量；NAS Docker 状态、日志和生命周期操作统一经 Agent Ops
 - **统一 Agent 工作流接入**：扫描与清理仍由本 Skill 的 CLI/看板负责；需要把 Mac 状态汇入 Agent 工作流时，先运行本 Skill 的只读 `scan`，再调用 `agent-ops status --scope mac --json` 获取汇总。Agent Ops 只读取最新状态，不会触发扫描或清理，也不返回候选路径；结果可用于阶段记录，但不能代替 CLI/看板的执行证据。实际清理继续走本 Skill 的显式授权与 `--apply` 流程。
 - **项目内结构整理（Project hygiene）**：除磁盘级缓存外，还能整理单个项目——清空格目录、删 AI IDE 残留（`.agents`/`.claude`/`.opencode`/`.superpowers`/`.workflow`/`.DS_Store`/`*.bak`）、把散落的 `migrate_*`/`fix_*`/`test_*`/`init_*` 脚本归位到 `scripts/`/`tests/`、合并冗余文档。全程 Git 感知（`git mv`/`git rm`），不碰源码与数据库
 - **本地 Web 控制台**：六视图（概览 = 纯只读仪表盘 / 清理 = 唯一执行域含整模式与按勾选两种范式 + 重复文件 / 系统 = 应用卸载 + 启动项 + TM 快照 / 还原 = 操作与执行统一时间线 + 废纸篓 / 计划任务 / 设置含工具自检）；服务/FDA 权限降级由顶部全局横幅统一提示；端口解析顺序 `--port` → `MDC_PORT` → `config.json: dashboard_port`（默认 8766，避让常被占用的 8765）
