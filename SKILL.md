@@ -318,6 +318,17 @@ python3 ~/.codex/skills/mac-dev-cleanup/scripts/export_summary.py --output /path
 
 It reads only the saved state file and projects the exact `mac-dev-cleanup.summary.v1` allowlist: `schema`, `timestamp`, `mode`, `apply`, `candidateCount`, `riskCounts` (`safe`, `aggressive`, `manual`), `safeBytes`, `aggressiveBytes`, `manualBytes`, and `selectedBytes`. It requires `apply: false`, a timezone-aware non-future timestamp, non-negative integer counts/totals, matching candidate/risk counts, and mode-consistent byte totals. The output is atomically written with owner-only permissions. It never emits candidate paths, IDs, reasons, config, or other source fields, and does not transmit the file anywhere.
 
+When explicitly requested, the same saved-state allowlist can be POSTed to a user-specified HTTPS endpoint. The path must be exactly `/v1/mac/summary`; the server certificate and hostname are verified, and the request times out after 15 seconds. Only a dedicated ingest token is accepted, through stdin (first line); never pass it as an argument or print/log it. The upload command never runs a scan or cleanup:
+
+```bash
+set -o pipefail
+bwvault credential get --alias mac.cleanup.ingest-token --reveal --json \
+  | jq -er '.secret | strings | select(length > 0)' \
+  | python3 ~/.codex/skills/mac-dev-cleanup/scripts/export_summary.py --upload --endpoint https://collector.example/v1/mac/summary --token-stdin
+```
+
+Store the dedicated token under the `mac.cleanup.ingest-token` `bwvault` alias. The pipeline extracts only `.secret` from BWVault JSON and passes it through stdin without displaying it. Stdin is bounded to 8192 token bytes. Success requires a 2xx JSON response with `schema: agent-ops-mac/v1`, `accepted: true`, and `state: stored`; otherwise a generic error is returned without echoing the response body. Plain HTTP, redirects, URL credentials, query strings, fragments, and any other path are rejected.
+
 Safe cleanup (moves eligible items to the Skill quarantine inside Trash):
 
 ```bash

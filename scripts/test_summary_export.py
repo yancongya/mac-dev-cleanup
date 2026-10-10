@@ -3,12 +3,18 @@
 
 from __future__ import annotations
 
+import io
+import contextlib
 import json
+import ssl
 import sys
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import export_summary
 
@@ -137,6 +143,202 @@ class SavedSummaryExportTests(unittest.TestCase):
             source.write_text(json.dumps(state), encoding="utf-8")
             export_summary.export_summary(source, output)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_upload_posts_only_allowlist_with_dedicated_token_and_verified_tls(self) -> None:
+        state = valid_state()
+        captured = {}
+
+        class Response:
+            status = 202
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, limit):
+                self.limit = limit
+                return json.dumps({
+                    "schema": "agent-ops-mac/v1", "accepted": True, "state": "stored"
+                }).encode("utf-8")
+
+        def fake_open(request, *, context, timeout):
+            captured["url"] = request.full_url
+            captured["headers"] = request.header_items()
+            captured["payload"] = json.loads(request.data)
+            captured["context"] = context
+            captured["timeout"] = timeout
+            return Response()
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "state.json"
+            source.write_text(json.dumps(state), encoding="utf-8")
+            export_summary.upload_summary(
+                source, "https://collector.example/v1/mac/summary", "dedicated-ingest-secret", opener=fake_open
+            )
+
+        self.assertEqual(captured["url"], "https://collector.example/v1/mac/summary")
+        headers = dict(captured["headers"])
+        self.assertEqual(headers["X-mac-ingest-token"], "dedicated-ingest-secret")
+        self.assertTrue(captured["context"].check_hostname)
+        self.assertEqual(captured["context"].verify_mode, ssl.CERT_REQUIRED)
+        self.assertEqual(captured["timeout"], 15)
+        self.assertNotIn("candidates", captured["payload"])
+        self.assertNotIn("config", captured["payload"])
+
+    def test_default_transport_installs_tls_context_blocks_redirects_and_uses_timeout(self) -> None:
+        captured = {}
+
+        class Response:
+            status = 202
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, _limit):
+                return b'{"schema":"agent-ops-mac/v1","accepted":true,"state":"stored"}'
+
+        class Transport:
+            def open(self, request, *, timeout):
+                captured["url"] = request.full_url
+                captured["timeout"] = timeout
+                return Response()
+
+        def build_opener(*handlers):
+            captured["handlers"] = handlers
+            return Transport()
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "state.json"
+            source.write_text(json.dumps(valid_state()), encoding="utf-8")
+            with patch.object(export_summary.urllib.request, "build_opener", side_effect=build_opener):
+                export_summary.upload_summary(
+                    source, "https://collector.example/v1/mac/summary", "dedicated-token"
+                )
+
+        self.assertEqual(captured["timeout"], 15)
+        https_handler, redirect_handler = captured["handlers"]
+        self.assertIsInstance(https_handler, export_summary.urllib.request.HTTPSHandler)
+        self.assertIsInstance(redirect_handler, export_summary._NoRedirect)
+        self.assertTrue(https_handler._context.check_hostname)
+        self.assertEqual(https_handler._context.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_stdin_token_read_is_byte_bounded(self) -> None:
+        class TrackingStream(io.BytesIO):
+            requested_size = None
+            def read(self, size=-1):
+                self.requested_size = size
+                return super().read(size)
+
+        exact_limit = TrackingStream(b"x" * export_summary.MAX_TOKEN_BYTES + b"\r\n")
+        self.assertEqual(len(export_summary.read_ingest_token(exact_limit)), export_summary.MAX_TOKEN_BYTES)
+        self.assertEqual(exact_limit.requested_size, export_summary.MAX_TOKEN_BYTES + 2)
+
+        for raw in (
+            b"x" * (export_summary.MAX_TOKEN_BYTES + 1) + b"\n",
+            b"x" * (export_summary.MAX_TOKEN_BYTES + 1),
+        ):
+            with self.subTest(raw_length=len(raw)):
+                stream = TrackingStream(raw)
+                with self.assertRaisesRegex(export_summary.SummaryError, "size limit"):
+                    export_summary.read_ingest_token(stream)
+                self.assertEqual(stream.requested_size, export_summary.MAX_TOKEN_BYTES + 2)
+
+    def test_upload_rejects_non_https_or_wrong_route_before_network(self) -> None:
+        for endpoint in (
+            "http://collector.example/v1/mac/summary",
+            "https://collector.example/other",
+            "https://user:pass@collector.example/v1/mac/summary",
+            "https://collector.example/v1/mac/summary?debug=1",
+        ):
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaises(export_summary.SummaryError):
+                    export_summary.validate_endpoint(endpoint)
+
+    def test_upload_rejects_header_unsafe_token_and_redirects(self) -> None:
+        for token in ("", "contains space", "bad\nvalue", "é", "x" * 8193):
+            with self.subTest(token=token[:20]):
+                with self.assertRaises(export_summary.SummaryError):
+                    export_summary.upload_summary(
+                        Path("unused"), "https://collector.example/v1/mac/summary", token,
+                        opener=lambda *_args, **_kwargs: self.fail("network must not be called"),
+                    )
+        self.assertIsNone(export_summary._NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.example/"))
+
+    def test_upload_command_reads_token_only_from_stdin_and_requires_explicit_endpoint(self) -> None:
+        with patch.object(export_summary.sys, "stdin", io.StringIO("secret-value\n")):
+            # Missing endpoint is rejected by argument validation before any state access.
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                with self.assertRaises(SystemExit):
+                    export_summary.main(["--upload", "--token-stdin"])
+            self.assertNotIn("secret-value", stderr.getvalue())
+
+    def test_upload_cli_accepts_pipe_stdin_without_printing_token(self) -> None:
+        token = "pipe-only-secret"
+        stdin = SimpleNamespace(buffer=io.BytesIO(token.encode("ascii") + b"\n"))
+        with patch.object(export_summary.sys, "stdin", stdin), \
+                patch.object(export_summary, "upload_summary") as upload, \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            result = export_summary.main([
+                "--upload", "--token-stdin", "--endpoint", "https://collector.example/v1/mac/summary"
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(upload.call_args.args[2], token)
+        self.assertNotIn(token, stdout.getvalue())
+        self.assertNotIn(token, stderr.getvalue())
+
+    def test_upload_failure_does_not_include_token_in_error(self) -> None:
+        token = "never-print-this-token"
+        def failing_open(*_args, **_kwargs):
+            raise urllib.error.URLError("connection failed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "state.json"
+            source.write_text(json.dumps(valid_state()), encoding="utf-8")
+            with self.assertRaises(export_summary.SummaryError) as error:
+                export_summary.upload_summary(
+                    source, "https://collector.example/v1/mac/summary", token, opener=failing_open
+                )
+        self.assertEqual(str(error.exception), "HTTPS upload failed")
+        self.assertNotIn(token, str(error.exception))
+
+    def test_upload_requires_exact_agent_ops_acceptance_response(self) -> None:
+        token = "never-print-this-token"
+        responses = [
+            (202, b'{"schema":"other/v1","accepted":true,"state":"stored"}'),
+            (202, b'{"schema":"agent-ops-mac/v1","accepted":false,"state":"stored"}'),
+            (202, b'{"schema":"agent-ops-mac/v1","accepted":true,"state":"rejected"}'),
+            (202, b'{"schema":"agent-ops-mac/v1","accepted":1,"state":"stored"}'),
+            (202, b'{"private":"response detail"}'),
+            (202, b"not-json"),
+            (202, b"x" * (export_summary.MAX_RESPONSE_BYTES + 1)),
+            (400, b'{"private":"response detail"}'),
+        ]
+
+        for status, body in responses:
+            with self.subTest(status=status, body_prefix=body[:24]):
+                class Response:
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *_args):
+                        return False
+                    def read(self, _limit):
+                        return body
+                response = Response()
+                response.status = status
+
+                with tempfile.TemporaryDirectory() as directory:
+                    source = Path(directory) / "state.json"
+                    source.write_text(json.dumps(valid_state()), encoding="utf-8")
+                    with self.assertRaises(export_summary.SummaryError) as error:
+                        export_summary.upload_summary(
+                            source,
+                            "https://collector.example/v1/mac/summary",
+                            token,
+                            opener=lambda *_args, **_kwargs: response,
+                        )
+                self.assertEqual(str(error.exception), "ingest response was not accepted")
+                self.assertNotIn(token, str(error.exception))
+                self.assertNotIn("private", str(error.exception))
 
 
 if __name__ == "__main__":

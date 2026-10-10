@@ -42,6 +42,17 @@ python3 ~/.codex/skills/mac-dev-cleanup/scripts/export_summary.py --output /path
 
 命令只读取已保存的 `state.json`，校验时间、风险计数和字节总数后写出 `mac-dev-cleanup.summary.v1`；导出仅含汇总字段，不含候选路径、ID、原因或配置。文件以仅当前用户可读写的权限原子写入。该命令只生成文件，不会自动同步到其他设备。
 
+如需**显式上传**最近一次已保存摘要，必须明确提供 HTTPS 地址（路径固定为 `/v1/mac/summary`），并通过标准输入提供专用 `X-Mac-Ingest-Token`。不会触发扫描/清理，也不会把令牌写入文件或日志：
+
+```bash
+set -o pipefail
+bwvault credential get --alias mac.cleanup.ingest-token --reveal --json \
+  | jq -er '.secret | strings | select(length > 0)' \
+  | python3 ~/.codex/skills/mac-dev-cleanup/scripts/export_summary.py --upload --endpoint https://collector.example/v1/mac/summary --token-stdin
+```
+
+将专用上传令牌保存在 `bwvault` 的 `mac.cleanup.ingest-token` alias 下。上面的流水线从 BWVault JSON 中只提取 `.secret` 并通过管道传递，不把密值显示到终端、写入参数或日志。读取最多 8192 字节。程序会校验服务器证书和主机名，并在 15 秒后超时；拒绝明文 HTTP、重定向、其他路径、URL 用户名/密码、查询参数和片段。只有 2xx 响应同时包含 `schema: agent-ops-mac/v1`、`accepted: true`、`state: stored` 才报告成功；其他响应统一报告未确认，且不显示响应正文。此功能只向用户明确指定的端点发送 allowlist 摘要，不发送候选详情、路径或配置。
+
 ## SkillDo 更新流程
 
 本仓库根目录是唯一可编辑源；构建器把 Skill 专用文件投影到受 Git 跟踪的 `skills/mac-dev-cleanup/`。该目录是生成物，不要直接编辑。首次登记并刷新本机中心副本时，在仓库根目录运行：

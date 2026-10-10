@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "728394e8dee426206792c848bcbb2a4e17e787ed973dd6339d5837de836f8d06"
+      "sha256": "a85d17ed60b1c0e738d864f861a6ece798464e70ffc26d5519397fe76d283a50"
     },
     {
       "path": "dashboard_template.html",
@@ -20,7 +20,7 @@
     },
     {
       "path": "scripts/export_summary.py",
-      "sha256": "00ae925f43e2e29c6567fae4e2c47ca43a2033320002f1e0a7f8aa651dfd7d24"
+      "sha256": "1cc58d77ed9706aba10a988b446529f1815cbf39b2e286865a464fc0776acb81"
     },
     {
       "path": "scripts/web_server.py",
