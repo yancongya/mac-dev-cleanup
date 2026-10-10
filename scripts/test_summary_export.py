@@ -8,6 +8,7 @@ import contextlib
 import json
 import ssl
 import sys
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -41,7 +42,17 @@ def valid_state() -> dict:
 
 class SavedSummaryExportTests(unittest.TestCase):
     def test_exporter_does_not_import_cleanup_engine(self) -> None:
-        self.assertNotIn("mac_dev_cleanup", sys.modules)
+        probe = (
+            "import importlib.util, sys; "
+            "spec = importlib.util.spec_from_file_location('isolated_export_summary', sys.argv[1]); "
+            "module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+            "raise SystemExit('mac_dev_cleanup' in sys.modules)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe, str(Path(export_summary.__file__).resolve())],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_export_is_exact_allowlist_and_uses_existing_state(self) -> None:
         state = valid_state()
