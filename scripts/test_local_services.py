@@ -90,6 +90,19 @@ class LocalServicesTests(unittest.TestCase):
         self.assertNotIn("secret-value", encoded)
         self.assertEqual(result["service"]["scope"], "user")
 
+    def test_status_reads_verified_user_service_without_registering_it(self) -> None:
+        result = self.manager.service_status("com.example.worker")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["service"]["registered"])
+        self.assertEqual(result["service"]["label"], "com.example.worker")
+        self.assertFalse(any(call[:2] in (
+            ["launchctl", "bootstrap"], ["launchctl", "kickstart"],
+            ["launchctl", "bootout"], ["launchctl", "enable"], ["launchctl", "disable"],
+        ) for call in self.runner.calls))
+        self.assertFalse(self.registry.exists())
+        with self.assertRaises(services.LocalServiceError):
+            self.manager.service_status("com.apple.launchd")
+
     def test_unregistered_unknown_system_and_invalid_action_are_rejected(self) -> None:
         with self.assertRaises(services.LocalServiceError):
             self.manager.service_action("com.example.worker", "stop")

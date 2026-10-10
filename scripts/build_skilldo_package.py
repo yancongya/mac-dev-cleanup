@@ -32,10 +32,16 @@ PACKAGE_FILES = (
     "scripts/export_summary.py",
     "scripts/web_server.py",
     "scripts/local_services.py",
+    "scripts/local_services_cli.py",
     "scripts/check_skill_routing.py",
 )
-LEGACY_PACKAGE_FILES = tuple(path for path in PACKAGE_FILES if path != "scripts/export_summary.py")
-PREVIOUS_PACKAGE_FILES = tuple(path for path in PACKAGE_FILES if path != "scripts/local_services.py")
+PRE_CLI_PACKAGE_FILES = tuple(path for path in PACKAGE_FILES if path != "scripts/local_services_cli.py")
+LEGACY_PACKAGE_FILES = tuple(
+    path for path in PACKAGE_FILES if path not in {"scripts/export_summary.py", "scripts/local_services_cli.py"}
+)
+PREVIOUS_PACKAGE_FILES = tuple(
+    path for path in PACKAGE_FILES if path not in {"scripts/local_services.py", "scripts/local_services_cli.py"}
+)
 MANIFEST = "manifest.json"
 EXPECTED_PACKAGE_FILES = frozenset((*PACKAGE_FILES, MANIFEST))
 RUNTIME_FILES = ("dashboard.html", "dashboard_data.js", "config_data.js")
@@ -89,6 +95,7 @@ def check_bundle(directory: Path, *, allow_legacy: bool = False) -> None:
     paths = [record.get("path") for record in records if isinstance(record, dict)]
     permitted_sets = {frozenset(PACKAGE_FILES)}
     if allow_legacy:
+        permitted_sets.add(frozenset(PRE_CLI_PACKAGE_FILES))
         permitted_sets.add(frozenset(LEGACY_PACKAGE_FILES))
         permitted_sets.add(frozenset(PREVIOUS_PACKAGE_FILES))
     if len(paths) != len(records) or frozenset(paths) not in permitted_sets:

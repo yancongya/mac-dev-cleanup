@@ -604,6 +604,22 @@ This Skill may inspect **local Mac OrbStack capacity only**. Use `docker system 
 
 **Block local OrbStack changes too.** `mac-dev-cleanup` has no registered local OrbStack lifecycle capability, so do not issue prune, container removal, image removal, volume removal, Compose mutation, or other Docker write operations against OrbStack. A capacity report is the limit of this Skill's Docker role; if the user wants cleanup, stop and route it through a registered Agent Ops capability or report that no such local capability is registered.
 
+## User LaunchAgent service CLI
+
+Use the bundled `scripts/local_services_cli.py` when the user asks to inspect or manage an existing macOS user service. Commands return one JSON object on stdout; failures return a JSON error on stderr and a nonzero exit code.
+
+```sh
+python3 <skill-dir>/scripts/local_services_cli.py list
+python3 <skill-dir>/scripts/local_services_cli.py status com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py register com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py start com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py stop com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py enable-autostart com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py disable-autostart com.example.worker
+```
+
+List and status are read-only. Register only the exact Label of an existing `~/Library/LaunchAgents/<Label>.plist`; registration records the verified plist path and does not start it or change its login policy. Start, stop, and autostart changes require the exact service to be registered first. Run lifecycle commands only when the user has asked for that service action. The CLI delegates every operation to `local_services.py`; it does not accept arbitrary plist paths, shell commands, system LaunchAgents/Daemons, or restart. Its JSON does not echo plist argument vectors. Agent Ops remains the owner of NAS container lifecycle and does not control these local Mac services.
+
 ## Agent Ops status handoff
 
 Agent Ops exposes the latest Mac cleanup scan as a read-only aggregate:

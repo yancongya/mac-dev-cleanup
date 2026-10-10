@@ -36,7 +36,7 @@
 
 ## 验证
 
-在仓库根目录运行 `npm test`，执行清理引擎、摘要导出与 Skill 路由测试；这些检查不会扫描或清理真实用户数据。Dashboard 集成检查单独运行 `npm run test:dashboard`，需要先有本机已保存的扫描状态和生成的 `dashboard.html`，并依赖已安装的 `jsdom`；它只读取这些既有产物，不会触发新扫描或清理。
+在仓库根目录运行 `npm test`，执行清理引擎、LaunchAgent 服务层与 CLI、摘要导出和 Skill 路由测试；这些测试不会清理真实用户数据。Dashboard 集成检查单独运行 `npm run test:dashboard`，需要先有本机已保存的扫描状态和生成的 `dashboard.html`，并依赖已安装的 `jsdom`；它只读取这些既有产物，不会触发新扫描或清理。
 
 如需导出最近一次扫描的汇总而不重新扫描，可指定一个已存在目录中的输出文件：
 
@@ -113,6 +113,28 @@ python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地
 ```
 
 完整说明见 [SKILL.md](SKILL.md)、[CHANGELOG.md](CHANGELOG.md) 与[在线文档](https://yancongya.github.io/mac-dev-cleanup/)。
+
+### 用户 LaunchAgent 服务 CLI
+
+`local_services_cli.py` 提供可脚本调用的 JSON 接口，复用看板相同的服务登记、路径校验与 `launchctl` 安全层。它只管理 `~/Library/LaunchAgents` 中精确 Label 的用户服务：先 `list` / `status` 查看，再用 `register` 明确登记；只有登记后才能启动、停止或切换登录自启。
+
+```bash
+python3 <skill-dir>/scripts/local_services_cli.py list
+python3 <skill-dir>/scripts/local_services_cli.py status com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py register com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py start com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py stop com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py enable-autostart com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py disable-autostart com.example.worker
+```
+
+每条命令都输出 JSON，适合 Agent 解析。状态示例：
+
+```json
+{"ok":true,"service":{"enabled":true,"keep_alive":false,"label":"com.example.worker","loaded":true,"path":"/Users/you/Library/LaunchAgents/com.example.worker.plist","program":"worker","registered":true,"run_at_load":true,"running":true,"scope":"user"}}
+```
+
+`list` / `status` 只读；`register` 只登记现有 plist，不启动或更改自启；生命周期命令必须给出精确 Label 且服务已登记。CLI 没有任意命令、plist 路径、系统 LaunchAgent/Daemon 或 `restart` 操作；错误以非零退出码和 JSON 错误返回。NAS 容器生命周期仍由 Agent Ops 管理。
 
 `--summary-json` 仅用于 `scan` 或清理干跑，输出版本化、无候选路径/原因/ID/配置的 JSON 摘要；不能与 `--apply` 同用。
 

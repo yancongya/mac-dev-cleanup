@@ -217,6 +217,13 @@ class LocalServices:
         self._save_registry(registered)
         return {"ok": True, "service": self._state(label, path, raw, True)}
 
+    def service_status(self, label: str) -> dict[str, Any]:
+        """Return one verified user LaunchAgent without changing its registration."""
+        label = _valid_label(label)
+        path, raw = self._candidate(label)
+        registered = self._registry()
+        return {"ok": True, "service": self._state(label, path, raw, registered.get(label) == str(path))}
+
     def create_service(self, label: str, program: str, arguments: list[str],
                        working_directory: str | None = None,
                        run_at_load: bool = False, keep_alive: bool = False) -> dict[str, Any]:

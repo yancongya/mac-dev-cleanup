@@ -30,6 +30,17 @@ if missing:
     print(f"[FAIL] Missing Docker ownership rule(s): {', '.join(missing)}", file=sys.stderr)
     raise SystemExit(1)
 
+service_cli_required = (
+    "scripts/local_services_cli.py list",
+    "scripts/local_services_cli.py register",
+    "only the exact Label",
+    "Agent Ops remains the owner of NAS container lifecycle",
+)
+missing_service_cli = [phrase for phrase in service_cli_required if phrase not in text]
+if missing_service_cli:
+    print(f"[FAIL] Missing local service CLI guidance: {', '.join(missing_service_cli)}", file=sys.stderr)
+    raise SystemExit(1)
+
 if (
     "sole editable source" not in text
     or "python3 scripts/build_skilldo_package.py build" not in text
@@ -48,6 +59,7 @@ if readme and (
     or "python3 scripts/build_skilldo_package.py build" not in readme
     or "skilldo track-local --skill mac-dev-cleanup --path skills/mac-dev-cleanup --yes" not in readme
     or "skilldo repair source --skill mac-dev-cleanup" not in readme
+    or "scripts/local_services_cli.py list" not in readme
 ):
     print("[FAIL] README.md update, source route, or Docker route conflicts with SKILL.md", file=sys.stderr)
     raise SystemExit(1)

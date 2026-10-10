@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test": "python3 scripts/test_mac_dev_cleanup.py && python3 scripts/test_local_services.py && python3 scripts/test_summary_export.py && python3 scripts/check_skill_routing.py",
+    "test": "python3 scripts/test_mac_dev_cleanup.py && python3 scripts/test_local_services.py && python3 scripts/test_local_services_cli.py && python3 scripts/test_summary_export.py && python3 scripts/check_skill_routing.py",
     "test:dashboard": "python3 scripts/check_dashboard.py && node scripts/check_dashboard_dom.mjs dashboard.html"
   },
   "dependencies": {
