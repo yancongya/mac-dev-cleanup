@@ -4,11 +4,11 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "7d899020010c0fe4cb8cd9feba89c888bc291f8ce43de09f2280c35a44a5c3cd"
+      "sha256": "f289dd8d7d05d2049a894d392ee179602582416f3884a377554de9d3893f4cbd"
     },
     {
       "path": "dashboard_template.html",
-      "sha256": "8f73c37c9ab4ddb59050570abccfcc1e41148ce4215d13d73e0c04dd75eeeee4"
+      "sha256": "a3b70db78c10e2c69b05a43bc24583802c41d93e30dc9eaa2dd626146cb6d9d1"
     },
     {
       "path": "agents/openai.yaml",
@@ -24,7 +24,7 @@
     },
     {
       "path": "scripts/web_server.py",
-      "sha256": "301c9a72d1927170225cb66d3ed7db132310f8a36affde137bf7ffcae4cc21e4"
+      "sha256": "cebf8f7b8c9e9b7ba4666733587d05f62067938d753d1f09cafc54eddc01ad3f"
     },
     {
       "path": "scripts/local_services.py",
@@ -36,11 +36,11 @@
     },
     {
       "path": "scripts/login_items.py",
-      "sha256": "6c2f38a184eae189b67b374a72ffc3d188d08be2ec2b38c0852adfc37194e3a0"
+      "sha256": "7bef3f220ab0150631cca7c81f16c12f97472b371be0330adbefc6926cb4e043"
     },
     {
       "path": "scripts/local_login_items_cli.py",
-      "sha256": "84b2f06883c4247a39f0f1d0aadd7f3a13e872871e69f16245d445ffdbd580fd"
+      "sha256": "70b417b54cab74d6bfc6cbdf6dd0266986d2bde16fc59cdee19bed01fa475720"
     },
     {
       "path": "scripts/check_skill_routing.py",

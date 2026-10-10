@@ -3224,10 +3224,10 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
 
   function renderLaunchInner(){
     return '<section class="panel" style="margin:0 16px 12px"><div style="padding:14px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
-      '<div><strong>应用登录项 · Open at Login</strong><p class="ov-sub" style="margin:5px 0 0">普通应用登录项由 macOS 管理。点击后只读取当前用户的传统“登录时打开”清单；首次读取可能触发 macOS 的自动化授权提示。应用后台活动和扩展不包含在此清单中。</p></div>'+
-      '<div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="login-items-refresh">读取应用登录项</button>'+
+      '<div><strong>应用登录项 · Open at Login</strong><p class="ov-sub" style="margin:5px 0 0">macOS 的自动化授权属于交互式终端，后台面板不能弹出授权提示。请先在终端运行下方命令刷新只读清单，再点击读取快照。应用后台活动和扩展不包含在此清单中。</p></div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="login-items-refresh">读取最近终端快照</button>'+
       '<a class="btn" href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension" target="_blank" rel="noopener noreferrer">打开 macOS 登录项设置</a></div></div>'+
-      '<div id="app-login-list" style="padding:0 16px 12px"><div class="empty">尚未读取。macOS 不提供由此面板切换其他应用登录注册的公开 API；需要变更时请在系统设置中逐项操作。</div></div>'+
+      '<div id="app-login-list" style="padding:0 16px 12px"><div class="empty">尚未读取。请在终端运行 <code>python3 ~/.skillshub/mac-dev-cleanup/scripts/local_login_items_cli.py refresh</code>，然后点击“读取最近终端快照”。macOS 不提供由此面板切换其他应用登录注册的公开 API。</div></div>'+
       '</section>'+
       '<div id="launch-list"><div class="empty">加载中…</div></div>'+
       '<details id="service-create-section" style="padding:0 16px 14px"><summary style="cursor:pointer;font-size:12px;font-weight:600">登记一个终端服务</summary>'+
@@ -3244,7 +3244,8 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   function renderAppLoginItems(payload){
     var el=$("app-login-list"); if(!el) return;
     if(!payload || !payload.ok){
-      el.innerHTML='<div class="empty">'+esc((payload&&payload.error)||"读取失败")+'。可在 <a href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension">macOS 登录项设置</a> 查看和管理。</div>';
+      var command=payload&&payload.refreshCommand;
+      el.innerHTML='<div class="empty">'+esc((payload&&payload.error)||"读取失败")+(command?'<p>在终端刷新只读清单：<code>'+esc(command)+'</code></p>':'')+'可在 <a href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension">macOS 登录项设置</a> 查看和管理。</div>';
       return;
     }
     var items=payload.items||[];
@@ -3266,7 +3267,7 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       fetch("api/login-items",{cache:"no-store"}).then(function(r){return r.json().then(function(j){return {ok:r.ok,payload:j};});})
         .then(function(res){renderAppLoginItems(res.payload);if(res.ok&&res.payload&&res.payload.ok)toast("已读取应用登录项","ok");})
         .catch(function(){renderAppLoginItems({ok:false,error:"无法连接本地服务"});})
-        .finally(function(){button.disabled=false;button.textContent="刷新应用登录项";});
+        .finally(function(){button.disabled=false;button.textContent="读取最近终端快照";});
     });
   }
   function renderLaunch(){

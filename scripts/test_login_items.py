@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import subprocess
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
 import login_items
@@ -53,6 +57,33 @@ class LoginItemsTests(unittest.TestCase):
         runner = Mock(side_effect=subprocess.TimeoutExpired("osascript", 10))
         with self.assertRaisesRegex(login_items.LoginItemsError, "Login Items settings"):
             login_items.list_login_items(runner=runner)
+
+    def test_dashboard_snapshot_is_private_and_does_not_query_system_events(self) -> None:
+        inventory = {"ok": True, "readOnly": True, "items": [{"name": "Example"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.json"
+            saved = login_items.save_dashboard_snapshot(inventory, path=path)
+            self.assertEqual(saved["items"], inventory["items"])
+            self.assertIn("observedAt", saved)
+            self.assertEqual(login_items.read_dashboard_snapshot(path=path), saved)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(path.read_text())["source"], "System Events via interactive CLI")
+
+    def test_dashboard_snapshot_missing_has_explicit_terminal_refresh_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(login_items.LoginItemsError) as raised:
+                login_items.read_dashboard_snapshot(path=Path(directory) / "missing.json")
+        self.assertIn("local_login_items_cli.py refresh", str(raised.exception))
+
+    def test_snapshot_rejects_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.json"
+            target.write_text("{}")
+            link = root / "link.json"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(login_items.LoginItemsError, "unsafe"):
+                login_items.read_dashboard_snapshot(path=link)
 
 
 if __name__ == "__main__":

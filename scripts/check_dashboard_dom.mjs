@@ -213,7 +213,7 @@ service$("#login-items-refresh")?.dispatchEvent(new serviceDom.window.MouseEvent
 await sleep(10);
 ok("应用登录项由显式只读请求加载", serviceRequests.some((request) => request.url.includes("api/login-items")) && serviceText("#app-login-list").includes("Demo Login App"));
 ok("应用登录项只提供系统设置入口，不显示变更按钮", service$("#app-login-list a[href='x-apple.systempreferences:com.apple.LoginItems-Settings.extension']") && !service$("#app-login-list button[data-action]") && /只读/.test(serviceText("#app-login-list")));
-ok("页面说明 LaunchAgent 范围与系统设置入口", /LaunchAgent\/LaunchDaemon plist/.test(text("#pbody-launch")) && /普通应用登录项由 macOS 管理/.test(text("#pbody-launch")) && service$("#pbody-launch a[href='x-apple.systempreferences:com.apple.LoginItems-Settings.extension']")?.textContent.includes("打开 macOS 登录项设置"));
+ok("页面说明 LaunchAgent 范围与系统设置入口", /LaunchAgent\/LaunchDaemon plist/.test(text("#pbody-launch")) && /交互式终端/.test(text("#pbody-launch")) && service$("#pbody-launch a[href='x-apple.systempreferences:com.apple.LoginItems-Settings.extension']")?.textContent.includes("打开 macOS 登录项设置"));
 ok("页面区分停止、自启与卸载", /停止只影响当前运行/.test(text("#pbody-launch")) && /关闭自启只影响下次登录/.test(text("#pbody-launch")) && /不会卸载服务/.test(text("#pbody-launch")));
 ok("可用参数列表登记终端服务", !!$("#service-create-form") && !!$("#service-new-program") && /JSON 字符串数组/.test(text("#service-create-section")) && /不会立即启动/.test(text("#service-create-section")));
 ok("SkillDo 更新后从本地 API 恢复现有看板状态", !!latestState && noDataRequests.includes("api/state") && !!noDataDoc.querySelector("#view-apps") && !noDataDoc.querySelector("#boot-error.show"));

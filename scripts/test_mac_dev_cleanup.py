@@ -217,21 +217,23 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
             self.assertIsNone(item["enabled"])
             self.assertTrue(any(word in item["reason"] for word in ("只读", "仅显示")))
 
-    def test_login_items_api_is_read_only_and_reports_system_settings_fallback(self) -> None:
+    def test_login_items_api_reads_only_cli_snapshot_and_reports_refresh_path(self) -> None:
         inventory = {"ok": True, "readOnly": True, "items": [{"name": "Example", "enabled": True}]}
-        with patch.object(web_server.app_login_items, "list_login_items", return_value=inventory) as list_items:
+        with patch.object(web_server.app_login_items, "read_dashboard_snapshot", return_value=inventory) as read_snapshot, \
+                patch.object(web_server.app_login_items, "list_login_items", side_effect=AssertionError("daemon must not query Apple Events")):
             status, _headers, body = self.request("GET", "/api/login-items")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), inventory)
-        list_items.assert_called_once_with()
+        read_snapshot.assert_called_once_with()
 
-        with patch.object(web_server.app_login_items, "list_login_items",
+        with patch.object(web_server.app_login_items, "read_dashboard_snapshot",
                           side_effect=web_server.app_login_items.LoginItemsError("System Events unavailable")):
             status, _headers, body = self.request("GET", "/api/login-items")
-        self.assertEqual(status, 503)
-        self.assertEqual(json.loads(body), {
-            "ok": False, "error": "System Events unavailable", "readOnly": True,
-        })
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["error"], "System Events unavailable")
+        self.assertEqual(payload["readOnly"], True)
+        self.assertIn("local_login_items_cli.py refresh", payload["refreshCommand"])
 
     def test_login_items_api_has_no_write_route(self) -> None:
         headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}

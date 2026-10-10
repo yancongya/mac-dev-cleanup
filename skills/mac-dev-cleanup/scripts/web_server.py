@@ -394,9 +394,13 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/login-items":
             try:
-                self.send_json(200, app_login_items.list_login_items())
+                # The LaunchAgent cannot reliably obtain interactive Apple Events
+                # authorization. Read only the explicit CLI-created snapshot here.
+                self.send_json(200, app_login_items.read_dashboard_snapshot())
             except app_login_items.LoginItemsError as exc:
-                self.send_json(503, {"ok": False, "error": str(exc), "readOnly": True})
+                self.send_json(200, {"ok": False, "error": str(exc), "readOnly": True,
+                                     "refreshCommand": "python3 ~/.skillshub/mac-dev-cleanup/scripts/local_login_items_cli.py refresh",
+                                     "settingsUrl": app_login_items.SETTINGS_URL})
             return
         if path == "/api/services":
             items = cleanup.launch_items()

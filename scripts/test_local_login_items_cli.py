@@ -32,6 +32,19 @@ class LoginItemsCliTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertEqual(json.loads(error.getvalue()), {"ok": False, "error": "System Events unavailable"})
 
+    def test_refresh_saves_explicit_read_only_snapshot(self) -> None:
+        reader = Mock()
+        inventory = {"ok": True, "readOnly": True, "items": []}
+        snapshot = {**inventory, "observedAt": "2026-10-10T00:00:00+00:00"}
+        reader.list_login_items.return_value = inventory
+        reader.save_dashboard_snapshot.return_value = snapshot
+        output = StringIO()
+        with redirect_stdout(output):
+            result = local_login_items_cli.run(["refresh"], reader=reader)
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output.getvalue()), snapshot)
+        reader.save_dashboard_snapshot.assert_called_once_with(inventory)
+
     def test_mutation_commands_are_not_available(self) -> None:
         for command in ("enable", "disable", "remove"):
             error = StringIO()

@@ -17,12 +17,15 @@ class _JsonArgumentParser(argparse.ArgumentParser):
 
 
 def run(argv: Sequence[str] | None = None, *, reader: Any = login_items) -> int:
-    parser = _JsonArgumentParser(description="Read the current user's macOS Open at Login list as JSON.")
+    parser = _JsonArgumentParser(description="Read or refresh the current user's macOS Open at Login inventory as JSON.")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="read traditional Open at Login items through System Events")
+    commands.add_parser("refresh", help="read through System Events and save a private dashboard snapshot")
     args = parser.parse_args(argv)
     try:
         result = reader.list_login_items()
+        if args.command == "refresh":
+            result = reader.save_dashboard_snapshot(result)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     except login_items.LoginItemsError as exc:

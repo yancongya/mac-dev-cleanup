@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import subprocess
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
@@ -11,6 +16,7 @@ from typing import Any
 FIELD_SEPARATOR = "\x1f"
 ROW_SEPARATOR = "\x1e"
 SETTINGS_URL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+_SNAPSHOT_PATH = Path.home() / ".codex" / "logs" / "mac-dev-cleanup" / "login-items.json"
 
 # System Events exposes the user's traditional Open at Login list through its
 # native Apple Events interface. App Background Activity and extensions are a
@@ -104,3 +110,56 @@ def list_login_items(
             "macOS does not provide a public API for this dashboard to toggle another app's login registration; use Login Items & Extensions settings.",
         ],
     }
+
+
+def save_dashboard_snapshot(
+    inventory: dict[str, Any], *, path: Path | str = _SNAPSHOT_PATH,
+) -> dict[str, Any]:
+    """Persist a successful interactive read for the background dashboard."""
+    if not inventory.get("ok") or not inventory.get("readOnly") or not isinstance(inventory.get("items"), list):
+        raise LoginItemsError("only a successful read-only inventory can be saved")
+    snapshot = dict(inventory)
+    snapshot["observedAt"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    snapshot["source"] = "System Events via interactive CLI"
+    target = Path(path)
+    if target.is_symlink():
+        raise LoginItemsError("login item snapshot path is unsafe")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if target.parent.is_symlink():
+            raise LoginItemsError("login item snapshot directory is unsafe")
+        fd, temporary = tempfile.mkstemp(prefix=".login-items-", dir=str(target.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(snapshot, stream, ensure_ascii=False, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    except LoginItemsError:
+        raise
+    except OSError as exc:
+        raise LoginItemsError("could not save the private dashboard snapshot") from exc
+    return snapshot
+
+
+def read_dashboard_snapshot(*, path: Path | str = _SNAPSHOT_PATH) -> dict[str, Any]:
+    """Read a prior interactive inventory without invoking Apple Events."""
+    target = Path(path)
+    if target.is_symlink():
+        raise LoginItemsError("login item snapshot path is unsafe")
+    try:
+        snapshot = json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise LoginItemsError(
+            "尚无可显示的清单。请在终端运行 `python3 ~/.skillshub/mac-dev-cleanup/scripts/local_login_items_cli.py refresh`，再刷新此面板。"
+        ) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LoginItemsError("本地登录项快照无法读取；请从终端重新刷新") from exc
+    if not isinstance(snapshot, dict) or snapshot.get("ok") is not True or not isinstance(snapshot.get("items"), list):
+        raise LoginItemsError("本地登录项快照格式无效；请从终端重新刷新")
+    return snapshot
