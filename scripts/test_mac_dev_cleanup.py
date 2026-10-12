@@ -157,6 +157,15 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
     def config_payload() -> bytes:
         return json.dumps({"stale_days": 31}).encode("utf-8")
 
+    def test_cli_tools_endpoint_is_read_only_and_returns_inventory(self) -> None:
+        expected = {"ok": True, "source": "PATH", "commandCount": 1,
+                    "tools": [{"name": "example", "path": "/opt/example", "sourceDirectory": "/opt"}]}
+        with patch.object(web_server.cli_inventory, "list_cli_tools", return_value=expected) as scan:
+            status, _headers, body = self.request("GET", "/api/cli-tools")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), expected)
+        scan.assert_called_once_with()
+
     def test_config_post_rejects_missing_and_wrong_tokens_before_route(self) -> None:
         with patch.object(web_server.cleanup, "save_config") as save_config:
             for token in (None, "wrong-token"):
@@ -206,6 +215,86 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertFalse(json.loads(body)["ok"])
         run.assert_not_called()
+
+    def test_app_stop_requests_graceful_quit_and_verifies_it_stopped(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-app-stop-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        bundle = base / "Sample.app"
+        bundle.mkdir()
+        state = base / "apps.json"
+        state.write_text(json.dumps({"apps": [{"name": "Sample.app", "path": str(bundle),
+                                               "bundle_id": "com.example.sample"}]}), encoding="utf-8")
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server, "APPS_STATE_PATH", state), \
+             patch.object(web_server.cleanup, "find_app_bundle", return_value=bundle), \
+             patch.object(web_server.cleanup, "app_bundle_info", return_value={"bundle_id": "com.example.sample"}), \
+             patch.object(web_server, "_app_is_running", side_effect=[True, False]), \
+             patch.object(web_server.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout="", stderr="")) as run:
+            status, _headers, body = self.request(
+                "POST", "/api/apps/action", headers=headers,
+                body=json.dumps({"app": "Sample.app", "action": "stop"}).encode())
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["running"], False)
+        self.assertTrue(json.loads(body)["ok"])
+        run.assert_called_once_with(
+            ["/usr/bin/osascript", "-e", 'tell application id "com.example.sample" to quit'],
+            text=True, capture_output=True, timeout=30,
+        )
+
+    def test_app_stop_does_not_claim_success_while_app_still_runs(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-app-stop-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        bundle = base / "Sample.app"
+        bundle.mkdir()
+        state = base / "apps.json"
+        state.write_text(json.dumps({"apps": [{"name": "Sample.app", "path": str(bundle),
+                                               "bundle_id": "com.example.sample"}]}), encoding="utf-8")
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server, "APPS_STATE_PATH", state), \
+             patch.object(web_server.cleanup, "find_app_bundle", return_value=bundle), \
+             patch.object(web_server.cleanup, "app_bundle_info", return_value={"bundle_id": "com.example.sample"}), \
+             patch.object(web_server, "_app_is_running", side_effect=[True, True]), \
+             patch.object(web_server.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout="", stderr="")) as run:
+            status, _headers, body = self.request(
+                "POST", "/api/apps/action", headers=headers,
+                body=json.dumps({"app": "Sample.app", "action": "stop"}).encode())
+        self.assertEqual(status, 422)
+        self.assertFalse(json.loads(body)["ok"])
+        self.assertTrue(json.loads(body)["running"])
+        self.assertEqual(json.loads(body)["error"], "application did not reach the requested state")
+        self.assertNotIn("kill", run.call_args.args[0])
+
+    def test_app_action_rejects_changed_bundle_path_or_identity(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-app-stale-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        recorded = base / "Sample.app"
+        replacement = base / "Replacement.app"
+        recorded.mkdir()
+        replacement.mkdir()
+        state = base / "apps.json"
+        state.write_text(json.dumps({"apps": [{"name": "Sample.app", "path": str(recorded),
+                                               "bundle_id": "com.example.sample"}]}), encoding="utf-8")
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        cases = [
+            (replacement, {"bundle_id": "com.example.sample"}),
+            (recorded, {"bundle_id": "com.example.changed"}),
+        ]
+        for current_bundle, current_info in cases:
+            with self.subTest(current_bundle=current_bundle, current_info=current_info), \
+                 patch.object(web_server, "APPS_STATE_PATH", state), \
+                 patch.object(web_server.cleanup, "find_app_bundle", return_value=current_bundle), \
+                 patch.object(web_server.cleanup, "app_bundle_info", return_value=current_info), \
+                 patch.object(web_server, "_app_is_running") as is_running, \
+                 patch.object(web_server.subprocess, "run") as run:
+                status, _response_headers, body = self.request(
+                    "POST", "/api/apps/action", headers=headers,
+                    body=json.dumps({"app": "Sample.app", "action": "stop"}).encode())
+            self.assertEqual(status, 404)
+            self.assertFalse(json.loads(body)["ok"])
+            is_running.assert_not_called()
+            run.assert_not_called()
 
     def test_config_post_with_server_token_reaches_route(self) -> None:
         normalized = cleanup.validate_config({"stale_days": 31})

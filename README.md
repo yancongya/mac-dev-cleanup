@@ -118,6 +118,8 @@ python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地
 
 `local_services_cli.py` 提供可脚本调用的 JSON 接口，复用看板相同的服务登记、路径校验与 `launchctl` 安全层。它只管理 `~/Library/LaunchAgents` 中精确 Label 的用户服务：先 `list` / `status` 查看，再用 `register` 明确登记；只有登记后才能启动、停止或切换登录自启。
 
+`local_cli_tools_cli.py list` 只读扫描当前 `PATH` 中可调用的 CLI，输出命令名与解析后的可执行文件路径，不执行这些程序。看板的“启动项与服务”页也提供同一清单，并可把路径填入 LaunchAgent 表单；参数和自启选项仍需人工核对，创建默认为预览，不会自动启动。
+
 ```bash
 python3 <skill-dir>/scripts/local_services_cli.py list
 python3 <skill-dir>/scripts/local_services_cli.py status com.example.worker

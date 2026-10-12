@@ -3049,7 +3049,7 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // ---- reports view (启动项 / TM 快照 / 重复文件) ----
   // Read-only reports; the only mutating actions are snapshot delete (strong
   // confirm) and dupes rebuild. Mirrors the trash panel's loadXxx/renderXxx split.
-  var REPORTS = { services:null, snapshots:null, dupes:null, dupesTimer:null };
+  var REPORTS = { services:null, cliTools:null, cliFilter:"", snapshots:null, dupes:null, dupesTimer:null };
   var PENDING_SNAPSHOT = null;
   var SCOPE_ZH = { "user":"用户", "local-agents":"本地代理", "local-daemons":"本地守护" };
 
@@ -3195,8 +3195,58 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   function loadReports(){
     if(!state.apiOnline) return;
     loadLaunch();
+    loadCliTools(false);
     loadSnapshots();
     loadDupes();
+  }
+  function loadCliTools(force){
+    if(!state.apiOnline) return;
+    if(!force && REPORTS.cliTools){ renderCliTools(); return; }
+    fetch("api/cli-tools",{cache:"no-store"}).then(function(r){ return r.json(); })
+      .then(function(j){
+        REPORTS.cliTools=j&&j.ok?j:null;
+        renderCliTools();
+      }).catch(function(){
+        REPORTS.cliTools=null;
+        var list=$("cli-tools-list"); if(list) list.innerHTML='<div class="empty">读取失败，请确认本地服务正在运行。</div>';
+      });
+  }
+  function renderCliTools(){
+    var listEl=$("cli-tools-list"), meta=$("cli-tools-meta");
+    if(!listEl) return;
+    if(!state.apiOnline){ listEl.innerHTML='<div class="empty">请通过本地服务打开此页面以读取命令清单。</div>'; return; }
+    if(!REPORTS.cliTools){ listEl.innerHTML='<div class="empty">清单暂不可用。</div>'; return; }
+    var all=REPORTS.cliTools.tools||[], q=(REPORTS.cliFilter||"").toLowerCase();
+    var filtered=all.filter(function(it){ return !q || (it.name+" "+it.path).toLowerCase().indexOf(q)>=0; });
+    if(meta) meta.textContent="发现 "+(REPORTS.cliTools.commandCount||all.length)+" 个命令 · 扫描 "+(REPORTS.cliTools.scannedDirectories||0)+" 个 PATH 目录"+(REPORTS.cliTools.truncated?" · 结果已截断":"");
+    if(!filtered.length){ listEl.innerHTML='<div class="empty">没有匹配的命令行工具。</div>'; return; }
+    var shown=filtered.slice(0,250);
+    listEl.innerHTML=(filtered.length>shown.length?'<div class="ov-sub" style="padding:0 0 8px">显示前 250 项，请用搜索缩小范围。</div>':'')+'<div class="sys-list">'+shown.map(function(it){
+      return '<div class="sys-item"><span class="si-name" title="'+esc(it.name)+'">'+esc(it.name)+'</span>'+
+        '<span class="si-time" style="max-width:55%" title="'+esc(it.path)+'">'+esc(truncatePath(it.path))+'</span>'+
+        '<span class="service-state"><span class="tag tag-scanonly">PATH</span></span>'+
+        '<button type="button" class="btn cli-use-service" data-name="'+esc(it.name)+'" data-path="'+esc(it.path)+'">填入服务表单</button></div>';
+    }).join("")+'</div>';
+  }
+  function bindCliToolsActions(){
+    var root=$("pbody-launch"); if(!root || root.dataset.cliToolsBound) return;
+    root.dataset.cliToolsBound="1";
+    root.addEventListener("input",function(e){
+      if(e.target && e.target.id==="cli-tools-search"){ REPORTS.cliFilter=e.target.value.trim(); renderCliTools(); }
+    });
+    root.addEventListener("click",function(e){
+      var refresh=e.target.closest("#cli-tools-refresh");
+      if(refresh){ refresh.disabled=true; refresh.textContent="正在扫描…"; loadCliTools(true); setTimeout(function(){refresh.disabled=false;refresh.textContent="刷新清单";},500); return; }
+      var use=e.target.closest(".cli-use-service"); if(!use) return;
+      var program=$("service-new-program"), label=$("service-new-label"), section=$("service-create-section");
+      if(program) program.value=use.getAttribute("data-path")||"";
+      if(label && !label.value){
+        var slug=(use.getAttribute("data-name")||"command").toLowerCase().replace(/[^a-z0-9-]+/g,"-").replace(/^-+|-+$/g,"").slice(0,48)||"command";
+        label.value="com.local."+slug;
+      }
+      if(section){ section.open=true; section.scrollIntoView({behavior:"smooth",block:"center"}); }
+      toast("已填入程序路径；请核对参数，预览后再创建","ok");
+    });
   }
   function loadLaunch(){
     fetch("api/services",{cache:"no-store"}).then(function(r){ return r.json(); })
@@ -3258,6 +3308,12 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       '<a class="btn" href="x-apple.systempreferences:com.apple.LoginItems-Settings.extension" target="_blank" rel="noopener noreferrer">打开 macOS 登录项设置</a></div></div>'+
       '<div id="app-login-list" style="padding:0 16px 12px"><div class="empty">尚未读取。请在终端运行 <code>python3 ~/.skillshub/mac-dev-cleanup/scripts/local_login_items_cli.py refresh</code>，然后点击“读取最近终端快照”。macOS 不提供由此面板切换其他应用登录注册的公开 API。</div></div>'+
       '</section>'+
+      '<section class="panel" style="margin:0 16px 12px"><div style="padding:14px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'+
+      '<div><strong>PATH 中可用的命令行工具</strong><p class="ov-sub" style="margin:5px 0 0">只读扫描当前终端 PATH，不运行命令、不改变安装。选择工具可把程序路径填入下方服务表单；是否创建、启动或设为登录启动仍由你确认。</p></div>'+
+      '<button type="button" class="btn" id="cli-tools-refresh">刷新清单</button></div>'+
+      '<div id="cli-tools-meta" class="ov-sub" style="padding:0 16px 6px">加载中…</div>'+
+      '<div style="padding:0 16px 8px"><input id="cli-tools-search" type="search" placeholder="搜索命令名称或路径…" aria-label="搜索命令行工具"></div>'+
+      '<div id="cli-tools-list" style="padding:0 16px 12px"><div class="empty">正在读取 PATH 中的命令…</div></div></section>'+
       '<div id="launch-list"><div class="empty">加载中…</div></div>'+
       '<details id="service-create-section" style="padding:0 16px 14px"><summary style="cursor:pointer;font-size:12px;font-weight:600">登记一个终端服务</summary>'+
       '<p class="ov-sub">填写绝对可执行文件路径与 JSON 参数数组。系统会创建用户 LaunchAgent，不经过 shell；登记后不会立即启动。若该服务目前在终端运行，先在终端停止它，避免重复启动。不要把密码或令牌写入参数。</p>'+
@@ -3302,6 +3358,8 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   function renderLaunch(){
     var el=$("launch-list"); if(!el) return;
     bindAppLoginItemActions();
+    bindCliToolsActions();
+    renderCliTools();
     var badge=$("launch-count");
     if(!state.apiOnline){
       el.innerHTML='<div class="empty">需通过本地服务打开才能读取启动项</div>';

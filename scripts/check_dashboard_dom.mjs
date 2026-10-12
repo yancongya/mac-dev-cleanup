@@ -172,12 +172,18 @@ const serviceDom = new JSDOM(renderHtml, {
   url: "http://127.0.0.1:8766/dashboard.html",
   beforeParse(serviceWindow) {
     serviceWindow.confirm = (message) => { serviceWindow.__confirmPrompt = message; return false; };
+    serviceWindow.HTMLElement.prototype.scrollIntoView = function () {};
     serviceWindow.fetch = (url, options = {}) => {
       serviceRequests.push({ url: String(url), options });
       const path = String(url).replace(/^\//, "");
       const bodies = {
         "api/health": { ok: true, token: "dom-test-token" },
         "api/services": { ok: true, services: serviceFixture },
+        "api/cli-tools": { ok: true, source: "PATH", commandCount: 2, scannedDirectories: 3, truncated: false,
+          tools: [
+            { name: "demo-cli", path: "/opt/demo/bin/demo-cli", sourceDirectory: "/opt/demo/bin" },
+            { name: "demo-helper", path: "/opt/demo/bin/demo-helper", sourceDirectory: "/opt/demo/bin" },
+          ] },
         "api/login-items": { ok: true, readOnly: true, items: [{ id: "demo-login", name: "Demo Login App", path: "/Applications/Demo Login App.app", kind: "application", hidden: false, enabled: true }] },
         "api/apps": { ok: true, apps: [
           { name: "Demo.app", path: "/Applications/Demo.app", total_size: 1, running: false, related: [] },
@@ -212,6 +218,7 @@ const noDataDom = new JSDOM(html, {
         "api/health": { ok: true, token: "dom-test-token" },
         "api/state": latestState,
         "api/services": { ok: true, services: serviceFixture },
+        "api/cli-tools": { ok: true, source: "PATH", commandCount: 0, scannedDirectories: 0, tools: [] },
         "api/login-items": { ok: true, readOnly: true, items: [] },
         "api/apps": { ok: true, apps: [] }, "api/clean/history": { ok: true, runs: [] },
         "api/snapshots": { ok: true, snapshots: [] },
@@ -275,6 +282,13 @@ ok("应用重扫按钮存在", !!$("#apps-rescan"));
 ok("应用统计条存在", !!$("#apps-stats"));
 ok("应用排序控件存在", !!$("#apps-sort"));
 ok("LaunchAgent 启动项与服务面板已并入系统视图", !!$("#view-apps #panel-launch") && text("#panel-launch h2").includes("启动项与服务"));
+ok("CLI 清单面板显示 PATH 中的命令", !!service$("#cli-tools-search") && serviceText("#cli-tools-list").includes("demo-cli") && serviceText("#cli-tools-meta").includes("2 个命令"));
+const cliToolButton = service$("#cli-tools-list .cli-use-service[data-name=\"demo-cli\"]");
+cliToolButton?.dispatchEvent(new serviceDom.window.MouseEvent("click", { bubbles: true }));
+ok("CLI 清单可填入服务表单且不自动创建", service$("#service-new-program")?.value === "/opt/demo/bin/demo-cli" && service$("#service-create-section")?.open && !serviceRequests.some((request) => request.url.includes("api/services/create")));
+const cliSearch = service$("#cli-tools-search");
+if (cliSearch) { cliSearch.value = "helper"; cliSearch.dispatchEvent(new serviceDom.window.Event("input", { bubbles: true })); }
+ok("CLI 清单搜索即时过滤", serviceText("#cli-tools-list").includes("demo-helper") && !serviceText("#cli-tools-list").includes("demo-cli"));
 ok("TM 快照面板已并入系统视图", !!$("#view-apps #panel-snapshots"));
 
 // --- history view: trash panel (quarantine + system trash sub-sections) ---

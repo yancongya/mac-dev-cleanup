@@ -135,6 +135,7 @@ sys.path.insert(0, str(SCRIPT.parent))
 import mac_dev_cleanup as cleanup  # noqa: E402
 import local_services as local_services  # noqa: E402
 import login_items as app_login_items  # noqa: E402
+import cli_inventory as cli_inventory  # noqa: E402
 
 # The CLI module owns the policy path; never re-derive it here. It resolves to
 # LOG_DIR/config.json (outside the Skill directory), so a `skilldo update` that
@@ -471,6 +472,9 @@ class Handler(SimpleHTTPRequestHandler):
                 "reason": "系统范围启动项仅显示；不操作 system 域",
             } for item in items if item.get("scope") != "user")
             self.send_json(200, result)
+            return
+        if path == "/api/cli-tools":
+            self.send_json(200, cli_inventory.list_cli_tools())
             return
         if path == "/api/snapshots":
             self.send_json(200, cleanup.tmutil_snapshots())
@@ -835,10 +839,13 @@ class Handler(SimpleHTTPRequestHandler):
                 proc = subprocess.run(["/usr/bin/osascript", "-e",
                                        f'tell application id "{bundle_id}" to quit'],
                                       text=True, capture_output=True, timeout=30)
-            ok = proc.returncode == 0
+            running_after = _app_is_running(bundle_id)
+            reached_requested_state = running_after == (action == "start")
+            ok = proc.returncode == 0 and reached_requested_state
             self.send_json(200 if ok else 422, {
                 "ok": ok, "name": app, "action": action,
-                "running": _app_is_running(bundle_id) if ok else running,
+                "running": running_after,
+                **({} if ok else {"error": "application did not reach the requested state"}),
                 "output": ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()[-1000:],
             })
         except subprocess.TimeoutExpired:
