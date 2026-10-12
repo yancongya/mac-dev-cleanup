@@ -61,6 +61,55 @@ class LocalServicesCliTests(unittest.TestCase):
             call("com.example.worker", action) for action in expected.values()
         ])
 
+    def test_create_defaults_to_reviewable_dry_run_without_writing(self) -> None:
+        manager = Mock()
+        argv = [
+            "create", "com.example.dashboard", "/opt/homebrew/bin/node",
+            "--arg", "server.js", "--arg=--port=8789",
+            "--working-directory", "/Users/example/project",
+            "--run-at-load", "--keep-alive",
+        ]
+
+        code, result, _ = self.invoke(argv, manager)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(result["dryRun"])
+        self.assertEqual(result["action"], "create-user-launch-agent")
+        self.assertEqual(result["service"], {
+            "label": "com.example.dashboard",
+            "program": "/opt/homebrew/bin/node",
+            "arguments": ["server.js", "--port=8789"],
+            "workingDirectory": "/Users/example/project",
+            "runAtLoad": True,
+            "keepAlive": True,
+        })
+        manager.create_service.assert_not_called()
+
+    def test_create_apply_uses_literal_argv_and_explicit_launchd_options(self) -> None:
+        manager = Mock()
+        manager.create_service.return_value = {
+            "ok": True,
+            "service": {"label": "com.example.dashboard", "registered": True},
+        }
+
+        code, result, _ = self.invoke([
+            "create", "com.example.dashboard", "/opt/homebrew/bin/node",
+            "--arg", "server.js", "--arg=--port=8789",
+            "--working-directory", "/Users/example/project",
+            "--run-at-load", "--keep-alive", "--apply",
+        ], manager)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(result["ok"])
+        manager.create_service.assert_called_once_with(
+            "com.example.dashboard",
+            "/opt/homebrew/bin/node",
+            ["server.js", "--port=8789"],
+            "/Users/example/project",
+            True,
+            True,
+        )
+
     def test_service_policy_errors_are_json_and_nonzero(self) -> None:
         manager = Mock()
         manager.service_action.side_effect = local_services.LocalServiceError("service is not explicitly registered")

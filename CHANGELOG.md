@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **终端服务 LaunchAgent CLI 创建预览（2026-10-13）**：`local_services_cli.py create` 仅输出用户级服务配置预览，追加 `--apply` 才写 plist 并登记；程序路径必须绝对且可执行，参数逐项传入，不接受 shell 字符串。默认不设置登录自启、不保持常驻、不立即启动；README 与 Skill 同步说明。
 - **用户 LaunchAgent 生命周期 CLI（2026-10-10）**：新增 JSON 命令 `list/status/register/start/stop/enable-autostart/disable-autostart`，复用看板的 `LocalServices` 安全层；只允许显式登记的用户 `~/Library/LaunchAgents`，系统 LaunchAgents/Daemons 仍只读，CLI 不接受任意 plist 路径、命令字符串或 restart。
 - **macOS 登录项设置入口（2026-10-10）**：启动项面板新增直达系统登录项设置的入口，并说明应用自带后台项目由 macOS 管理；LaunchAgent/LaunchDaemon 生命周期与应用卸载继续分区处理。
 - **launchd 常驻服务 + 一键还原 + state 完整性守卫（2026-09-28）**。① `service --service-action install|uninstall|status`：写 `~/Library/LaunchAgents` plist（RunAtLoad+KeepAlive，系统 python3），实测 **IDE/宿主 App 内发起的 `launchctl bootstrap` 一律被 macOS 拒绝（I/O error 5，最小合法 plist 也一样）**——安装器写入并验证加载，被拒时打印 Terminal 精确命令。② `POST /api/operations/restore` + 操作历史面板重构：明细可展开（manifest 键为 `original_path` 而非 `path`）、两段确认一键还原，卸载成功后提供「查看操作历史并还原」直达按钮。③ **state 完整性守卫（「看板全空」的根因修复）**：看板勾选清理用 `--candidate-id` 过滤陈旧清单，0 命中时 `write_state` 会用空清单覆盖全局 state——过滤型运行现在**永不写 state**（0 命中打警告），web 端在 apply 成功后自动补全量 scan 刷新清单，前端 6 秒后二次拉取。④ 执行记录面板改名「执行记录（仅看板触发）」并修正空态文案，操作历史面板提到历史视图首位。单测 80 → 86。

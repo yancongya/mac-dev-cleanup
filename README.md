@@ -122,6 +122,8 @@ python3 <skill-dir>/scripts/web_server.py --port 8766             # 启动本地
 python3 <skill-dir>/scripts/local_services_cli.py list
 python3 <skill-dir>/scripts/local_services_cli.py status com.example.worker
 python3 <skill-dir>/scripts/local_services_cli.py register com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py create com.example.dashboard /opt/homebrew/bin/node --arg bin/storage-manager.js --arg=dashboard --arg=--host --arg=127.0.0.1 --arg=--port --arg=8789 --working-directory "/Users/you/工作/开发/storage-manager"
+python3 <skill-dir>/scripts/local_services_cli.py create com.example.dashboard /opt/homebrew/bin/node --arg bin/storage-manager.js --arg=dashboard --arg=--host --arg=127.0.0.1 --arg=--port --arg=8789 --working-directory "/Users/you/工作/开发/storage-manager" --apply
 python3 <skill-dir>/scripts/local_services_cli.py start com.example.worker
 python3 <skill-dir>/scripts/local_services_cli.py stop com.example.worker
 python3 <skill-dir>/scripts/local_services_cli.py enable-autostart com.example.worker
@@ -134,7 +136,7 @@ python3 <skill-dir>/scripts/local_services_cli.py disable-autostart com.example.
 {"ok":true,"service":{"enabled":true,"keep_alive":false,"label":"com.example.worker","loaded":true,"path":"/Users/you/Library/LaunchAgents/com.example.worker.plist","program":"worker","registered":true,"run_at_load":true,"running":true,"scope":"user"}}
 ```
 
-`list` / `status` 只读；`register` 只登记现有 plist，不启动或更改自启；生命周期命令必须给出精确 Label 且服务已登记。CLI 没有任意命令、plist 路径、系统 LaunchAgent/Daemon 或 `restart` 操作；错误以非零退出码和 JSON 错误返回。NAS 容器生命周期仍由 Agent Ops 管理。
+`list` / `status` 只读；`register` 只登记现有 plist，不启动或更改自启；`create` 默认只输出预览，追加 `--apply` 才会把绝对可执行路径和逐项 argv 写入当前用户 LaunchAgent 并登记。创建默认不设登录自启、不保持常驻，也不会立即启动；需要时再显式使用 `enable-autostart` 或 `start`。参数会保存在 plist 并可能出现在进程列表中，禁止把密码、令牌或其他秘密作为参数传入。生命周期命令必须给出精确 Label 且服务已登记。CLI 不接受 shell 命令字符串、任意 plist 路径，也不操作系统 LaunchAgent/Daemon 或提供 `restart`；错误以非零退出码和 JSON 错误返回。NAS 容器生命周期仍由 Agent Ops 管理。
 
 ### 应用登录项只读清单
 
