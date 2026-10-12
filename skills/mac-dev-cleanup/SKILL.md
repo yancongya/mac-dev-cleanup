@@ -639,7 +639,7 @@ python3 <skill-dir>/scripts/local_login_items_cli.py list
 
 ## Installed app start and quit
 
-From the System view's installed-app list, the **启动 / 退出** control opens an installed app by its verified bundle path or requests a normal macOS quit. The action is confirmed in the UI, requires the loopback API token, and accepts only an app in the latest inventory whose bundle path and bundle ID still match an app under `/Applications` or `~/Applications`. Quit is graceful; it does not force-kill the app. This does not change login items or background-service settings. Use the separate LaunchAgent controls for terminal-hosted services and System Settings for traditional app login items.
+From the System view's installed-app list, the **启动 / 退出** control opens an installed app by its verified bundle path or requests a normal macOS quit. The action is confirmed in the UI, requires the loopback API token, and accepts only an app in the latest inventory whose bundle path and bundle ID still match an app under `/Applications` or `~/Applications`. Quit is graceful; it does not force-kill the app. This control is separate from uninstall and does not change login items or background-service settings. Use the separate LaunchAgent controls for terminal-hosted services and System Settings for traditional app login items.
 
 ## Agent Ops status handoff
 
@@ -649,7 +649,7 @@ Agent Ops exposes the latest Mac cleanup scan as a read-only aggregate:
 agent-ops status --scope mac --json
 ```
 
-This reads `~/.codex/logs/mac-dev-cleanup/state.json` only. It does not run a scan or cleanup, and omits candidate paths. The report includes scan time/staleness, risk counts, byte totals, selected bytes, and disk usage. To refresh it, run this Skill's read-only `scan` command first, then query Agent Ops again. Keep cleanup execution in this Skill's explicit `--apply` path; Agent Ops is an inventory and handoff surface, not a file-deletion interface.
+This reads `~/.codex/logs/mac-dev-cleanup/state.json` only. It does not run a scan or cleanup, and omits candidate paths. The report includes scan time/staleness, risk counts, byte totals, selected bytes, and disk usage. To refresh it, run this Skill's read-only `scan` command first, then query Agent Ops again. Keep cleanup execution in this Skill's explicit `--apply` path; Agent Ops is an inventory and handoff surface, not a file-deletion interface, and it does not manage local applications, LaunchAgents, or login items.
 
 ## Useful follow-up checks
 
