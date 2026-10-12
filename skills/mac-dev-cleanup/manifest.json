@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "93b975f78a956b38666661cc47460fa476eb230be071185503cf06428f759f7f"
+      "sha256": "2816779ceaee83c88b25c943ee40aa1a552b83cc84b741bee46313cd8c04b867"
     },
     {
       "path": "dashboard_template.html",
@@ -32,7 +32,7 @@
     },
     {
       "path": "scripts/local_services_cli.py",
-      "sha256": "1130fb960f34d6bc79c22902cccf804a0d8e9815c8e6182a12daa216d275dfc7"
+      "sha256": "56cb9703ea7544d15f75ca15585154da88a5ab1cb5f9a24cabc5b71dd00a1033"
     },
     {
       "path": "scripts/login_items.py",
@@ -44,7 +44,7 @@
     },
     {
       "path": "scripts/check_skill_routing.py",
-      "sha256": "0e545853d67eb59f348e9f8e8dfbe35c4d74501d0dda034521ffa3139c09beae"
+      "sha256": "f4aa15caf0910314bd05d67409d7c2696d072a4aa4ef50308edb3892f8eb63cd"
     }
   ],
   "runtimeFiles": [

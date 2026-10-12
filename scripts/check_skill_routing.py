@@ -30,6 +30,9 @@ if missing:
 service_cli_required = (
     "scripts/local_services_cli.py list",
     "scripts/local_services_cli.py register",
+    "scripts/local_services_cli.py create",
+    "JSON preview by default",
+    "`--apply`",
     "only the exact Label",
     "Agent Ops remains the owner of NAS container lifecycle",
 )
@@ -68,6 +71,7 @@ if readme and (
     or "skilldo track-local --skill mac-dev-cleanup --path skills/mac-dev-cleanup --yes" not in readme
     or "skilldo repair source --skill mac-dev-cleanup" not in readme
     or "scripts/local_services_cli.py list" not in readme
+    or "scripts/local_services_cli.py create" not in readme
     or "local_login_items_cli.py list" not in readme
 ):
     print("[FAIL] README.md update, source route, or Docker route conflicts with SKILL.md", file=sys.stderr)

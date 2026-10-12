@@ -605,19 +605,21 @@ This Mac cleanup Skill does not install, start, inspect, build with, or manage a
 
 ## User LaunchAgent service CLI
 
-Use the bundled `scripts/local_services_cli.py` when the user asks to inspect or manage an existing macOS user service. Commands return one JSON object on stdout; failures return a JSON error on stderr and a nonzero exit code.
+Use the bundled `scripts/local_services_cli.py` when the user asks to inspect, create, or manage a macOS user service. Commands return one JSON object on stdout; failures return a JSON error on stderr and a nonzero exit code.
 
 ```sh
 python3 <skill-dir>/scripts/local_services_cli.py list
 python3 <skill-dir>/scripts/local_services_cli.py status com.example.worker
 python3 <skill-dir>/scripts/local_services_cli.py register com.example.worker
+python3 <skill-dir>/scripts/local_services_cli.py create com.example.dashboard /absolute/path/to/node --arg server.js --arg=dashboard --working-directory /absolute/path/to/project
+python3 <skill-dir>/scripts/local_services_cli.py create com.example.dashboard /absolute/path/to/node --arg server.js --arg=dashboard --working-directory /absolute/path/to/project --apply
 python3 <skill-dir>/scripts/local_services_cli.py start com.example.worker
 python3 <skill-dir>/scripts/local_services_cli.py stop com.example.worker
 python3 <skill-dir>/scripts/local_services_cli.py enable-autostart com.example.worker
 python3 <skill-dir>/scripts/local_services_cli.py disable-autostart com.example.worker
 ```
 
-List and status are read-only. Register only the exact Label of an existing `~/Library/LaunchAgents/<Label>.plist`; registration records the verified plist path and does not start it or change its login policy. Start, stop, and autostart changes require the exact service to be registered first. Run lifecycle commands only when the user has asked for that service action. The CLI delegates every operation to `local_services.py`; it does not accept arbitrary plist paths, shell commands, system LaunchAgents/Daemons, or restart. Its JSON does not echo plist argument vectors. Agent Ops remains the owner of NAS container lifecycle and does not control these local Mac services.
+List and status are read-only. Register only the exact Label of an existing `~/Library/LaunchAgents/<Label>.plist`; registration records the verified plist path and does not start it or change its login policy. `create` accepts an absolute executable and literal repeated `--arg` values, never a shell string. It prints a JSON preview by default; only add `--apply` after reviewing it to write and register the LaunchAgent. Creation defaults to no login autostart and no keep-alive, and does not start the process. LaunchAgent arguments are stored in a plist and may appear in process listings, so never pass passwords, tokens, or other secrets as arguments. Start, stop, and autostart changes require the exact service to be registered first. Run lifecycle commands only when the user has asked for that service action. The CLI delegates every operation to `local_services.py`; it does not accept arbitrary plist paths or manage system LaunchAgents/Daemons. Its JSON does not echo existing plist argument vectors. Agent Ops remains the owner of NAS container lifecycle and does not control these local Mac services.
 
 ## Application Login Items inventory (read-only)
 

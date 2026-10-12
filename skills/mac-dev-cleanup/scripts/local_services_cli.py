@@ -42,6 +42,15 @@ def _parser() -> argparse.ArgumentParser:
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("label", help="exact LaunchAgent Label, for example com.example.worker")
+    create = commands.add_parser("create", help="create a user LaunchAgent from an explicit argv vector")
+    create.add_argument("label", help="exact LaunchAgent Label, for example com.example.worker")
+    create.add_argument("program", help="absolute path to the executable")
+    create.add_argument("--arg", dest="arguments", action="append", default=[],
+                        help="one literal ProgramArguments item; repeat to add more (never a shell string)")
+    create.add_argument("--working-directory", help="optional existing absolute working directory")
+    create.add_argument("--run-at-load", action="store_true", help="start the service when the user logs in")
+    create.add_argument("--keep-alive", action="store_true", help="ask launchd to keep the service running")
+    create.add_argument("--apply", action="store_true", help="write the LaunchAgent plist and register the exact label")
     return parser
 
 
@@ -55,6 +64,31 @@ def run(argv: Sequence[str] | None = None, *, manager: Any | None = None) -> int
             result = services.service_status(args.label)
         elif args.command == "register":
             result = services.register_service(args.label)
+        elif args.command == "create":
+            if not args.apply:
+                result = {
+                    "ok": True,
+                    "dryRun": True,
+                    "action": "create-user-launch-agent",
+                    "service": {
+                        "label": args.label,
+                        "program": args.program,
+                        "arguments": args.arguments,
+                        "workingDirectory": args.working_directory,
+                        "runAtLoad": args.run_at_load,
+                        "keepAlive": args.keep_alive,
+                    },
+                    "message": "未写入 LaunchAgent；复核后追加 --apply 才会创建并登记",
+                }
+            else:
+                result = services.create_service(
+                    args.label,
+                    args.program,
+                    args.arguments,
+                    args.working_directory,
+                    args.run_at_load,
+                    args.keep_alive,
+                )
         else:
             result = services.service_action(args.label, _ACTION_BY_COMMAND[args.command])
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
