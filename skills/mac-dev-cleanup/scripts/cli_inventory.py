@@ -37,10 +37,11 @@ def list_cli_tools(path_value: str | None = None) -> dict:
     tools: list[dict[str, str]] = []
     seen_names: set[str] = set()
     inaccessible = 0
-    for index, directory in enumerate(directories):
+    truncated = False
+    for directory in directories:
         try:
             with os.scandir(directory) as entries:
-                for entry in sorted(entries, key=lambda item: item.name.casefold()):
+                for entry in entries:
                     if entry.name in seen_names:
                         continue
                     try:
@@ -51,6 +52,9 @@ def list_cli_tools(path_value: str | None = None) -> dict:
                         continue
                     if not resolved_file.is_file():
                         continue
+                    if len(tools) >= MAX_COMMANDS:
+                        truncated = True
+                        break
                     seen_names.add(entry.name)
                     tools.append({
                         "name": entry.name,
@@ -59,9 +63,10 @@ def list_cli_tools(path_value: str | None = None) -> dict:
                     })
         except OSError:
             inaccessible += 1
+        if truncated:
+            break
 
     tools.sort(key=lambda item: item["name"].casefold())
-    truncated = len(tools) > MAX_COMMANDS
     return {
         "ok": True,
         "source": "PATH",
@@ -69,5 +74,5 @@ def list_cli_tools(path_value: str | None = None) -> dict:
         "inaccessibleDirectories": inaccessible,
         "commandCount": len(tools),
         "truncated": truncated,
-        "tools": tools[:MAX_COMMANDS],
+        "tools": tools,
     }

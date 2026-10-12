@@ -176,6 +176,9 @@ const serviceDom = new JSDOM(renderHtml, {
     serviceWindow.fetch = (url, options = {}) => {
       serviceRequests.push({ url: String(url), options });
       const path = String(url).replace(/^\//, "");
+      if (path === "api/cli-tools" && serviceWindow.__holdCliRefresh) {
+        return new Promise((resolve) => { serviceWindow.__resolveCliRefresh = () => resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, source: "PATH", commandCount: 2, scannedDirectories: 3, truncated: false, tools: [] }) }); });
+      }
       const bodies = {
         "api/health": { ok: true, token: "dom-test-token" },
         "api/services": { ok: true, services: serviceFixture },
@@ -289,6 +292,14 @@ ok("CLI 清单可填入服务表单且不自动创建", service$("#service-new-p
 const cliSearch = service$("#cli-tools-search");
 if (cliSearch) { cliSearch.value = "helper"; cliSearch.dispatchEvent(new serviceDom.window.Event("input", { bubbles: true })); }
 ok("CLI 清单搜索即时过滤", serviceText("#cli-tools-list").includes("demo-helper") && !serviceText("#cli-tools-list").includes("demo-cli"));
+serviceDom.window.__holdCliRefresh = true;
+const refreshButton = service$("#cli-tools-refresh");
+refreshButton?.dispatchEvent(new serviceDom.window.MouseEvent("click", { bubbles: true }));
+await sleep(0);
+ok("CLI 刷新进行中按钮保持禁用", refreshButton?.disabled === true && refreshButton?.textContent.includes("正在扫描"));
+serviceDom.window.__resolveCliRefresh?.();
+await sleep(0);
+ok("CLI 刷新完成后按钮恢复", refreshButton?.disabled === false && refreshButton?.textContent === "刷新清单");
 ok("TM 快照面板已并入系统视图", !!$("#view-apps #panel-snapshots"));
 
 // --- history view: trash panel (quarantine + system trash sub-sections) ---

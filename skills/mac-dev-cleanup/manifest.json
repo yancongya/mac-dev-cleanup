@@ -8,7 +8,7 @@
     },
     {
       "path": "dashboard_template.html",
-      "sha256": "146f148e07df2a6ead3e00ffb3edde86dbb1a851e571d81e4fb73b72af016bed"
+      "sha256": "14bb755cd9e9c2c65ef7a1e00fc7215260bc2d2e3373bd207e65d2787255b4b5"
     },
     {
       "path": "agents/openai.yaml",
@@ -36,7 +36,7 @@
     },
     {
       "path": "scripts/cli_inventory.py",
-      "sha256": "9fdb5a8a9e157abd0216fe183d3f5b58c80d87a30eb1442bde7850a70667e47f"
+      "sha256": "95007f698ec38449a70306313263db944e30727a06e611268374d390b2cd68a3"
     },
     {
       "path": "scripts/local_cli_tools_cli.py",

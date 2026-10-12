@@ -39,6 +39,27 @@ class CliInventoryTests(unittest.TestCase):
         self.assertEqual(by_name["shared"]["path"], str((first / "shared").resolve()))
         self.assertEqual(by_name["only-second"]["sourceDirectory"], str(second.resolve()))
 
+    def test_caps_large_path_inventory_without_losing_path_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first, second = root / "first", root / "second"
+            first.mkdir()
+            second.mkdir()
+            for index in range(cli_inventory.MAX_COMMANDS + 1):
+                path = first / f"command-{index:04d}"
+                path.touch()
+                path.chmod(path.stat().st_mode | stat.S_IXUSR)
+            duplicate = second / "command-0000"
+            duplicate.touch()
+            duplicate.chmod(duplicate.stat().st_mode | stat.S_IXUSR)
+
+            result = cli_inventory.list_cli_tools(os.pathsep.join((str(first), str(second))))
+
+        self.assertEqual(result["commandCount"], cli_inventory.MAX_COMMANDS)
+        self.assertTrue(result["truncated"])
+        command = next(item for item in result["tools"] if item["name"] == "command-0000")
+        self.assertEqual(command["sourceDirectory"], str(first.resolve()))
+
     def test_cli_outputs_json_and_forwards_only_the_read_operation(self) -> None:
         inventory = Mock()
         inventory.list_cli_tools.return_value = {"ok": True, "commandCount": 1, "tools": []}

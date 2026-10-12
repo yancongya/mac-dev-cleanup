@@ -3049,7 +3049,7 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
   // ---- reports view (启动项 / TM 快照 / 重复文件) ----
   // Read-only reports; the only mutating actions are snapshot delete (strong
   // confirm) and dupes rebuild. Mirrors the trash panel's loadXxx/renderXxx split.
-  var REPORTS = { services:null, cliTools:null, cliFilter:"", snapshots:null, dupes:null, dupesTimer:null };
+  var REPORTS = { services:null, cliTools:null, cliToolsLoading:false, cliFilter:"", snapshots:null, dupes:null, dupesTimer:null };
   var PENDING_SNAPSHOT = null;
   var SCOPE_ZH = { "user":"用户", "local-agents":"本地代理", "local-daemons":"本地守护" };
 
@@ -3199,9 +3199,11 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     loadSnapshots();
     loadDupes();
   }
-  function loadCliTools(force){
-    if(!state.apiOnline) return;
+  function loadCliTools(force, button){
+    if(!state.apiOnline || REPORTS.cliToolsLoading) return;
     if(!force && REPORTS.cliTools){ renderCliTools(); return; }
+    REPORTS.cliToolsLoading=true;
+    if(button){ button.disabled=true; button.textContent="正在扫描…"; }
     fetch("api/cli-tools",{cache:"no-store"}).then(function(r){ return r.json(); })
       .then(function(j){
         REPORTS.cliTools=j&&j.ok?j:null;
@@ -3209,6 +3211,9 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       }).catch(function(){
         REPORTS.cliTools=null;
         var list=$("cli-tools-list"); if(list) list.innerHTML='<div class="empty">读取失败，请确认本地服务正在运行。</div>';
+      }).finally(function(){
+        REPORTS.cliToolsLoading=false;
+        if(button){ button.disabled=false; button.textContent="刷新清单"; }
       });
   }
   function renderCliTools(){
@@ -3236,7 +3241,7 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
     });
     root.addEventListener("click",function(e){
       var refresh=e.target.closest("#cli-tools-refresh");
-      if(refresh){ refresh.disabled=true; refresh.textContent="正在扫描…"; loadCliTools(true); setTimeout(function(){refresh.disabled=false;refresh.textContent="刷新清单";},500); return; }
+      if(refresh){ loadCliTools(true,refresh); return; }
       var use=e.target.closest(".cli-use-service"); if(!use) return;
       var program=$("service-new-program"), label=$("service-new-label"), section=$("service-create-section");
       if(program) program.value=use.getAttribute("data-path")||"";
