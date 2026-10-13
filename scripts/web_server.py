@@ -15,6 +15,7 @@ malicious website cannot drive the API from a victim's browser.
 from __future__ import annotations
 
 import argparse
+import errno
 import glob
 import hashlib
 import json
@@ -23,6 +24,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -46,6 +48,11 @@ SCAN_LOCK = threading.Lock()
 # cross-origin page cannot obtain or use it.
 API_TOKEN = secrets.token_hex(16)
 CAND_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+OPERATION_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
+PURGE_OPERATION_CONFIRM = "DELETE THIS QUARANTINE OPERATION"
+PURGE_PENDING_CONFIRM = "I CHECKED THE REMAINING OPERATION CONTENTS"
+PURGE_LOCKS: dict[str, threading.Lock] = {}
+PURGE_LOCKS_GUARD = threading.Lock()
 
 # Live state of the at-most-one background cleanup. The CLI first does a full
 # scan before cleaning, which can take minutes — that is why execution is
@@ -267,6 +274,244 @@ CONFIRM_CLEAR_QUARANTINE = "CLEAR QUARANTINE"
 def trash_clear_confirmed(payload: object) -> bool:
     """Pure guard for POST /api/trash/clear (unit-tested)."""
     return isinstance(payload, dict) and payload.get("confirm") == CONFIRM_CLEAR_QUARANTINE
+
+
+def quarantine_operation_confirmed(payload: object) -> bool:
+    return (isinstance(payload, dict)
+            and payload.get("confirm") == PURGE_OPERATION_CONFIRM)
+
+
+class PurgeOperationError(OSError):
+    def __init__(self, message: str, *, partial_possible: bool,
+                 purge_status: str = "status_uncertain"):
+        super().__init__(message)
+        self.partial_possible = partial_possible
+        self.purge_status = purge_status
+
+
+def _purge_operation_lock(operation_id: str) -> threading.Lock:
+    with PURGE_LOCKS_GUARD:
+        return PURGE_LOCKS.setdefault(operation_id, threading.Lock())
+
+
+def _open_real_directory(path: Path) -> tuple[int, tuple[int, int]]:
+    before = path.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise ValueError("expected a real directory")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    after = os.fstat(fd)
+    identity = (before.st_dev, before.st_ino)
+    if (after.st_dev, after.st_ino) != identity:
+        os.close(fd)
+        raise OSError("directory changed while opening")
+    return fd, identity
+
+
+def _read_operation_manifest(operations_fd: int, filename: str) -> tuple[dict, tuple[int, int]]:
+    before = os.stat(filename, dir_fd=operations_fd, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("operation manifest must be a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(filename, flags, dir_fd=operations_fd)
+    try:
+        opened = os.fstat(fd)
+        identity = (before.st_dev, before.st_ino)
+        if (opened.st_dev, opened.st_ino) != identity or not stat.S_ISREG(opened.st_mode):
+            raise OSError("operation manifest changed while opening")
+        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream:
+            data = json.load(stream)
+    finally:
+        os.close(fd)
+    if not isinstance(data, dict):
+        raise ValueError("operation manifest is invalid")
+    return data, identity
+
+
+def _write_operation_manifest(operations_fd: int, filename: str, data: dict,
+                              expected_identity: tuple[int, int]) -> tuple[int, int]:
+    temp_name = f".{filename}.{secrets.token_hex(12)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temp_name, flags, 0o600, dir_fd=operations_fd)
+    replaced = False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(fd)
+        current = os.stat(filename, dir_fd=operations_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != expected_identity or not stat.S_ISREG(current.st_mode):
+            raise OSError("operation manifest changed before update")
+        os.replace(temp_name, filename, src_dir_fd=operations_fd, dst_dir_fd=operations_fd)
+        replaced = True
+        try:
+            os.fsync(operations_fd)
+        except OSError as exc:
+            if exc.errno not in (errno.EINVAL, getattr(errno, "ENOTSUP", errno.EINVAL)):
+                raise
+        result = os.stat(filename, dir_fd=operations_fd, follow_symlinks=False)
+        if not stat.S_ISREG(result.st_mode):
+            raise OSError("updated operation manifest is not a regular file")
+        return result.st_dev, result.st_ino
+    except OSError as exc:
+        raise PurgeOperationError(
+            f"operation manifest update failed: {exc}", partial_possible=replaced,
+            purge_status="status_uncertain",
+        ) from exc
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temp_name, dir_fd=operations_fd)
+        except OSError:
+            pass
+
+
+def _remove_tree_contents(directory_fd: int) -> None:
+    """Remove a directory tree using open directory descriptors only."""
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    for name in os.listdir(directory_fd):
+        before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(before.st_mode):
+            child_fd = os.open(name, dir_flags, dir_fd=directory_fd)
+            try:
+                opened = os.fstat(child_fd)
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    raise OSError("quarantine entry changed during deletion")
+                _remove_tree_contents(child_fd)
+            finally:
+                os.close(child_fd)
+            after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+                raise OSError("quarantine entry changed during deletion")
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+
+
+def _delete_operation_directory(operation_id: str, root_fd: int, root_real: Path,
+                                operation_real: Path, root_identity: tuple[int, int],
+                                operation_identity: tuple[int, int]) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    root_opened = os.fstat(root_fd)
+    if (root_opened.st_dev, root_opened.st_ino) != root_identity:
+        raise OSError("quarantine root changed during deletion")
+    if operation_real.parent != root_real:
+        raise ValueError("operation directory is outside quarantine")
+    operation_before = os.stat(operation_id, dir_fd=root_fd, follow_symlinks=False)
+    if (not stat.S_ISDIR(operation_before.st_mode)
+            or (operation_before.st_dev, operation_before.st_ino) != operation_identity):
+        raise ValueError("operation directory must be a real directory")
+    operation_fd = os.open(operation_id, flags, dir_fd=root_fd)
+    try:
+        operation_opened = os.fstat(operation_fd)
+        if (operation_opened.st_dev, operation_opened.st_ino) != operation_identity:
+            raise OSError("operation directory changed during deletion")
+        _remove_tree_contents(operation_fd)
+    finally:
+        os.close(operation_fd)
+    operation_after = os.stat(operation_id, dir_fd=root_fd, follow_symlinks=False)
+    if (operation_after.st_dev, operation_after.st_ino) != operation_identity:
+        raise OSError("operation directory changed during deletion")
+    os.rmdir(operation_id, dir_fd=root_fd)
+
+
+def purge_quarantine_operation(operation_id: object, payload: object) -> dict:
+    """Permanently remove exactly one verified quarantine operation.
+
+    All paths are derived from a strict operation ID. The operation manifest
+    is retained as an irreversible-deletion record after its payload is gone.
+    """
+    if not isinstance(operation_id, str) or not OPERATION_ID_RE.fullmatch(operation_id):
+        raise ValueError("invalid operation id")
+    if not quarantine_operation_confirmed(payload):
+        raise ValueError(f"confirm must be the exact string '{PURGE_OPERATION_CONFIRM}'")
+
+    with _purge_operation_lock(operation_id):
+        return _purge_quarantine_operation_locked(operation_id, payload)
+
+
+def _purge_quarantine_operation_locked(operation_id: str, payload: dict) -> dict:
+    """Re-read manifest and paths while holding the operation-specific lock."""
+
+    if QUARANTINE_DIR.is_symlink():
+        raise ValueError("quarantine root must not be a symlink")
+    root_fd, root_identity = _open_real_directory(QUARANTINE_DIR)
+    operations_fd = -1
+    try:
+        operations_fd, _operations_identity = _open_real_directory(OPERATIONS_DIR)
+        return _purge_with_open_directories(operation_id, payload, root_fd, root_identity, operations_fd)
+    finally:
+        if operations_fd >= 0:
+            os.close(operations_fd)
+        os.close(root_fd)
+
+
+def _purge_with_open_directories(operation_id: str, payload: dict, root_fd: int,
+                                 root_identity: tuple[int, int], operations_fd: int) -> dict:
+    root = QUARANTINE_DIR.resolve(strict=True)
+    root_path_stat = QUARANTINE_DIR.lstat()
+    if (stat.S_ISLNK(root_path_stat.st_mode)
+            or (root_path_stat.st_dev, root_path_stat.st_ino) != root_identity):
+        raise OSError("quarantine root path changed while opening")
+    operation_path = QUARANTINE_DIR / operation_id
+    operation_stat = operation_path.lstat()
+    if stat.S_ISLNK(operation_stat.st_mode) or not stat.S_ISDIR(operation_stat.st_mode):
+        raise ValueError("operation directory must not be a symlink")
+    operation_real = operation_path.resolve(strict=True)
+    if operation_real.parent != root or not operation_real.is_dir():
+        raise ValueError("operation directory is outside quarantine")
+    descriptor_stat = os.stat(operation_id, dir_fd=root_fd, follow_symlinks=False)
+    if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (operation_stat.st_dev, operation_stat.st_ino):
+        raise OSError("operation path changed while validating")
+
+    manifest_name = f"{operation_id}.json"
+    try:
+        data, manifest_identity = _read_operation_manifest(operations_fd, manifest_name)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError("operation manifest not found") from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("operation manifest is unreadable or invalid") from exc
+    if (not isinstance(data, dict) or data.get("operation_id") != operation_id
+            or not isinstance(data.get("entries"), list)):
+        raise ValueError("operation manifest does not match")
+    if data.get("purged_at"):
+        raise FileNotFoundError("operation was already purged")
+    if data.get("purge_status") == "purge_pending":
+        if payload.get("pending_confirm") != PURGE_PENDING_CONFIRM:
+            raise ValueError(f"pending operation requires exact confirmation '{PURGE_PENDING_CONFIRM}'")
+    elif "pending_confirm" in payload:
+        raise ValueError("pending_confirm is accepted only for a pending operation")
+
+    # Persist intent before removing data, then retain a clear record that the
+    # restore payload was irreversibly removed. Any filesystem error aborts.
+    data["purge_status"] = "purge_pending"
+    manifest_identity = _write_operation_manifest(operations_fd, manifest_name, data, manifest_identity)
+    try:
+        _delete_operation_directory(
+            operation_id, root_fd, root, operation_real,
+            root_identity,
+            (operation_stat.st_dev, operation_stat.st_ino),
+        )
+        data["purge_status"] = "purged"
+        data["purged_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        for entry in data["entries"]:
+            if isinstance(entry, dict) and entry.get("status") == "quarantined":
+                entry["status"] = "purged"
+                entry["purged_at"] = data["purged_at"]
+        _write_operation_manifest(operations_fd, manifest_name, data, manifest_identity)
+    except ValueError as exc:
+        raise PurgeOperationError(str(exc), partial_possible=False,
+                                  purge_status="purge_pending") from exc
+    except OSError as exc:
+        if isinstance(exc, PurgeOperationError):
+            raise
+        raise PurgeOperationError(str(exc), partial_possible=True,
+                                  purge_status="purge_pending") from exc
+    return {"ok": True, "operation_id": operation_id, "recoverable": False}
 
 
 def collect_trash_status() -> dict:
@@ -628,11 +873,25 @@ class Handler(SimpleHTTPRequestHandler):
                 try:
                     data = json.loads(f.read_text(encoding="utf-8"))
                     entries = data.get("entries", [])
+                    operation_id = data.get("operation_id", f.stem)
+                    valid_operation_id = (isinstance(operation_id, str)
+                                          and OPERATION_ID_RE.fullmatch(operation_id))
+                    quarantine_path = QUARANTINE_DIR / operation_id if valid_operation_id else None
+                    try:
+                        quarantine_present = bool(
+                            quarantine_path and not quarantine_path.is_symlink()
+                            and quarantine_path.is_dir()
+                            and quarantine_path.resolve(strict=True).parent == QUARANTINE_DIR.resolve(strict=True))
+                    except OSError:
+                        quarantine_present = False
                     total_bytes = sum(e.get("size", 0) for e in entries)
                     ops.append({
-                        "operation_id": data.get("operation_id", f.stem),
+                        "operation_id": operation_id,
                         "timestamp": data.get("timestamp", ""),
                         "mode": data.get("mode", ""),
+                        "purge_status": data.get("purge_status", ""),
+                        "purge_available": bool(valid_operation_id and quarantine_present
+                                                and not data.get("purged_at")),
                         "entry_count": len(entries),
                         "total_bytes": total_bytes,
                         # Preview for the expandable row (paths only, capped).
@@ -755,6 +1014,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/trash/clear":
             self._handle_trash_clear(payload if isinstance(payload, dict) else None)
+            return
+        if path == "/api/trash/purge-operation":
+            self._handle_trash_purge_operation(payload if isinstance(payload, dict) else None)
             return
         if path == "/api/trash/empty-system":
             self._handle_trash_empty_system(payload if isinstance(payload, dict) else {})
@@ -1068,6 +1330,35 @@ class Handler(SimpleHTTPRequestHandler):
                     deleted += 1
                     freed += dir_bytes
         self.send_json(200, {"ok": True, "deleted": deleted, "freed_bytes": freed})
+
+    def _handle_trash_purge_operation(self, payload: object = None) -> None:
+        if (not isinstance(payload, dict)
+                or not {"operation_id", "confirm"}.issubset(payload)
+                or set(payload) - {"operation_id", "confirm", "pending_confirm"}):
+            self.send_json(400, {"ok": False,
+                                 "error": "body must contain operation_id and confirm, with pending_confirm only for a pending operation"})
+            return
+        try:
+            result = purge_quarantine_operation(payload["operation_id"], payload)
+        except FileNotFoundError as exc:
+            self.send_json(404, {"ok": False, "error": str(exc)})
+            return
+        except ValueError as exc:
+            self.send_json(400, {"ok": False, "error": str(exc)})
+            return
+        except PurgeOperationError as exc:
+            self.send_json(503, {"ok": False, "operation_id": payload["operation_id"],
+                                 "purge_status": exc.purge_status,
+                                 "partial_or_unknown": exc.partial_possible,
+                                 "status_uncertain": exc.purge_status == "status_uncertain",
+                                 "error": f"purge incomplete or status uncertain: {exc}; inspect this operation and its remaining files before retrying"})
+            return
+        except OSError as exc:
+            self.send_json(503, {"ok": False, "purge_status": "not_started",
+                                 "partial_or_unknown": False,
+                                 "error": f"quarantine unavailable; no deletion started: {exc}"})
+            return
+        self.send_json(200, result)
 
     def _handle_trash_empty_system(self, payload: dict) -> None:
         """Empty the system Trash (~/.Trash), minus the quarantine directory

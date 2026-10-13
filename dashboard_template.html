@@ -2523,14 +2523,23 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
       var modeLabel=MODE_ZH[op.mode]||op.mode;
       var entries=(op.entries||[]).map(function(p){ return '<div class="ops-entry">'+esc(p)+'</div>'; }).join("");
       var more=(op.entry_count||0)>(op.entries||[]).length?'<div class="ops-entry c-slate">…共 '+(op.entry_count||0)+' 项</div>':"";
+      var purged=op.purge_status==="purged";
+      var purgePending=op.purge_status==="purge_pending";
+      var restoreAllowed=!purged&&!purgePending;
+      var operationActions=purged
+        ? '<span class="tag tag-aggressive">隔离内容已永久删除</span>'
+        : (purgePending ? '<span class="tag tag-manual" title="上次删除未完整确认；请核对该操作目录状态后再重试">删除状态待核对</span>'+
+            (op.purge_available ? '<button type="button" class="btn ops-purge-btn" data-ops="'+it.idx+'" style="height:24px;font-size:10px">核对后重试</button>' : '') :
+          (op.purge_available ? '<button type="button" class="btn ops-purge-btn" data-ops="'+it.idx+'" style="height:24px;font-size:10px">永久删除此操作</button>' : ''));
       return '<div class="ops-item">'+
         '<div class="ops-row" data-ops="'+it.idx+'">'+
           '<span class="ops-time">'+esc(t)+'</span>'+
           '<span class="tag tag-'+(op.mode==="clean-safe"?"safe":(op.mode==="uninstall"?"manual":"aggressive"))+'">'+esc(modeLabel)+'</span>'+
           '<span class="ops-count">'+op.entry_count+' 项</span>'+
           '<span class="ops-size">'+fmtSize(op.total_bytes)+'</span>'+
-          '<button type="button" class="btn ops-restore-btn" data-ops="'+it.idx+'" style="height:24px;font-size:10px">一键还原</button>'+
-          '<button class="ra-btn ops-restore copyable" data-copy="'+esc(op.restore_command)+'" title="复制还原命令" aria-label="复制还原命令">⧉</button>'+
+          (restoreAllowed ? '<button type="button" class="btn ops-restore-btn" data-ops="'+it.idx+'" style="height:24px;font-size:10px">一键还原</button>' : '')+
+          (restoreAllowed ? '<button class="ra-btn ops-restore copyable" data-copy="'+esc(op.restore_command)+'" title="复制还原命令" aria-label="复制还原命令">⧉</button>' : '')+
+          operationActions+
           '<button type="button" class="eh-toggle ops-toggle" data-ops="'+it.idx+'">明细</button>'+
         '</div>'+
         '<div class="ops-detail" data-ops-detail="'+it.idx+'" hidden>'+
@@ -2548,6 +2557,19 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
           tog.textContent = d.hidden ? (row.querySelector(".ops-detail")?"明细":"展开日志") : (row.querySelector(".ops-detail")?"收起":"收起");
           if(!d.hidden && d.classList.contains("eh-log")) d.scrollTop=d.scrollHeight;
         }
+        return;
+      }
+      var pb=e.target.closest(".ops-purge-btn");
+      if(pb){
+        var purgeIdx=+pb.getAttribute("data-ops"); var purgeOp=OPERATIONS[purgeIdx]; if(!purgeOp) return;
+        openConfirm({
+          title:"永久删除这条隔离操作？",
+          body:'<p>只会删除操作 <code>'+esc(purgeOp.operation_id)+'</code> 对应的隔离目录。</p>'+
+            '<p class="modal-note">此操作不可恢复，不会影响其他隔离操作或系统废纸篓。</p>'+
+            (purgeOp.purge_status==="purge_pending"?'<p class="modal-note">上次删除状态待核对。请先查看该操作目录及剩余文件；继续即确认你已完成核对。</p>':''),
+          confirmText:purgeOp.purge_status==="purge_pending"?"我已核对，继续重试":"永久删除此操作",
+          onConfirm:function(){ doPurgeOperation(purgeOp,pb); }
+        });
         return;
       }
       var rb=e.target.closest(".ops-restore-btn"); if(!rb) return;
@@ -2580,6 +2602,26 @@ var CONFIG = window.__DASHBOARD_CONFIG__ || /*__CONFIG__*/null;
         copyText(this.getAttribute("data-copy"),"还原命令已复制");
       });
     }
+  }
+
+  function doPurgeOperation(op,btn){
+    btn.disabled=true; btn.textContent="删除中…";
+    var payload={operation_id:op.operation_id,confirm:"DELETE THIS QUARANTINE OPERATION"};
+    if(op.purge_status==="purge_pending") payload.pending_confirm="I CHECKED THE REMAINING OPERATION CONTENTS";
+    fetch("api/trash/purge-operation",{method:"POST",headers:postHeaders(),body:JSON.stringify(payload)})
+      .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+      .then(function(res){
+        if(res.ok){toast("指定隔离操作已永久删除；恢复能力已移除","ok");loadOperations();loadTrash();return;}
+        if(res.j.purge_status==="purge_pending"||res.j.purge_status==="status_uncertain"){
+          toast("删除未能确认完成。请先核对该操作目录的剩余文件，再决定是否重试。","err");
+          loadOperations();loadTrash();return;
+        }
+        toast("永久删除失败："+(res.j.error||"请求失败"),"err");
+        btn.disabled=false;btn.textContent="永久删除此操作";
+      }).catch(function(){
+        toast("网络状态不确定，请先刷新并核对操作目录后再重试。","err");
+        loadOperations();loadTrash();
+      });
   }
 
   function renderCleanupGuideInner(){

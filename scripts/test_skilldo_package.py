@@ -172,6 +172,8 @@ class SkillDoPackageTests(unittest.TestCase):
             legacy = Path(directory) / "mac-dev-cleanup"
             shutil.copytree(builder.OUTPUT, legacy)
             (legacy / "scripts" / "local_services_cli.py").unlink()
+            (legacy / "scripts" / "cli_inventory.py").unlink()
+            (legacy / "scripts" / "local_cli_tools_cli.py").unlink()
             (legacy / "scripts" / "export_summary.py").unlink()
             (legacy / "scripts" / "login_items.py").unlink()
             (legacy / "scripts" / "local_login_items_cli.py").unlink()
@@ -179,6 +181,7 @@ class SkillDoPackageTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["files"] = [record for record in manifest["files"] if record["path"] not in {
                 "scripts/local_services_cli.py", "scripts/export_summary.py",
+                "scripts/cli_inventory.py", "scripts/local_cli_tools_cli.py",
                 "scripts/login_items.py", "scripts/local_login_items_cli.py",
             }]
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -194,12 +197,16 @@ class SkillDoPackageTests(unittest.TestCase):
             previous = Path(directory) / "mac-dev-cleanup"
             shutil.copytree(builder.OUTPUT, previous)
             (previous / "scripts" / "local_services_cli.py").unlink()
+            (previous / "scripts" / "cli_inventory.py").unlink()
+            (previous / "scripts" / "local_cli_tools_cli.py").unlink()
             (previous / "scripts" / "login_items.py").unlink()
             (previous / "scripts" / "local_login_items_cli.py").unlink()
             manifest_path = previous / builder.MANIFEST
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["files"] = [record for record in manifest["files"]
                                  if record["path"] not in {"scripts/local_services_cli.py",
+                                                            "scripts/cli_inventory.py",
+                                                            "scripts/local_cli_tools_cli.py",
                                                             "scripts/login_items.py",
                                                             "scripts/local_login_items_cli.py"}]
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -214,12 +221,16 @@ class SkillDoPackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="mdc-pre-login-items-bundle-") as directory:
             previous = Path(directory) / "mac-dev-cleanup"
             shutil.copytree(builder.OUTPUT, previous)
-            for path in ("scripts/login_items.py", "scripts/local_login_items_cli.py"):
+            for path in ("scripts/cli_inventory.py", "scripts/local_cli_tools_cli.py",
+                         "scripts/login_items.py", "scripts/local_login_items_cli.py"):
                 (previous / path).unlink()
             manifest_path = previous / builder.MANIFEST
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["files"] = [record for record in manifest["files"]
-                                 if record["path"] not in {"scripts/login_items.py", "scripts/local_login_items_cli.py"}]
+                                 if record["path"] not in {"scripts/cli_inventory.py",
+                                                            "scripts/local_cli_tools_cli.py",
+                                                            "scripts/login_items.py",
+                                                            "scripts/local_login_items_cli.py"}]
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                                      encoding="utf-8")
             builder.check_bundle(previous, allow_legacy=True)

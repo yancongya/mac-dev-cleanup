@@ -14,6 +14,7 @@ import sys
 import shutil
 import stat
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -177,6 +178,151 @@ class WebServerHttpIntegrationTests(unittest.TestCase):
                 self.assertEqual(status, 403)
                 self.assertEqual(json.loads(body)["error"], "missing or invalid token")
             save_config.assert_not_called()
+
+    def test_quarantine_operation_purge_endpoint_requires_token_and_deletes_one(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-purge-http-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        quarantine = base / "Trash" / "mac-dev-cleanup"
+        operations = base / "operations"
+        quarantine.mkdir(parents=True)
+        operations.mkdir()
+        op_ids = ("20261013-123456-a1b2c3", "20261013-123457-d4e5f6")
+        for op_id in op_ids:
+            op = quarantine / op_id
+            op.mkdir()
+            (op / "payload.bin").write_bytes(b"test")
+            (operations / f"{op_id}.json").write_text(json.dumps({
+                "operation_id": op_id, "entries": [{"status": "quarantined"}],
+            }), encoding="utf-8")
+        payload = {"operation_id": op_ids[0],
+                   "confirm": web_server.PURGE_OPERATION_CONFIRM}
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            status, _headers, body = self.request(
+                "POST", "/api/trash/purge-operation",
+                headers={"Content-Type": "application/json"}, body=json.dumps(payload).encode())
+            self.assertEqual(status, 403)
+            status, _headers, body = self.request(
+                "POST", "/api/trash/purge-operation",
+                headers={"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN},
+                body=json.dumps(payload).encode())
+        self.assertEqual(status, 200)
+        self.assertFalse((quarantine / op_ids[0]).exists())
+        self.assertTrue((quarantine / op_ids[1]).exists())
+        self.assertFalse(json.loads(body)["recoverable"])
+
+    def test_manifest_update_failure_returns_uncertain_not_not_started(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-purge-manifest-http-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        quarantine = base / "Trash" / "mac-dev-cleanup"
+        operations = base / "operations"
+        quarantine.mkdir(parents=True)
+        operations.mkdir()
+        op_id = "20261013-123456-a1b2c3"
+        operation = quarantine / op_id
+        operation.mkdir()
+        (operation / "payload.bin").write_bytes(b"keep")
+        manifest = operations / f"{op_id}.json"
+        manifest.write_text(json.dumps({"operation_id": op_id, "entries": []}), encoding="utf-8")
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations), \
+             patch.object(web_server.os, "replace", side_effect=PermissionError("denied")):
+            status, _headers, body = self.request(
+                "POST", "/api/trash/purge-operation", headers=headers,
+                body=json.dumps({"operation_id": op_id,
+                                 "confirm": web_server.PURGE_OPERATION_CONFIRM}).encode())
+        result = json.loads(body)
+        self.assertEqual(status, 503)
+        self.assertEqual(result["purge_status"], "status_uncertain")
+        self.assertNotEqual(result["purge_status"], "not_started")
+        self.assertTrue(operation.exists())
+        self.assertIsNone(json.loads(manifest.read_text()).get("purge_status"))
+
+    def test_uncertain_manifest_write_that_persisted_pending_requires_cautious_retry(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-purge-pending-write-http-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        quarantine = base / "Trash" / "mac-dev-cleanup"
+        operations = base / "operations"
+        quarantine.mkdir(parents=True)
+        operations.mkdir()
+        op_id = "20261013-123456-a1b2c3"
+        operation = quarantine / op_id
+        operation.mkdir()
+        payload_file = operation / "payload.bin"
+        payload_file.write_bytes(b"keep until confirmed")
+        manifest = operations / f"{op_id}.json"
+        manifest.write_text(json.dumps({"operation_id": op_id, "entries": []}), encoding="utf-8")
+        original_fsync = os.fsync
+
+        def fail_directory_sync(fd: int) -> None:
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise PermissionError("directory sync denied after replace")
+            original_fsync(fd)
+
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations), \
+             patch.object(web_server.os, "fsync", side_effect=fail_directory_sync):
+            status, _headers, body = self.request(
+                "POST", "/api/trash/purge-operation", headers=headers,
+                body=json.dumps({"operation_id": op_id,
+                                 "confirm": web_server.PURGE_OPERATION_CONFIRM}).encode())
+        result = json.loads(body)
+        self.assertEqual(status, 503)
+        self.assertEqual(result["purge_status"], "status_uncertain")
+        self.assertTrue(result["status_uncertain"])
+        self.assertEqual(json.loads(manifest.read_text())["purge_status"], "purge_pending")
+        self.assertTrue(payload_file.exists())
+
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            status, _headers, body = self.request(
+                "POST", "/api/trash/purge-operation", headers=headers,
+                body=json.dumps({"operation_id": op_id,
+                                 "confirm": web_server.PURGE_OPERATION_CONFIRM}).encode())
+            self.assertEqual(status, 400)
+            payload = {"operation_id": op_id,
+                       "confirm": web_server.PURGE_OPERATION_CONFIRM,
+                       "pending_confirm": web_server.PURGE_PENDING_CONFIRM}
+            status, _headers, body = self.request(
+                "POST", "/api/trash/purge-operation", headers=headers,
+                body=json.dumps(payload).encode())
+        self.assertEqual(status, 200)
+        self.assertFalse(operation.exists())
+
+    def test_pending_operation_requires_fresh_inspection_confirmation(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-purge-pending-http-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        quarantine = base / "Trash" / "mac-dev-cleanup"
+        operations = base / "operations"
+        quarantine.mkdir(parents=True)
+        operations.mkdir()
+        op_id = "20261013-123456-a1b2c3"
+        operation = quarantine / op_id
+        operation.mkdir()
+        (operation / "remaining.bin").write_bytes(b"check me")
+        manifest = operations / f"{op_id}.json"
+        manifest.write_text(json.dumps({"operation_id": op_id, "entries": [],
+                                        "purge_status": "purge_pending"}), encoding="utf-8")
+        headers = {"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN}
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            for pending_confirm in (None, "wrong"):
+                payload = {"operation_id": op_id, "confirm": web_server.PURGE_OPERATION_CONFIRM}
+                if pending_confirm is not None:
+                    payload["pending_confirm"] = pending_confirm
+                status, _headers, body = self.request(
+                    "POST", "/api/trash/purge-operation", headers=headers,
+                    body=json.dumps(payload).encode())
+                self.assertEqual(status, 400)
+                self.assertTrue(operation.exists())
+            payload["pending_confirm"] = web_server.PURGE_PENDING_CONFIRM
+            status, _headers, body = self.request(
+                "POST", "/api/trash/purge-operation", headers=headers,
+                body=json.dumps(payload).encode())
+        self.assertEqual(status, 200)
+        self.assertFalse(operation.exists())
 
     def test_app_action_requires_scanned_bundle_and_only_uses_verified_bundle_id(self) -> None:
         base = Path(tempfile.mkdtemp(prefix="mdc-app-action-"))
@@ -1329,6 +1475,239 @@ class WebTrashStatusTests(unittest.TestCase):
         self.assertTrue(web_server.trash_clear_confirmed({"confirm": "CLEAR QUARANTINE"}))
         src = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
         self.assertIn("trash_clear_confirmed(payload)", src)
+
+
+class QuarantineOperationPurgeTests(unittest.TestCase):
+    def _setup(self):
+        base = Path(tempfile.mkdtemp(prefix="mdc-purge-operation-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        quarantine = base / "Trash" / "mac-dev-cleanup"
+        operations = base / "operations"
+        quarantine.mkdir(parents=True)
+        operations.mkdir()
+        return quarantine, operations
+
+    def _operation(self, quarantine: Path, operations: Path, operation_id: str) -> Path:
+        op = quarantine / operation_id
+        op.mkdir()
+        (op / "payload.bin").write_bytes(b"private test payload")
+        (operations / f"{operation_id}.json").write_text(json.dumps({
+            "operation_id": operation_id,
+            "entries": [{"status": "quarantined"}],
+        }), encoding="utf-8")
+        return op
+
+    def test_rejects_invalid_id_and_wrong_confirmation(self) -> None:
+        quarantine, operations = self._setup()
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            with self.assertRaises(ValueError):
+                web_server.purge_quarantine_operation("../other", {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+            with self.assertRaises(ValueError):
+                web_server.purge_quarantine_operation("20261013-123456-a1b2c3", {"confirm": "EMPTY TRASH"})
+
+    def test_unknown_operation_and_manifest_mismatch_fail_closed(self) -> None:
+        quarantine, operations = self._setup()
+        op_id = "20261013-123456-a1b2c3"
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            with self.assertRaises(FileNotFoundError):
+                web_server.purge_quarantine_operation(op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+            op = self._operation(quarantine, operations, op_id)
+            (operations / f"{op_id}.json").write_text(json.dumps({"operation_id": "other", "entries": []}))
+            with self.assertRaises(ValueError):
+                web_server.purge_quarantine_operation(op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+            self.assertTrue(op.exists())
+
+    def test_rejects_symlinked_or_outside_operation(self) -> None:
+        quarantine, operations = self._setup()
+        op_id = "20261013-123456-a1b2c3"
+        outside = quarantine.parent / "outside"
+        outside.mkdir()
+        (outside / "payload.bin").write_bytes(b"keep")
+        (operations / f"{op_id}.json").write_text(json.dumps({"operation_id": op_id, "entries": []}))
+        (quarantine / op_id).symlink_to(outside, target_is_directory=True)
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            with self.assertRaises(ValueError):
+                web_server.purge_quarantine_operation(op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+        self.assertTrue((outside / "payload.bin").exists())
+
+    def test_rejects_symlinked_quarantine_root(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-purge-root-link-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        real_root = base / "real-quarantine"
+        real_root.mkdir()
+        op_id = "20261013-123456-a1b2c3"
+        op = real_root / op_id
+        op.mkdir()
+        operations = base / "operations"
+        operations.mkdir()
+        (operations / f"{op_id}.json").write_text(json.dumps({
+            "operation_id": op_id, "entries": [],
+        }), encoding="utf-8")
+        root_link = base / "quarantine-link"
+        root_link.symlink_to(real_root, target_is_directory=True)
+        with patch.object(web_server, "QUARANTINE_DIR", root_link), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            with self.assertRaises(ValueError):
+                web_server.purge_quarantine_operation(
+                    op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+        self.assertTrue(op.exists())
+
+    def test_rejects_symlinked_manifest_without_reading_outside_target(self) -> None:
+        quarantine, operations = self._setup()
+        op_id = "20261013-123456-a1b2c3"
+        op = self._operation(quarantine, operations, op_id)
+        outside = operations.parent / "outside-manifest.json"
+        outside.write_text(json.dumps({"operation_id": op_id, "entries": []}), encoding="utf-8")
+        manifest = operations / f"{op_id}.json"
+        manifest.unlink()
+        manifest.symlink_to(outside)
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            with self.assertRaises(ValueError):
+                web_server.purge_quarantine_operation(
+                    op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+        self.assertTrue(op.exists())
+        self.assertEqual(json.loads(outside.read_text())["operation_id"], op_id)
+
+    def test_deletes_only_named_operation_and_keeps_other_quarantine(self) -> None:
+        quarantine, operations = self._setup()
+        selected = "20261013-123456-a1b2c3"
+        other = "20261013-123457-d4e5f6"
+        selected_path = self._operation(quarantine, operations, selected)
+        other_path = self._operation(quarantine, operations, other)
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            result = web_server.purge_quarantine_operation(
+                selected, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+        self.assertFalse(selected_path.exists())
+        self.assertTrue(other_path.exists())
+        self.assertEqual(result, {"ok": True, "operation_id": selected, "recoverable": False})
+        record = json.loads((operations / f"{selected}.json").read_text())
+        self.assertEqual(record["purge_status"], "purged")
+        self.assertIn("purged_at", record)
+        self.assertEqual(record["entries"][0]["status"], "purged")
+
+    def test_permission_error_fails_closed(self) -> None:
+        quarantine, operations = self._setup()
+        op_id = "20261013-123456-a1b2c3"
+        op = self._operation(quarantine, operations, op_id)
+        def remove_then_fail(directory_fd: int) -> None:
+            os.unlink("payload.bin", dir_fd=directory_fd)
+            raise PermissionError("denied after partial removal")
+
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations), \
+             patch.object(web_server, "_remove_tree_contents", side_effect=remove_then_fail):
+            with self.assertRaises(web_server.PurgeOperationError) as raised:
+                web_server.purge_quarantine_operation(
+                    op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+        self.assertTrue(op.exists())
+        self.assertTrue(raised.exception.partial_possible)
+        record = json.loads((operations / f"{op_id}.json").read_text())
+        self.assertEqual(record["purge_status"], "purge_pending")
+        self.assertFalse((op / "payload.bin").exists())
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations):
+            with self.assertRaisesRegex(ValueError, "requires exact confirmation"):
+                web_server.purge_quarantine_operation(
+                    op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM})
+            self.assertTrue(op.exists())
+            result = web_server.purge_quarantine_operation(op_id, {
+                "confirm": web_server.PURGE_OPERATION_CONFIRM,
+                "pending_confirm": web_server.PURGE_PENDING_CONFIRM,
+            })
+        self.assertFalse(op.exists())
+        self.assertFalse(result["recoverable"])
+
+    def test_same_operation_requests_are_serialized_and_revalidate_manifest(self) -> None:
+        quarantine, operations = self._setup()
+        op_id = "20261013-123456-a1b2c3"
+        operation = self._operation(quarantine, operations, op_id)
+        entered = threading.Event()
+        release = threading.Event()
+        original_remove = web_server._remove_tree_contents
+        results: list[object] = []
+
+        def slow_remove(directory_fd: int) -> None:
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("test release timed out")
+            original_remove(directory_fd)
+
+        def purge() -> None:
+            try:
+                results.append(web_server.purge_quarantine_operation(
+                    op_id, {"confirm": web_server.PURGE_OPERATION_CONFIRM}))
+            except Exception as exc:  # the second request must observe the first result
+                results.append(exc)
+
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations), \
+             patch.object(web_server, "_remove_tree_contents", side_effect=slow_remove):
+            first = threading.Thread(target=purge)
+            second = threading.Thread(target=purge)
+            first.start()
+            self.assertTrue(entered.wait(2))
+            second.start()
+            release.set()
+            first.join(3)
+            second.join(3)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(sum(isinstance(item, dict) and item.get("ok") for item in results), 1)
+        self.assertEqual(sum(isinstance(item, FileNotFoundError) for item in results), 1)
+        self.assertFalse(operation.exists())
+
+    def test_http_partial_delete_reports_uncertain_state_and_keeps_pending_manifest(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="mdc-purge-partial-http-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        quarantine = base / "Trash" / "mac-dev-cleanup"
+        operations = base / "operations"
+        quarantine.mkdir(parents=True)
+        operations.mkdir()
+        op_id = "20261013-123456-a1b2c3"
+        op = quarantine / op_id
+        op.mkdir()
+        payload_file = op / "payload.bin"
+        payload_file.write_bytes(b"partial")
+        manifest = operations / f"{op_id}.json"
+        manifest.write_text(json.dumps({"operation_id": op_id, "entries": []}), encoding="utf-8")
+
+        def remove_then_fail(directory_fd: int) -> None:
+            os.unlink("payload.bin", dir_fd=directory_fd)
+            raise PermissionError("denied after partial removal")
+
+        server = web_server.LoopbackServer(("127.0.0.1", 0), web_server.Handler)
+        import threading
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 2)
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        self.addCleanup(connection.close)
+
+        with patch.object(web_server, "QUARANTINE_DIR", quarantine), \
+             patch.object(web_server, "OPERATIONS_DIR", operations), \
+             patch.object(web_server, "_remove_tree_contents", side_effect=remove_then_fail):
+            connection.request(
+                "POST", "/api/trash/purge-operation",
+                headers={"Content-Type": "application/json", "X-MDC-Token": web_server.API_TOKEN},
+                body=json.dumps({"operation_id": op_id,
+                                 "confirm": web_server.PURGE_OPERATION_CONFIRM}).encode())
+            response = connection.getresponse()
+            status, body = response.status, response.read()
+        result = json.loads(body)
+        self.assertEqual(status, 503)
+        self.assertTrue(result["partial_or_unknown"])
+        self.assertEqual(result["purge_status"], "purge_pending")
+        self.assertIn("inspect", result["error"])
+        self.assertTrue(op.exists())
+        self.assertFalse(payload_file.exists())
+        self.assertEqual(json.loads(manifest.read_text())["purge_status"], "purge_pending")
 
 
 class AppPruneTests(unittest.TestCase):
