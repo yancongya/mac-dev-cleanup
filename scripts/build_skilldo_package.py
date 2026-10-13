@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -104,26 +105,7 @@ def check_bundle(directory: Path, *, allow_legacy: bool = False) -> None:
     if not isinstance(records, list):
         fail("manifest files must be a list")
     paths = [record.get("path") for record in records if isinstance(record, dict)]
-    permitted_sets = {frozenset(PACKAGE_FILES)}
-    if allow_legacy:
-        permitted_sets.add(frozenset(PRE_CLI_TOOLS_PACKAGE_FILES))
-        permitted_sets.add(frozenset(PRE_LOGIN_PACKAGE_FILES))
-        permitted_sets.add(frozenset(PRE_CLI_PACKAGE_FILES))
-        permitted_sets.add(frozenset(LEGACY_PACKAGE_FILES))
-        permitted_sets.add(frozenset(PREVIOUS_PACKAGE_FILES))
-        # Accept the intermediate package combinations produced while the
-        # CLI, export, and login-item files were introduced independently.
-        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
-            "scripts/local_services_cli.py", "scripts/export_summary.py",
-            "scripts/login_items.py", "scripts/local_login_items_cli.py",
-        }))
-        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
-            "scripts/local_services_cli.py", "scripts/login_items.py",
-            "scripts/local_login_items_cli.py",
-        }))
-        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
-            "scripts/login_items.py", "scripts/local_login_items_cli.py",
-        }))
+    permitted_sets = _permitted_package_sets(allow_legacy)
     if len(paths) != len(records) or frozenset(paths) not in permitted_sets:
         fail("manifest file list does not match the declared SkillDo bundle")
 
@@ -153,6 +135,93 @@ def check_bundle(directory: Path, *, allow_legacy: bool = False) -> None:
     )
     if route_check.returncode:
         fail(f"bundle routing check failed: {route_check.stderr.strip() or route_check.stdout.strip()}")
+
+
+def _permitted_package_sets(allow_legacy: bool) -> set[frozenset[str]]:
+    permitted_sets = {frozenset(PACKAGE_FILES)}
+    if allow_legacy:
+        permitted_sets.add(frozenset(PRE_CLI_TOOLS_PACKAGE_FILES))
+        permitted_sets.add(frozenset(PRE_LOGIN_PACKAGE_FILES))
+        permitted_sets.add(frozenset(PRE_CLI_PACKAGE_FILES))
+        permitted_sets.add(frozenset(LEGACY_PACKAGE_FILES))
+        permitted_sets.add(frozenset(PREVIOUS_PACKAGE_FILES))
+        # Accept the intermediate package combinations produced while the
+        # CLI, export, and login-item files were introduced independently.
+        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
+            "scripts/local_services_cli.py", "scripts/export_summary.py",
+            "scripts/login_items.py", "scripts/local_login_items_cli.py",
+        }))
+        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
+            "scripts/local_services_cli.py", "scripts/login_items.py",
+            "scripts/local_login_items_cli.py",
+        }))
+        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
+            "scripts/login_items.py", "scripts/local_login_items_cli.py",
+        }))
+    return permitted_sets
+
+
+def _is_known_repairable_bundle(directory: Path) -> bool:
+    """Recognize a damaged SkillDo package without claiming arbitrary data.
+
+    A stale hash or a missing declared package file is repairable. Invalid or
+    foreign manifests, symlinks, and any undeclared filesystem content are
+    not sufficient proof that this directory belongs to this builder.
+    """
+    if directory.is_symlink() or not directory.is_dir():
+        return False
+    manifest_path = directory / MANIFEST
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if (not isinstance(manifest, dict)
+            or manifest.get("format") != FORMAT_VERSION
+            or manifest.get("source") != "mac-dev-cleanup"
+            or manifest.get("runtimeFiles", list(RUNTIME_FILES)) != list(RUNTIME_FILES)):
+        return False
+    records = manifest.get("files")
+    if not isinstance(records, list) or not records:
+        return False
+    paths = []
+    for record in records:
+        if not isinstance(record, dict):
+            return False
+        path = record.get("path")
+        digest = record.get("sha256")
+        if (not isinstance(path, str) or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            return False
+        paths.append(path)
+    if (len(paths) != len(set(paths))
+            or frozenset(paths) not in _permitted_package_sets(allow_legacy=True)):
+        return False
+
+    expected_files = set(paths) | {MANIFEST}
+    expected_dirs = {
+        parent.as_posix()
+        for relative in expected_files
+        for parent in Path(relative).parents
+        if parent.as_posix() != "."
+    }
+    try:
+        for path in directory.rglob("*"):
+            relative = path.relative_to(directory).as_posix()
+            if path.is_symlink():
+                return False
+            if path.is_dir():
+                if relative not in expected_dirs:
+                    return False
+            elif path.is_file():
+                if relative not in expected_files:
+                    return False
+            else:
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def expected_manifest() -> dict:
@@ -194,6 +263,7 @@ def build() -> None:
 
 def install_bundle(staging: Path, output: Path) -> None:
     """Atomically replace a package directory, restoring the old copy on failure."""
+    check_bundle(staging)
     previous = output.with_name(f".{output.name}.previous")
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or output.is_symlink():
@@ -204,7 +274,9 @@ def install_bundle(staging: Path, output: Path) -> None:
         # before installing the already-verified staging directory.
         try:
             check_bundle(output, allow_legacy=True)
-        except SystemExit:
+        except (SystemExit, OSError):
+            if not _is_known_repairable_bundle(output):
+                fail(f"refusing to replace an unverified existing directory: {output}")
             print(f"[WARN] Replacing invalid existing SkillDo bundle: {output}", file=sys.stderr)
         if previous.exists() or previous.is_symlink():
             fail(f"refusing to overwrite existing recovery path: {previous}")
