@@ -111,6 +111,19 @@ def check_bundle(directory: Path, *, allow_legacy: bool = False) -> None:
         permitted_sets.add(frozenset(PRE_CLI_PACKAGE_FILES))
         permitted_sets.add(frozenset(LEGACY_PACKAGE_FILES))
         permitted_sets.add(frozenset(PREVIOUS_PACKAGE_FILES))
+        # Accept the intermediate package combinations produced while the
+        # CLI, export, and login-item files were introduced independently.
+        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
+            "scripts/local_services_cli.py", "scripts/export_summary.py",
+            "scripts/login_items.py", "scripts/local_login_items_cli.py",
+        }))
+        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
+            "scripts/local_services_cli.py", "scripts/login_items.py",
+            "scripts/local_login_items_cli.py",
+        }))
+        permitted_sets.add(frozenset(set(PACKAGE_FILES) - {
+            "scripts/login_items.py", "scripts/local_login_items_cli.py",
+        }))
     if len(paths) != len(records) or frozenset(paths) not in permitted_sets:
         fail("manifest file list does not match the declared SkillDo bundle")
 
@@ -184,9 +197,15 @@ def install_bundle(staging: Path, output: Path) -> None:
     previous = output.with_name(f".{output.name}.previous")
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() or output.is_symlink():
-        # Permit a verified prior package when the allowlist grows. It is
-        # replaced only after the staged current package passes full checks.
-        check_bundle(output, allow_legacy=True)
+        # Permit a verified prior package when the allowlist grows. A package
+        # with a stale manifest/hash must also be replaceable: the build
+        # command is the repair path for exactly that interrupted or older
+        # install state. Keep the old directory as the normal recovery sibling
+        # before installing the already-verified staging directory.
+        try:
+            check_bundle(output, allow_legacy=True)
+        except SystemExit:
+            print(f"[WARN] Replacing invalid existing SkillDo bundle: {output}", file=sys.stderr)
         if previous.exists() or previous.is_symlink():
             fail(f"refusing to overwrite existing recovery path: {previous}")
         output.rename(previous)

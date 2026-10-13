@@ -71,6 +71,21 @@ class SkillDoPackageTests(unittest.TestCase):
             self.assertEqual(restored_files, old_files)
             self.assertFalse(previous.exists())
 
+    def test_invalid_previous_bundle_is_replaced_during_rebuild(self) -> None:
+        """A stale manifest must not block the build repair path."""
+        with tempfile.TemporaryDirectory(prefix="mdc-bundle-repair-") as directory:
+            parent = Path(directory)
+            output = parent / "mac-dev-cleanup"
+            staging = parent / ".mac-dev-cleanup-stage"
+            shutil.copytree(builder.OUTPUT, output)
+            (output / "SKILL.md").write_text("stale package\n", encoding="utf-8")
+            shutil.copytree(builder.OUTPUT, staging)
+
+            builder.install_bundle(staging, output)
+            builder.check_bundle(output)
+            self.assertEqual((output / "SKILL.md").read_bytes(),
+                             (builder.OUTPUT / "SKILL.md").read_bytes())
+
     def test_verified_previous_bundle_is_accepted_only_for_upgrade(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mdc-legacy-bundle-") as directory:
             legacy = Path(directory) / "mac-dev-cleanup"
